@@ -58,8 +58,29 @@ func requestLogCaptureEnabled(cfg *config.Config) bool {
 	return cfg != nil && cfg.RequestLog && !cfg.CommercialMode
 }
 
+func recordUpstreamRequestInfo(ctx context.Context, rawURL, transport string) {
+	trimmedURL := strings.TrimSpace(rawURL)
+	parsed, err := url.Parse(trimmedURL)
+	endpoint := trimmedURL
+	sanitizedURL := trimmedURL
+	if err == nil && parsed != nil {
+		if strings.TrimSpace(parsed.Path) != "" {
+			endpoint = parsed.Path
+		}
+		parsed.RawQuery = ""
+		parsed.Fragment = ""
+		sanitizedURL = parsed.String()
+	}
+	logging.SetUpstreamRequestInfo(ctx, logging.UpstreamRequestInfo{
+		Endpoint:  strings.TrimSpace(endpoint),
+		URL:       strings.TrimSpace(sanitizedURL),
+		Transport: strings.TrimSpace(transport),
+	})
+}
+
 // RecordAPIRequest stores the upstream request metadata in Gin context for request logging.
 func RecordAPIRequest(ctx context.Context, cfg *config.Config, info UpstreamRequestLog) {
+	recordUpstreamRequestInfo(ctx, info.URL, "http")
 	if !requestLogCaptureEnabled(cfg) {
 		return
 	}
@@ -235,6 +256,7 @@ func AppendAPIResponseChunk(ctx context.Context, cfg *config.Config, chunk []byt
 
 // RecordAPIWebsocketRequest stores an upstream websocket request event in Gin context.
 func RecordAPIWebsocketRequest(ctx context.Context, cfg *config.Config, info UpstreamRequestLog) {
+	recordUpstreamRequestInfo(ctx, info.URL, "websocket")
 	if !requestLogCaptureEnabled(cfg) {
 		return
 	}

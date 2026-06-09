@@ -10,6 +10,7 @@ import (
 type endpointKey struct{}
 type responseStatusKey struct{}
 type responseHeadersKey struct{}
+type upstreamRequestKey struct{}
 
 type responseStatusHolder struct {
 	status atomic.Int32
@@ -18,6 +19,17 @@ type responseStatusHolder struct {
 type responseHeadersHolder struct {
 	mu      sync.RWMutex
 	headers http.Header
+}
+
+type UpstreamRequestInfo struct {
+	Endpoint  string
+	URL       string
+	Transport string
+}
+
+type upstreamRequestHolder struct {
+	mu   sync.RWMutex
+	info UpstreamRequestInfo
 }
 
 func WithEndpoint(ctx context.Context, endpoint string) context.Context {
@@ -55,6 +67,42 @@ func WithResponseHeadersHolder(ctx context.Context) context.Context {
 		return ctx
 	}
 	return context.WithValue(ctx, responseHeadersKey{}, &responseHeadersHolder{})
+}
+
+func WithUpstreamRequestHolder(ctx context.Context) context.Context {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if holder, ok := ctx.Value(upstreamRequestKey{}).(*upstreamRequestHolder); ok && holder != nil {
+		return ctx
+	}
+	return context.WithValue(ctx, upstreamRequestKey{}, &upstreamRequestHolder{})
+}
+
+func SetUpstreamRequestInfo(ctx context.Context, info UpstreamRequestInfo) {
+	if ctx == nil {
+		return
+	}
+	holder, ok := ctx.Value(upstreamRequestKey{}).(*upstreamRequestHolder)
+	if !ok || holder == nil {
+		return
+	}
+	holder.mu.Lock()
+	defer holder.mu.Unlock()
+	holder.info = info
+}
+
+func GetUpstreamRequestInfo(ctx context.Context) UpstreamRequestInfo {
+	if ctx == nil {
+		return UpstreamRequestInfo{}
+	}
+	holder, ok := ctx.Value(upstreamRequestKey{}).(*upstreamRequestHolder)
+	if !ok || holder == nil {
+		return UpstreamRequestInfo{}
+	}
+	holder.mu.RLock()
+	defer holder.mu.RUnlock()
+	return holder.info
 }
 
 func SetResponseStatus(ctx context.Context, status int) {

@@ -96,17 +96,23 @@ func (p *usageQueuePlugin) HandleUsage(ctx context.Context, record coreusage.Rec
 	}
 
 	payload, err := json.Marshal(queuedUsageDetail{
-		requestDetail:   detail,
-		Provider:        provider,
-		ExecutorType:    executorType,
-		Model:           modelName,
-		Alias:           aliasName,
-		Endpoint:        resolveEndpoint(ctx),
-		AuthType:        authType,
-		APIKey:          apiKey,
-		RequestID:       requestID,
-		ReasoningEffort: reasoningEffort,
-		ServiceTier:     serviceTier,
+		requestDetail:     detail,
+		Provider:          provider,
+		ExecutorType:      executorType,
+		Model:             modelName,
+		Alias:             aliasName,
+		Endpoint:          resolveEndpoint(ctx),
+		InboundEndpoint:   resolveEndpoint(ctx),
+		UpstreamEndpoint:  resolveUpstreamEndpoint(ctx),
+		UpstreamTransport: resolveUpstreamTransport(ctx),
+		UpstreamURL:       resolveUpstreamURL(ctx),
+		AuthType:          authType,
+		AuthID:            strings.TrimSpace(record.AuthID),
+		APIKey:            apiKey,
+		RequestID:         requestID,
+		ReasoningEffort:   reasoningEffort,
+		ServiceTier:       serviceTier,
+		StatusCode:        fail.StatusCode,
 	})
 	if err != nil {
 		return
@@ -116,16 +122,22 @@ func (p *usageQueuePlugin) HandleUsage(ctx context.Context, record coreusage.Rec
 
 type queuedUsageDetail struct {
 	requestDetail
-	Provider        string `json:"provider"`
-	ExecutorType    string `json:"executor_type"`
-	Model           string `json:"model"`
-	Alias           string `json:"alias"`
-	Endpoint        string `json:"endpoint"`
-	AuthType        string `json:"auth_type"`
-	APIKey          string `json:"api_key"`
-	RequestID       string `json:"request_id"`
-	ReasoningEffort string `json:"reasoning_effort"`
-	ServiceTier     string `json:"service_tier"`
+	Provider          string `json:"provider"`
+	ExecutorType      string `json:"executor_type"`
+	Model             string `json:"model"`
+	Alias             string `json:"alias"`
+	Endpoint          string `json:"endpoint"`
+	InboundEndpoint   string `json:"inbound_endpoint"`
+	UpstreamEndpoint  string `json:"upstream_endpoint"`
+	UpstreamTransport string `json:"upstream_transport"`
+	UpstreamURL       string `json:"upstream_url"`
+	AuthType          string `json:"auth_type"`
+	AuthID            string `json:"auth_id"`
+	APIKey            string `json:"api_key"`
+	RequestID         string `json:"request_id"`
+	ReasoningEffort   string `json:"reasoning_effort"`
+	ServiceTier       string `json:"service_tier"`
+	StatusCode        int    `json:"status_code"`
 }
 
 type requestDetail struct {
@@ -182,6 +194,22 @@ func resolveSuccess(ctx context.Context) bool {
 
 func resolveEndpoint(ctx context.Context) string {
 	return strings.TrimSpace(internallogging.GetEndpoint(ctx))
+}
+
+func resolveUpstreamEndpoint(ctx context.Context) string {
+	return strings.TrimSpace(internallogging.GetUpstreamRequestInfo(ctx).Endpoint)
+}
+
+func resolveUpstreamTransport(ctx context.Context) string {
+	transport := strings.TrimSpace(internallogging.GetUpstreamRequestInfo(ctx).Transport)
+	if transport == "" {
+		transport = "http"
+	}
+	return transport
+}
+
+func resolveUpstreamURL(ctx context.Context) string {
+	return strings.TrimSpace(internallogging.GetUpstreamRequestInfo(ctx).URL)
 }
 
 const httpStatusBadRequest = 400

@@ -461,12 +461,7 @@ func (h *BaseAPIHandler) GetContextWithCancel(handler interfaces.APIHandler, c *
 			path = strings.TrimSpace(c.Request.URL.Path)
 		}
 		if path != "" {
-			method := strings.TrimSpace(c.Request.Method)
-			if method != "" {
-				endpoint = method + " " + path
-			} else {
-				endpoint = path
-			}
+			endpoint = path
 		}
 	}
 	if endpoint != "" {
@@ -474,6 +469,7 @@ func (h *BaseAPIHandler) GetContextWithCancel(handler interfaces.APIHandler, c *
 	}
 	newCtx = logging.WithResponseStatusHolder(newCtx)
 	newCtx = logging.WithResponseHeadersHolder(newCtx)
+	newCtx = logging.WithUpstreamRequestHolder(newCtx)
 
 	cancelCtx := newCtx
 	if requestCtx != nil && requestCtx != parentCtx {

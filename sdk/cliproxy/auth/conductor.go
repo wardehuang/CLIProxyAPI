@@ -80,7 +80,7 @@ const (
 	// wasn't updated). Without this guard, the auto-refresh loop can tight-loop and
 	// burn CPU at idle.
 	refreshIneffectiveBackoff = 30 * time.Second
-	quotaBackoffBase          = time.Second
+	quotaBackoffBase          = 30 * time.Minute
 	quotaBackoffMax           = 30 * time.Minute
 )
 
@@ -2865,18 +2865,20 @@ func isCloudflareChallengeResultError(err *Error) bool {
 }
 
 func nextCloudflareCooldown(backoffLevel int, disableCooling bool, now time.Time) (time.Time, int) {
-	var next time.Time
-	if !disableCooling {
-		cooldown, nextLevel := nextQuotaCooldown(backoffLevel, disableCooling)
-		if cooldown < 10*time.Second {
-			cooldown = 10 * time.Second
-		}
-		if cooldown > 0 {
-			next = now.Add(cooldown)
-		}
-		backoffLevel = nextLevel
+	if backoffLevel < 0 {
+		backoffLevel = 0
 	}
-	return next, backoffLevel
+	if disableCooling {
+		return time.Time{}, backoffLevel
+	}
+	cooldown := time.Second * time.Duration(1<<backoffLevel)
+	if cooldown < 10*time.Second {
+		cooldown = 10 * time.Second
+	}
+	if cooldown >= quotaBackoffMax {
+		return now.Add(quotaBackoffMax), backoffLevel
+	}
+	return now.Add(cooldown), backoffLevel + 1
 }
 func isRequestScopedNotFoundMessage(message string) bool {
 	if message == "" {
