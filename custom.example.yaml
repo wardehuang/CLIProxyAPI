@@ -1,0 +1,4 @@
+# Optional overrides loaded from custom.yaml next to config.yaml.
+# Leave a value empty to skip the compact override for that upstream.
+codex-compact-model: gpt-5.4-mini
+antigravity-compact-model: gemini-3.5-flash-low

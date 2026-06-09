@@ -26,6 +26,12 @@ type SDKConfig struct {
 	// default base model ("gpt-5.4-mini") is used.
 	GPTImage2BaseModel string `yaml:"gpt-image-2-base-model,omitempty" json:"gpt-image-2-base-model,omitempty"`
 
+	// CodexCompactModel overrides Claude Code compact requests routed to Codex.
+	CodexCompactModel string `yaml:"codex-compact-model,omitempty" json:"codex-compact-model,omitempty"`
+
+	// AntigravityCompactModel overrides Claude Code compact requests routed to Antigravity.
+	AntigravityCompactModel string `yaml:"antigravity-compact-model,omitempty" json:"antigravity-compact-model,omitempty"`
+
 	// EnableGeminiCLIEndpoint controls whether Gemini CLI internal endpoints (/v1internal:*) are enabled.
 	// Default is false for safety; when false, /v1internal:* requests are rejected.
 	EnableGeminiCLIEndpoint bool `yaml:"enable-gemini-cli-endpoint" json:"enable-gemini-cli-endpoint"`

@@ -24,6 +24,7 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/api/handlers"
 	log "github.com/sirupsen/logrus"
 	"github.com/tidwall/gjson"
+	"github.com/tidwall/sjson"
 )
 
 // ClaudeCodeAPIHandler contains the handlers for Claude API endpoints.
@@ -80,7 +81,15 @@ func (h *ClaudeCodeAPIHandler) ClaudeMessages(c *gin.Context) {
 
 	// Check if the client requested a streaming response.
 	streamResult := gjson.GetBytes(rawJSON, "stream")
-	if !streamResult.Exists() || streamResult.Type == gjson.False {
+	streamRequested := streamResult.Exists() && streamResult.Type != gjson.False
+	if compact := h.PrepareClaudeCodeCompactRequest(rawJSON, c.Request.Header); compact.Applied {
+		rawJSON = compact.RawJSON
+		if compact.ForceNonStream {
+			h.handleCompactNonStreamingResponse(c, rawJSON, compact.ModelName, compact.Alt, streamRequested)
+			return
+		}
+	}
+	if !streamRequested {
 		h.handleNonStreamingResponse(c, rawJSON)
 	} else {
 		h.handleStreamingResponse(c, rawJSON)
@@ -202,6 +211,50 @@ func (h *ClaudeCodeAPIHandler) handleNonStreamingResponse(c *gin.Context, rawJSO
 	cliCancel()
 }
 
+func (h *ClaudeCodeAPIHandler) handleCompactNonStreamingResponse(c *gin.Context, rawJSON []byte, modelName string, alt string, streamRequested bool) {
+	if !streamRequested {
+		h.handleNonStreamingResponseWithAlt(c, rawJSON, modelName, alt)
+		return
+	}
+
+	cliCtx, cliCancel := h.GetContextWithCancel(h, c, context.Background())
+	stopKeepAlive := h.StartNonStreamingKeepAlive(c, cliCtx)
+	resp, upstreamHeaders, errMsg := h.ExecuteWithAuthManager(cliCtx, h.HandlerType(), modelName, rawJSON, alt)
+	stopKeepAlive()
+	if errMsg != nil {
+		h.WriteErrorResponse(c, errMsg)
+		cliCancel(errMsg.Error)
+		return
+	}
+
+	c.Header("Content-Type", "text/event-stream")
+	c.Header("Cache-Control", "no-cache")
+	c.Header("Connection", "keep-alive")
+	c.Header("Access-Control-Allow-Origin", "*")
+	handlers.WriteUpstreamHeaders(c.Writer.Header(), upstreamHeaders)
+	writeClaudeMessageSSE(c, resp)
+	if flusher, ok := c.Writer.(http.Flusher); ok {
+		flusher.Flush()
+	}
+	cliCancel(resp)
+}
+
+func (h *ClaudeCodeAPIHandler) handleNonStreamingResponseWithAlt(c *gin.Context, rawJSON []byte, modelName string, alt string) {
+	c.Header("Content-Type", "application/json")
+	cliCtx, cliCancel := h.GetContextWithCancel(h, c, context.Background())
+	stopKeepAlive := h.StartNonStreamingKeepAlive(c, cliCtx)
+	resp, upstreamHeaders, errMsg := h.ExecuteWithAuthManager(cliCtx, h.HandlerType(), modelName, rawJSON, alt)
+	stopKeepAlive()
+	if errMsg != nil {
+		h.WriteErrorResponse(c, errMsg)
+		cliCancel(errMsg.Error)
+		return
+	}
+	handlers.WriteUpstreamHeaders(c.Writer.Header(), upstreamHeaders)
+	_, _ = c.Writer.Write(resp)
+	cliCancel(resp)
+}
+
 // handleStreamingResponse streams Claude-compatible responses backed by Gemini.
 // It sets up SSE, selects a backend client with rotation/quota logic,
 // forwards chunks, and translates them to Claude CLI format.
@@ -291,6 +344,56 @@ func (h *ClaudeCodeAPIHandler) handleStreamingResponse(c *gin.Context, rawJSON [
 			return
 		}
 	}
+}
+
+func writeClaudeMessageSSE(c *gin.Context, body []byte) {
+	message := gjson.ParseBytes(body)
+	messageID := strings.TrimSpace(message.Get("id").String())
+	model := strings.TrimSpace(message.Get("model").String())
+	inputTokens := message.Get("usage.input_tokens").Int()
+	outputTokens := message.Get("usage.output_tokens").Int()
+	stopReason := strings.TrimSpace(message.Get("stop_reason").String())
+	if stopReason == "" {
+		stopReason = "end_turn"
+	}
+
+	start := []byte(`{"type":"message_start","message":{"id":"","type":"message","role":"assistant","model":"","content":[],"stop_reason":null,"stop_sequence":null,"usage":{"input_tokens":0,"output_tokens":0}}}`)
+	start, _ = sjson.SetBytes(start, "message.id", messageID)
+	start, _ = sjson.SetBytes(start, "message.model", model)
+	start, _ = sjson.SetBytes(start, "message.usage.input_tokens", inputTokens)
+	writeClaudeSSEEvent(c, "message_start", start)
+
+	content := message.Get("content")
+	index := 0
+	for _, block := range content.Array() {
+		if block.Get("type").String() != "text" {
+			continue
+		}
+		text := block.Get("text").String()
+		blockStart := []byte(`{"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}`)
+		blockStart, _ = sjson.SetBytes(blockStart, "index", index)
+		writeClaudeSSEEvent(c, "content_block_start", blockStart)
+		if text != "" {
+			delta := []byte(`{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":""}}`)
+			delta, _ = sjson.SetBytes(delta, "index", index)
+			delta, _ = sjson.SetBytes(delta, "delta.text", text)
+			writeClaudeSSEEvent(c, "content_block_delta", delta)
+		}
+		blockStop := []byte(`{"type":"content_block_stop","index":0}`)
+		blockStop, _ = sjson.SetBytes(blockStop, "index", index)
+		writeClaudeSSEEvent(c, "content_block_stop", blockStop)
+		index++
+	}
+
+	messageDelta := []byte(`{"type":"message_delta","delta":{"stop_reason":"end_turn","stop_sequence":null},"usage":{"output_tokens":0}}`)
+	messageDelta, _ = sjson.SetBytes(messageDelta, "delta.stop_reason", stopReason)
+	messageDelta, _ = sjson.SetBytes(messageDelta, "usage.output_tokens", outputTokens)
+	writeClaudeSSEEvent(c, "message_delta", messageDelta)
+	writeClaudeSSEEvent(c, "message_stop", []byte(`{"type":"message_stop"}`))
+}
+
+func writeClaudeSSEEvent(c *gin.Context, event string, payload []byte) {
+	_, _ = fmt.Fprintf(c.Writer, "event: %s\ndata: %s\n\n", event, string(payload))
 }
 
 func pendingClaudeStreamError(errs <-chan *interfaces.ErrorMessage) (*interfaces.ErrorMessage, bool) {

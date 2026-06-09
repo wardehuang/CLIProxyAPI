@@ -713,6 +713,10 @@ func LoadConfigOptional(configFile string, optional bool) (*Config, error) {
 			if os.IsNotExist(err) || errors.Is(err, syscall.EISDIR) {
 				// Missing and optional: return empty config (cloud deploy standby).
 				cfg := &Config{}
+				cfg.ApplyCustomDefaults()
+				if errCustom := cfg.LoadCustomConfigSibling(configFile, optional); errCustom != nil {
+					return nil, errCustom
+				}
 				cfg.NormalizePluginsConfig()
 				return cfg, nil
 			}
@@ -723,6 +727,10 @@ func LoadConfigOptional(configFile string, optional bool) (*Config, error) {
 	// In cloud deploy mode (optional=true), if file is empty or contains only whitespace, return empty config.
 	if optional && len(data) == 0 {
 		cfg := &Config{}
+		cfg.ApplyCustomDefaults()
+		if errCustom := cfg.LoadCustomConfigSibling(configFile, optional); errCustom != nil {
+			return nil, errCustom
+		}
 		cfg.NormalizePluginsConfig()
 		return cfg, nil
 	}
@@ -742,14 +750,23 @@ func LoadConfigOptional(configFile string, optional bool) (*Config, error) {
 	cfg.Pprof.Addr = DefaultPprofAddr
 	cfg.AmpCode.RestrictManagementToLocalhost = false // Default to false: API key auth is sufficient
 	cfg.RemoteManagement.PanelGitHubRepository = DefaultPanelGitHubRepository
+	cfg.ApplyCustomDefaults()
 	if err = yaml.Unmarshal(data, &cfg); err != nil {
 		if optional {
 			// In cloud deploy mode, if YAML parsing fails, return empty config instead of error.
 			cfgOptional := &Config{}
+			cfgOptional.ApplyCustomDefaults()
+			if errCustom := cfgOptional.LoadCustomConfigSibling(configFile, optional); errCustom != nil {
+				return nil, errCustom
+			}
 			cfgOptional.NormalizePluginsConfig()
 			return cfgOptional, nil
 		}
 		return nil, fmt.Errorf("failed to parse config file: %w", err)
+	}
+
+	if errCustom := cfg.LoadCustomConfigSibling(configFile, optional); errCustom != nil {
+		return nil, errCustom
 	}
 
 	// NOTE: Startup legacy key migration is intentionally disabled.
