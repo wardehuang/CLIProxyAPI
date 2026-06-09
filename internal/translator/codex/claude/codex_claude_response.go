@@ -290,6 +290,9 @@ func ConvertCodexResponseToClaudeNonStream(_ context.Context, _ string, original
 	revNames := buildReverseMapFromClaudeOriginalShortToOriginal(originalRequestRawJSON)
 
 	rootResult := gjson.ParseBytes(rawJSON)
+	if rootResult.Get("object").String() == "response.compaction" {
+		return convertCodexCompactionToClaude(rootResult)
+	}
 	typeStr := rootResult.Get("type").String()
 	if typeStr != "response.completed" && typeStr != "response.incomplete" {
 		return []byte{}
@@ -407,6 +410,80 @@ func ConvertCodexResponseToClaudeNonStream(_ context.Context, _ string, original
 	out = setClaudeStopSequence(out, "stop_sequence", responseData)
 
 	return out
+}
+
+func convertCodexCompactionToClaude(rootResult gjson.Result) []byte {
+	out := []byte(`{"id":"","type":"message","role":"assistant","model":"","content":[],"stop_reason":"end_turn","stop_sequence":null,"usage":{"input_tokens":0,"output_tokens":0}}`)
+	out, _ = sjson.SetBytes(out, "id", rootResult.Get("id").String())
+	out, _ = sjson.SetBytes(out, "model", rootResult.Get("model").String())
+	inputTokens, outputTokens, cachedTokens := extractResponsesUsage(rootResult.Get("usage"))
+	out, _ = sjson.SetBytes(out, "usage.input_tokens", inputTokens)
+	out, _ = sjson.SetBytes(out, "usage.output_tokens", outputTokens)
+	if cachedTokens > 0 {
+		out, _ = sjson.SetBytes(out, "usage.cache_read_input_tokens", cachedTokens)
+	}
+	if text := codexCompactionText(rootResult); text != "" {
+		block := []byte(`{"type":"text","text":""}`)
+		block, _ = sjson.SetBytes(block, "text", text)
+		out, _ = sjson.SetRawBytes(out, "content.-1", block)
+	}
+	return out
+}
+
+func codexCompactionText(rootResult gjson.Result) string {
+	for _, path := range []string{"output_text", "text", "summary", "compacted_text", "result"} {
+		if text := strings.TrimSpace(rootResult.Get(path).String()); text != "" {
+			return text
+		}
+	}
+	return collectCodexCompactionText(rootResult.Get("output"))
+}
+
+func collectCodexCompactionText(node gjson.Result) string {
+	if !node.Exists() || node.Type == gjson.Null {
+		return ""
+	}
+	if node.Type == gjson.String {
+		return strings.TrimSpace(node.String())
+	}
+	var builder strings.Builder
+	if node.IsArray() {
+		node.ForEach(func(_, item gjson.Result) bool {
+			appendCodexCompactionText(&builder, item)
+			return true
+		})
+		return strings.TrimSpace(builder.String())
+	}
+	appendCodexCompactionText(&builder, node)
+	return strings.TrimSpace(builder.String())
+}
+
+func appendCodexCompactionText(builder *strings.Builder, item gjson.Result) {
+	if builder == nil || !item.Exists() {
+		return
+	}
+	for _, path := range []string{"text", "output_text"} {
+		if text := strings.TrimSpace(item.Get(path).String()); text != "" {
+			builder.WriteString(text)
+			return
+		}
+	}
+	content := item.Get("content")
+	if !content.Exists() {
+		return
+	}
+	if content.Type == gjson.String {
+		builder.WriteString(content.String())
+		return
+	}
+	if content.IsArray() {
+		content.ForEach(func(_, part gjson.Result) bool {
+			if text := strings.TrimSpace(part.Get("text").String()); text != "" {
+				builder.WriteString(text)
+			}
+			return true
+		})
+	}
 }
 
 func codexStopReason(responseData gjson.Result) string {

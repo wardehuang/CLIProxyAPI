@@ -85,7 +85,7 @@ func (h *ClaudeCodeAPIHandler) ClaudeMessages(c *gin.Context) {
 	if compact := h.PrepareClaudeCodeCompactRequest(rawJSON, c.Request.Header); compact.Applied {
 		rawJSON = compact.RawJSON
 		if compact.ForceNonStream {
-			h.handleCompactNonStreamingResponse(c, rawJSON, compact.ModelName, compact.Alt, streamRequested)
+			h.handleCompactNonStreamingResponse(c, rawJSON, compact.ModelName, compact.RequestedModel, compact.Alt, streamRequested)
 			return
 		}
 	}
@@ -211,15 +211,15 @@ func (h *ClaudeCodeAPIHandler) handleNonStreamingResponse(c *gin.Context, rawJSO
 	cliCancel()
 }
 
-func (h *ClaudeCodeAPIHandler) handleCompactNonStreamingResponse(c *gin.Context, rawJSON []byte, modelName string, alt string, streamRequested bool) {
+func (h *ClaudeCodeAPIHandler) handleCompactNonStreamingResponse(c *gin.Context, rawJSON []byte, modelName string, requestedModel string, alt string, streamRequested bool) {
 	if !streamRequested {
-		h.handleNonStreamingResponseWithAlt(c, rawJSON, modelName, alt)
+		h.handleNonStreamingResponseWithAlt(c, rawJSON, modelName, requestedModel, alt)
 		return
 	}
 
 	cliCtx, cliCancel := h.GetContextWithCancel(h, c, context.Background())
 	stopKeepAlive := h.StartNonStreamingKeepAlive(c, cliCtx)
-	resp, upstreamHeaders, errMsg := h.ExecuteWithAuthManager(cliCtx, h.HandlerType(), modelName, rawJSON, alt)
+	resp, upstreamHeaders, errMsg := h.ExecuteWithAuthManagerWithRequestedModel(cliCtx, h.HandlerType(), modelName, requestedModel, rawJSON, alt)
 	stopKeepAlive()
 	if errMsg != nil {
 		h.WriteErrorResponse(c, errMsg)
@@ -239,11 +239,11 @@ func (h *ClaudeCodeAPIHandler) handleCompactNonStreamingResponse(c *gin.Context,
 	cliCancel(resp)
 }
 
-func (h *ClaudeCodeAPIHandler) handleNonStreamingResponseWithAlt(c *gin.Context, rawJSON []byte, modelName string, alt string) {
+func (h *ClaudeCodeAPIHandler) handleNonStreamingResponseWithAlt(c *gin.Context, rawJSON []byte, modelName string, requestedModel string, alt string) {
 	c.Header("Content-Type", "application/json")
 	cliCtx, cliCancel := h.GetContextWithCancel(h, c, context.Background())
 	stopKeepAlive := h.StartNonStreamingKeepAlive(c, cliCtx)
-	resp, upstreamHeaders, errMsg := h.ExecuteWithAuthManager(cliCtx, h.HandlerType(), modelName, rawJSON, alt)
+	resp, upstreamHeaders, errMsg := h.ExecuteWithAuthManagerWithRequestedModel(cliCtx, h.HandlerType(), modelName, requestedModel, rawJSON, alt)
 	stopKeepAlive()
 	if errMsg != nil {
 		h.WriteErrorResponse(c, errMsg)

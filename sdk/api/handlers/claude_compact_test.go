@@ -51,8 +51,11 @@ func TestPrepareClaudeCodeCompactRequestCodex(t *testing.T) {
 	if route.ModelName != "gpt-compact(low)" {
 		t.Fatalf("model = %q, want gpt-compact(low)", route.ModelName)
 	}
-	if gjson.GetBytes(route.RawJSON, "stream").Exists() {
-		t.Fatalf("stream should be removed from codex compact payload: %s", string(route.RawJSON))
+	if route.RequestedModel != "gpt-original" {
+		t.Fatalf("requested model = %q, want gpt-original", route.RequestedModel)
+	}
+	if !gjson.GetBytes(route.RawJSON, "stream").Bool() {
+		t.Fatalf("stream should be preserved for codex compact payload: %s", string(route.RawJSON))
 	}
 	if gjson.GetBytes(route.RawJSON, "model").String() != "gpt-compact(low)" {
 		t.Fatalf("payload model = %q", gjson.GetBytes(route.RawJSON, "model").String())

@@ -19,6 +19,7 @@ type ClaudeCodeCompactRequest struct {
 	Applied        bool
 	Provider       string
 	ModelName      string
+	RequestedModel string
 	RawJSON        []byte
 	Alt            string
 	ForceNonStream bool
@@ -48,8 +49,7 @@ func (h *BaseAPIHandler) PrepareClaudeCodeCompactRequest(rawJSON []byte, headers
 			}
 			model = withThinkingSuffix(model, "low")
 			raw := applyClaudeCompactModel(rawJSON, model)
-			raw, _ = sjson.DeleteBytes(raw, "stream")
-			return ClaudeCodeCompactRequest{Applied: true, Provider: "codex", ModelName: model, RawJSON: raw, Alt: claudeCodeCompactCodexAlt, ForceNonStream: true}
+			return ClaudeCodeCompactRequest{Applied: true, Provider: "codex", ModelName: model, RequestedModel: originalModel, RawJSON: raw, Alt: claudeCodeCompactCodexAlt, ForceNonStream: true}
 		case "antigravity":
 			model := ""
 			if h != nil && h.Cfg != nil {
@@ -60,7 +60,7 @@ func (h *BaseAPIHandler) PrepareClaudeCodeCompactRequest(rawJSON []byte, headers
 			}
 			model = withThinkingSuffix(model, "none")
 			raw := applyClaudeCompactModel(rawJSON, model)
-			return ClaudeCodeCompactRequest{Applied: true, Provider: "antigravity", ModelName: model, RawJSON: raw}
+			return ClaudeCodeCompactRequest{Applied: true, Provider: "antigravity", ModelName: model, RequestedModel: originalModel, RawJSON: raw}
 		}
 	}
 	return ClaudeCodeCompactRequest{}
