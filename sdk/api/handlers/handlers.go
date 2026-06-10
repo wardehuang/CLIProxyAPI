@@ -51,6 +51,9 @@ type ErrorDetail struct {
 
 const idempotencyKeyMetadataKey = "idempotency_key"
 
+// CompactRequestGinKey marks an inbound request as Claude Code conversation compaction.
+const CompactRequestGinKey = "cliproxy_compact_request"
+
 const (
 	defaultStreamingKeepAliveSeconds = 0
 	defaultStreamingBootstrapRetries = 0
@@ -217,6 +220,7 @@ func requestExecutionMetadata(ctx context.Context) map[string]any {
 	// Only include it if the client explicitly provides it.
 	key := ""
 	requestPath := ""
+	meta := make(map[string]any)
 	if ctx != nil {
 		if ginCtx, ok := ctx.Value("gin").(*gin.Context); ok && ginCtx != nil && ginCtx.Request != nil {
 			key = strings.TrimSpace(ginCtx.GetHeader("Idempotency-Key"))
@@ -224,10 +228,12 @@ func requestExecutionMetadata(ctx context.Context) map[string]any {
 			if requestPath == "" && ginCtx.Request.URL != nil {
 				requestPath = strings.TrimSpace(ginCtx.Request.URL.Path)
 			}
+			if compact, exists := ginCtx.Get(CompactRequestGinKey); exists && compact == true {
+				meta[coreexecutor.CompactRequestMetadataKey] = true
+			}
 		}
 	}
 
-	meta := make(map[string]any)
 	if key != "" {
 		meta[idempotencyKeyMetadataKey] = key
 	}

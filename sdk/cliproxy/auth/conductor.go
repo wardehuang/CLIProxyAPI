@@ -2079,6 +2079,9 @@ func contextWithRequestedModelAlias(ctx context.Context, opts cliproxyexecutor.O
 	if serviceTier != "" {
 		ctx = coreusage.WithServiceTier(ctx, serviceTier)
 	}
+	if compactFromOptions(opts) {
+		ctx = coreusage.WithCompact(ctx, true)
+	}
 	return ctx
 }
 
@@ -2141,6 +2144,18 @@ func serviceTierFromOptions(opts cliproxyexecutor.Options) string {
 	default:
 		return ""
 	}
+}
+
+func compactFromOptions(opts cliproxyexecutor.Options) bool {
+	if len(opts.Metadata) == 0 {
+		return false
+	}
+	raw, ok := opts.Metadata[cliproxyexecutor.CompactRequestMetadataKey]
+	if !ok || raw == nil {
+		return false
+	}
+	value, ok := raw.(bool)
+	return ok && value
 }
 
 func pinnedAuthIDFromMetadata(meta map[string]any) string {

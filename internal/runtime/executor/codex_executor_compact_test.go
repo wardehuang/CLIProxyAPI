@@ -35,7 +35,7 @@ func TestCodexExecutorCompactTranslatesClaudeRequest(t *testing.T) {
 
 	claudePayload := []byte(`{"model":"gpt-5.5","messages":[{"role":"user","content":[{"type":"text","text":"compact this conversation"}]}],"system":[{"type":"text","text":"You are Claude Code, Anthropic's official CLI for Claude."}],"thinking":{"type":"adaptive"},"stream":true}`)
 	resp, err := executor.Execute(context.Background(), auth, cliproxyexecutor.Request{
-		Model:   "gpt-5.4-mini(low)",
+		Model:   "gpt-5.4-mini",
 		Payload: claudePayload,
 	}, cliproxyexecutor.Options{
 		SourceFormat: sdktranslator.FromString("claude"),

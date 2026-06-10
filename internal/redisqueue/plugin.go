@@ -112,6 +112,7 @@ func (p *usageQueuePlugin) HandleUsage(ctx context.Context, record coreusage.Rec
 		RequestID:         requestID,
 		ReasoningEffort:   reasoningEffort,
 		ServiceTier:       serviceTier,
+		Compact:           record.Compact,
 		StatusCode:        fail.StatusCode,
 	})
 	if err != nil {
@@ -137,6 +138,7 @@ type queuedUsageDetail struct {
 	RequestID         string `json:"request_id"`
 	ReasoningEffort   string `json:"reasoning_effort"`
 	ServiceTier       string `json:"service_tier"`
+	Compact           bool   `json:"compact,omitempty"`
 	StatusCode        int    `json:"status_code"`
 }
 

@@ -83,6 +83,7 @@ func (h *ClaudeCodeAPIHandler) ClaudeMessages(c *gin.Context) {
 	streamResult := gjson.GetBytes(rawJSON, "stream")
 	streamRequested := streamResult.Exists() && streamResult.Type != gjson.False
 	if compact := h.PrepareClaudeCodeCompactRequest(rawJSON, c.Request.Header); compact.Applied {
+		c.Set(handlers.CompactRequestGinKey, true)
 		rawJSON = compact.RawJSON
 		if compact.ForceNonStream {
 			h.handleCompactNonStreamingResponse(c, rawJSON, compact.ModelName, compact.RequestedModel, compact.Alt, streamRequested)

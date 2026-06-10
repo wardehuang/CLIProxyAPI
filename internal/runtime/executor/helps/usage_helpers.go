@@ -33,6 +33,7 @@ type UsageReporter struct {
 	source       string
 	reasoning    string
 	serviceTier  string
+	compact      bool
 	requestedAt  time.Time
 	ttftMu       sync.RWMutex
 	ttft         time.Duration
@@ -71,6 +72,7 @@ func NewUsageReporter(ctx context.Context, provider, model string, auth *cliprox
 		authType:    resolveUsageAuthType(auth),
 		reasoning:   usage.ReasoningEffortFromContext(ctx),
 		serviceTier: usage.ServiceTierFromContext(ctx),
+		compact:     usage.CompactFromContext(ctx),
 	}
 	if auth != nil {
 		reporter.authID = auth.ID
@@ -271,6 +273,7 @@ func (r *UsageReporter) buildRecordForModel(model string, detail usage.Detail, f
 		AuthType:        r.authType,
 		ReasoningEffort: r.reasoning,
 		ServiceTier:     r.serviceTier,
+		Compact:         r.compact,
 		RequestedAt:     r.requestedAt,
 		Latency:         r.latency(),
 		TTFT:            r.ttftDuration(),

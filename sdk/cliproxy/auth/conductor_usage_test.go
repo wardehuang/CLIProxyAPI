@@ -14,6 +14,7 @@ func TestContextWithRequestedModelAliasIncludesReasoningEffort(t *testing.T) {
 			cliproxyexecutor.RequestedModelMetadataKey:  "client-model",
 			cliproxyexecutor.ReasoningEffortMetadataKey: "medium",
 			cliproxyexecutor.ServiceTierMetadataKey:     "priority",
+			cliproxyexecutor.CompactRequestMetadataKey:  true,
 		},
 	}, "fallback-model")
 
@@ -26,5 +27,8 @@ func TestContextWithRequestedModelAliasIncludesReasoningEffort(t *testing.T) {
 	gotServiceTier := coreusage.ServiceTierFromContext(ctx)
 	if gotServiceTier != "priority" {
 		t.Fatalf("service tier = %q, want %q", gotServiceTier, "priority")
+	}
+	if !coreusage.CompactFromContext(ctx) {
+		t.Fatal("compact flag was not propagated")
 	}
 }

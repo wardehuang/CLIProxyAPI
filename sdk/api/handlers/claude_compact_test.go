@@ -45,11 +45,11 @@ func TestPrepareClaudeCodeCompactRequestCodex(t *testing.T) {
 	if route.Provider != "codex" {
 		t.Fatalf("provider = %q, want codex", route.Provider)
 	}
-	if route.Alt != "responses/compact" || !route.ForceNonStream {
+	if route.Alt != "" || route.ForceNonStream {
 		t.Fatalf("alt=%q forceNonStream=%v", route.Alt, route.ForceNonStream)
 	}
-	if route.ModelName != "gpt-compact(low)" {
-		t.Fatalf("model = %q, want gpt-compact(low)", route.ModelName)
+	if route.ModelName != "gpt-compact" {
+		t.Fatalf("model = %q, want gpt-compact", route.ModelName)
 	}
 	if route.RequestedModel != "gpt-original" {
 		t.Fatalf("requested model = %q, want gpt-original", route.RequestedModel)
@@ -57,8 +57,11 @@ func TestPrepareClaudeCodeCompactRequestCodex(t *testing.T) {
 	if !gjson.GetBytes(route.RawJSON, "stream").Bool() {
 		t.Fatalf("stream should be preserved for codex compact payload: %s", string(route.RawJSON))
 	}
-	if gjson.GetBytes(route.RawJSON, "model").String() != "gpt-compact(low)" {
+	if gjson.GetBytes(route.RawJSON, "model").String() != "gpt-compact" {
 		t.Fatalf("payload model = %q", gjson.GetBytes(route.RawJSON, "model").String())
+	}
+	if got := gjson.GetBytes(route.RawJSON, "output_config.effort").String(); got != "low" {
+		t.Fatalf("output_config.effort = %q, want low", got)
 	}
 }
 

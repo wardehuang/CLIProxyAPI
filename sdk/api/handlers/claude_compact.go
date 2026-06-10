@@ -47,9 +47,8 @@ func (h *BaseAPIHandler) PrepareClaudeCodeCompactRequest(rawJSON []byte, headers
 			if model == "" {
 				return ClaudeCodeCompactRequest{}
 			}
-			model = withThinkingSuffix(model, "low")
-			raw := applyClaudeCompactModel(rawJSON, model)
-			return ClaudeCodeCompactRequest{Applied: true, Provider: "codex", ModelName: model, RequestedModel: originalModel, RawJSON: raw, Alt: claudeCodeCompactCodexAlt, ForceNonStream: true}
+			raw := applyClaudeCompactModel(rawJSON, model, "low")
+			return ClaudeCodeCompactRequest{Applied: true, Provider: "codex", ModelName: model, RequestedModel: originalModel, RawJSON: raw}
 		case "antigravity":
 			model := ""
 			if h != nil && h.Cfg != nil {
@@ -59,7 +58,7 @@ func (h *BaseAPIHandler) PrepareClaudeCodeCompactRequest(rawJSON []byte, headers
 				return ClaudeCodeCompactRequest{}
 			}
 			model = withThinkingSuffix(model, "none")
-			raw := applyClaudeCompactModel(rawJSON, model)
+			raw := applyClaudeCompactModel(rawJSON, model, "")
 			return ClaudeCodeCompactRequest{Applied: true, Provider: "antigravity", ModelName: model, RequestedModel: originalModel, RawJSON: raw}
 		}
 	}
@@ -172,12 +171,15 @@ func hasClaudeCompactInstruction(text string) bool {
 	return score >= 3 && (strings.Contains(text, "compact") || strings.Contains(text, "summary") || strings.Contains(text, "summar"))
 }
 
-func applyClaudeCompactModel(rawJSON []byte, model string) []byte {
+func applyClaudeCompactModel(rawJSON []byte, model string, effort string) []byte {
 	out, err := sjson.SetBytes(rawJSON, "model", model)
 	if err != nil {
 		return rawJSON
 	}
 	out, _ = sjson.DeleteBytes(out, "thinking")
+	if effort != "" {
+		out, _ = sjson.SetBytes(out, "output_config.effort", effort)
+	}
 	return out
 }
 

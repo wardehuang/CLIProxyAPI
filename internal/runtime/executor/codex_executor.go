@@ -43,6 +43,14 @@ const (
 var dataTag = []byte("data:")
 var codexClaudeCodeSessionPattern = regexp.MustCompile(`_session_([a-f0-9-]+)$`)
 
+func isCompactRequest(opts cliproxyexecutor.Options) bool {
+	if len(opts.Metadata) == 0 {
+		return false
+	}
+	value, ok := opts.Metadata[cliproxyexecutor.CompactRequestMetadataKey].(bool)
+	return ok && value
+}
+
 // Streamed Codex responses may emit response.output_item.done events while leaving
 // response.completed.response.output empty. Keep the stream path aligned with the
 // already-patched non-stream path by reconstructing response.output from those items.
@@ -816,6 +824,9 @@ func (e *CodexExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, re
 	if e.cfg == nil || e.cfg.DisableImageGeneration == config.DisableImageGenerationOff {
 		body = ensureImageGenerationTool(body, baseModel, auth)
 	}
+	if isCompactRequest(opts) {
+		body, _ = sjson.SetBytes(body, "reasoning.effort", "low")
+	}
 	body = sanitizeOpenAIResponsesReasoningEncryptedContent(ctx, "codex executor", body)
 	body, replayScope := applyCodexReasoningReplayCache(ctx, from, req, opts, body)
 	reporter.SetTranslatedReasoningEffort(body, to.String())
@@ -987,6 +998,9 @@ func (e *CodexExecutor) executeCompact(ctx context.Context, auth *cliproxyauth.A
 	if e.cfg == nil || e.cfg.DisableImageGeneration == config.DisableImageGenerationOff {
 		body = ensureImageGenerationTool(body, baseModel, auth)
 	}
+	if isCompactRequest(opts) {
+		body, _ = sjson.SetBytes(body, "reasoning.effort", "low")
+	}
 	body = sanitizeOpenAIResponsesReasoningEncryptedContent(ctx, "codex executor", body)
 	body, replayScope := applyCodexReasoningReplayCache(ctx, from, req, opts, body)
 	reporter.SetTranslatedReasoningEffort(body, to.String())
@@ -1096,6 +1110,9 @@ func (e *CodexExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Au
 	body = normalizeCodexInstructions(body)
 	if e.cfg == nil || e.cfg.DisableImageGeneration == config.DisableImageGenerationOff {
 		body = ensureImageGenerationTool(body, baseModel, auth)
+	}
+	if isCompactRequest(opts) {
+		body, _ = sjson.SetBytes(body, "reasoning.effort", "low")
 	}
 	body = sanitizeOpenAIResponsesReasoningEncryptedContent(ctx, "codex executor", body)
 	body, replayScope := applyCodexReasoningReplayCache(ctx, from, req, opts, body)
