@@ -2079,6 +2079,7 @@ func contextWithRequestedModelAlias(ctx context.Context, opts cliproxyexecutor.O
 	if serviceTier != "" {
 		ctx = coreusage.WithServiceTier(ctx, serviceTier)
 	}
+	ctx = coreusage.WithThinking(ctx, thinkingFromOptions(opts))
 	if compactFromOptions(opts) {
 		ctx = coreusage.WithCompact(ctx, true)
 	}
@@ -2144,6 +2145,18 @@ func serviceTierFromOptions(opts cliproxyexecutor.Options) string {
 	default:
 		return ""
 	}
+}
+
+func thinkingFromOptions(opts cliproxyexecutor.Options) bool {
+	if len(opts.Metadata) == 0 {
+		return false
+	}
+	raw, ok := opts.Metadata[cliproxyexecutor.ThinkingMetadataKey]
+	if !ok || raw == nil {
+		return false
+	}
+	value, ok := raw.(bool)
+	return ok && value
 }
 
 func compactFromOptions(opts cliproxyexecutor.Options) bool {

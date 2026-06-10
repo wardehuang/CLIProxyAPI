@@ -6,33 +6,14 @@ import (
 	"testing"
 )
 
-func TestLoadConfigAppliesCustomDefaults(t *testing.T) {
-	dir := t.TempDir()
-	configPath := filepath.Join(dir, "config.yaml")
-	if err := os.WriteFile(configPath, []byte("port: 8317\n"), 0o600); err != nil {
-		t.Fatalf("WriteFile config: %v", err)
-	}
-
-	cfg, err := LoadConfig(configPath)
-	if err != nil {
-		t.Fatalf("LoadConfig: %v", err)
-	}
-	if cfg.CodexCompactModel != DefaultCodexCompactModel {
-		t.Fatalf("codex compact model = %q, want %q", cfg.CodexCompactModel, DefaultCodexCompactModel)
-	}
-	if cfg.AntigravityCompactModel != DefaultAntigravityCompactModel {
-		t.Fatalf("antigravity compact model = %q, want %q", cfg.AntigravityCompactModel, DefaultAntigravityCompactModel)
-	}
-}
-
-func TestLoadConfigOverlaysCustomYaml(t *testing.T) {
+func TestLoadConfigReadsCustomCompactModelOverrides(t *testing.T) {
 	dir := t.TempDir()
 	configPath := filepath.Join(dir, "config.yaml")
 	if err := os.WriteFile(configPath, []byte("port: 8317\n"), 0o600); err != nil {
 		t.Fatalf("WriteFile config: %v", err)
 	}
 	customPath := filepath.Join(dir, "custom.yaml")
-	if err := os.WriteFile(customPath, []byte("codex-compact-model: gpt-compact\nantigravity-compact-model: ag-compact\n"), 0o600); err != nil {
+	if err := os.WriteFile(customPath, []byte("codex-compact-model: gpt-5.4-mini\nantigravity-compact-model: gemini-3.1-flash-lite\n"), 0o600); err != nil {
 		t.Fatalf("WriteFile custom: %v", err)
 	}
 
@@ -40,33 +21,26 @@ func TestLoadConfigOverlaysCustomYaml(t *testing.T) {
 	if err != nil {
 		t.Fatalf("LoadConfig: %v", err)
 	}
-	if cfg.CodexCompactModel != "gpt-compact" {
-		t.Fatalf("codex compact model = %q, want gpt-compact", cfg.CodexCompactModel)
+	if cfg.CodexCompactModel != "gpt-5.4-mini" {
+		t.Fatalf("CodexCompactModel = %q, want gpt-5.4-mini", cfg.CodexCompactModel)
 	}
-	if cfg.AntigravityCompactModel != "ag-compact" {
-		t.Fatalf("antigravity compact model = %q, want ag-compact", cfg.AntigravityCompactModel)
+	if cfg.AntigravityCompactModel != "gemini-3.1-flash-lite" {
+		t.Fatalf("AntigravityCompactModel = %q, want gemini-3.1-flash-lite", cfg.AntigravityCompactModel)
 	}
 }
 
-func TestLoadConfigCustomYamlEmptyValueSkipsOverride(t *testing.T) {
+func TestLoadConfigAllowsMissingCustomConfig(t *testing.T) {
 	dir := t.TempDir()
 	configPath := filepath.Join(dir, "config.yaml")
 	if err := os.WriteFile(configPath, []byte("port: 8317\n"), 0o600); err != nil {
 		t.Fatalf("WriteFile config: %v", err)
-	}
-	customPath := filepath.Join(dir, "custom.yaml")
-	if err := os.WriteFile(customPath, []byte("codex-compact-model: \n"), 0o600); err != nil {
-		t.Fatalf("WriteFile custom: %v", err)
 	}
 
 	cfg, err := LoadConfig(configPath)
 	if err != nil {
 		t.Fatalf("LoadConfig: %v", err)
 	}
-	if cfg.CodexCompactModel != "" {
-		t.Fatalf("codex compact model = %q, want empty", cfg.CodexCompactModel)
-	}
-	if cfg.AntigravityCompactModel != DefaultAntigravityCompactModel {
-		t.Fatalf("antigravity compact model = %q, want default", cfg.AntigravityCompactModel)
+	if cfg.CodexCompactModel != "" || cfg.AntigravityCompactModel != "" {
+		t.Fatalf("compact overrides = (%q, %q), want empty", cfg.CodexCompactModel, cfg.AntigravityCompactModel)
 	}
 }

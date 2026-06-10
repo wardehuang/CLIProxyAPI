@@ -4,8 +4,6 @@ import (
 	"net/http"
 	"strings"
 
-	"github.com/router-for-me/CLIProxyAPI/v7/internal/thinking"
-	"github.com/router-for-me/CLIProxyAPI/v7/internal/util"
 	"github.com/tidwall/gjson"
 	"github.com/tidwall/sjson"
 )
@@ -40,26 +38,13 @@ func (h *BaseAPIHandler) PrepareClaudeCodeCompactRequest(rawJSON []byte, headers
 	for _, provider := range providers {
 		switch strings.ToLower(strings.TrimSpace(provider)) {
 		case "codex":
-			model := ""
-			if h != nil && h.Cfg != nil {
-				model = strings.TrimSpace(h.Cfg.CodexCompactModel)
-			}
-			if model == "" {
-				return ClaudeCodeCompactRequest{}
-			}
-			raw := applyClaudeCompactModel(rawJSON, model, "low")
-			return ClaudeCodeCompactRequest{Applied: true, Provider: "codex", ModelName: model, RequestedModel: originalModel, RawJSON: raw}
+			modelName := compactModelOverride(originalModel, h.compactCodexModel())
+			raw := applyClaudeCompactModel(rawJSON, modelName, "low")
+			return ClaudeCodeCompactRequest{Applied: true, Provider: "codex", ModelName: modelName, RequestedModel: originalModel, RawJSON: raw}
 		case "antigravity":
-			model := ""
-			if h != nil && h.Cfg != nil {
-				model = strings.TrimSpace(h.Cfg.AntigravityCompactModel)
-			}
-			if model == "" {
-				return ClaudeCodeCompactRequest{}
-			}
-			model = withThinkingSuffix(model, "none")
-			raw := applyClaudeCompactModel(rawJSON, model, "")
-			return ClaudeCodeCompactRequest{Applied: true, Provider: "antigravity", ModelName: model, RequestedModel: originalModel, RawJSON: raw}
+			modelName := compactModelOverride(originalModel, h.compactAntigravityModel())
+			raw := applyClaudeCompactModel(rawJSON, modelName, "low")
+			return ClaudeCodeCompactRequest{Applied: true, Provider: "antigravity", ModelName: modelName, RequestedModel: originalModel, RawJSON: raw}
 		}
 	}
 	return ClaudeCodeCompactRequest{}
@@ -74,11 +59,18 @@ func IsClaudeCodeCompactRequest(rawJSON []byte, headers http.Header) bool {
 	if len(messages) == 0 {
 		return false
 	}
-	last := messages[len(messages)-1]
-	if !last.Exists() || !strings.EqualFold(strings.TrimSpace(last.Get("role").String()), "user") {
+	var lastUser gjson.Result
+	for i := len(messages) - 1; i >= 0; i-- {
+		msg := messages[i]
+		if strings.EqualFold(strings.TrimSpace(msg.Get("role").String()), "user") {
+			lastUser = msg
+			break
+		}
+	}
+	if !lastUser.Exists() {
 		return false
 	}
-	texts := claudeMessageTextBlocks(last.Get("content"))
+	texts := claudeMessageTextBlocks(lastUser.Get("content"))
 	if len(texts) == 0 {
 		return false
 	}
@@ -147,6 +139,28 @@ func claudeMessageTextBlocks(node gjson.Result) []string {
 	return texts
 }
 
+func (h *BaseAPIHandler) compactCodexModel() string {
+	if h == nil || h.Cfg == nil {
+		return ""
+	}
+	return strings.TrimSpace(h.Cfg.CodexCompactModel)
+}
+
+func (h *BaseAPIHandler) compactAntigravityModel() string {
+	if h == nil || h.Cfg == nil {
+		return ""
+	}
+	return strings.TrimSpace(h.Cfg.AntigravityCompactModel)
+}
+
+func compactModelOverride(originalModel, overrideModel string) string {
+	overrideModel = strings.TrimSpace(overrideModel)
+	if overrideModel != "" {
+		return overrideModel
+	}
+	return originalModel
+}
+
 func hasClaudeCompactInstruction(text string) bool {
 	if len(text) < 500 {
 		return false
@@ -181,20 +195,4 @@ func applyClaudeCompactModel(rawJSON []byte, model string, effort string) []byte
 		out, _ = sjson.SetBytes(out, "output_config.effort", effort)
 	}
 	return out
-}
-
-func withThinkingSuffix(model, suffix string) string {
-	model = strings.TrimSpace(model)
-	if model == "" {
-		return ""
-	}
-	parsed := thinking.ParseSuffix(model)
-	base := strings.TrimSpace(parsed.ModelName)
-	if base == "" {
-		base = model
-	}
-	if len(util.GetProviderName(base)) == 0 && parsed.HasSuffix {
-		return model
-	}
-	return base + "(" + suffix + ")"
 }

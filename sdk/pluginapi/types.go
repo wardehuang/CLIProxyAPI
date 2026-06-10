@@ -1023,6 +1023,8 @@ type UsageRecord struct {
 	ReasoningEffort string
 	// ServiceTier records the requested or reported service tier.
 	ServiceTier string
+	// Thinking reports whether the request explicitly enabled thinking.
+	Thinking bool
 	// RequestedAt is the time the request was received.
 	RequestedAt time.Time
 	// Latency is the total request latency.

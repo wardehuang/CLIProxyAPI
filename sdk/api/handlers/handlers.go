@@ -266,6 +266,13 @@ func setReasoningEffortMetadata(meta map[string]any, handlerType, model string, 
 	meta[coreexecutor.ReasoningEffortMetadataKey] = effort
 }
 
+func setThinkingMetadata(meta map[string]any, handlerType, model string, rawJSON []byte) {
+	if meta == nil {
+		return
+	}
+	meta[coreexecutor.ThinkingMetadataKey] = thinking.ExtractThinkingEnabled(rawJSON, handlerType, model)
+}
+
 func setServiceTierMetadata(meta map[string]any, rawJSON []byte) {
 	if meta == nil {
 		return
@@ -641,6 +648,7 @@ func (h *BaseAPIHandler) executeWithAuthManager(ctx context.Context, handlerType
 	}
 	reqMeta[coreexecutor.RequestedModelMetadataKey] = requestedModel
 	setReasoningEffortMetadata(reqMeta, handlerType, normalizedModel, rawJSON)
+	setThinkingMetadata(reqMeta, handlerType, normalizedModel, rawJSON)
 	setServiceTierMetadata(reqMeta, rawJSON)
 	payload := rawJSON
 	if len(payload) == 0 {
@@ -692,6 +700,7 @@ func (h *BaseAPIHandler) ExecuteCountWithAuthManager(ctx context.Context, handle
 	reqMeta := requestExecutionMetadata(ctx)
 	reqMeta[coreexecutor.RequestedModelMetadataKey] = modelName
 	setReasoningEffortMetadata(reqMeta, handlerType, normalizedModel, rawJSON)
+	setThinkingMetadata(reqMeta, handlerType, normalizedModel, rawJSON)
 	setServiceTierMetadata(reqMeta, rawJSON)
 	payload := rawJSON
 	if len(payload) == 0 {
@@ -756,6 +765,7 @@ func (h *BaseAPIHandler) executeStreamWithAuthManager(ctx context.Context, handl
 	reqMeta := requestExecutionMetadata(ctx)
 	reqMeta[coreexecutor.RequestedModelMetadataKey] = modelName
 	setReasoningEffortMetadata(reqMeta, handlerType, normalizedModel, rawJSON)
+	setThinkingMetadata(reqMeta, handlerType, normalizedModel, rawJSON)
 	setServiceTierMetadata(reqMeta, rawJSON)
 	payload := rawJSON
 	if len(payload) == 0 {

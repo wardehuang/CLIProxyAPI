@@ -39,6 +39,36 @@ func TestSetReasoningEffortMetadataSupportsOpenAIResponses(t *testing.T) {
 	}
 }
 
+func TestSetThinkingMetadataUsesSuffixOverBody(t *testing.T) {
+	meta := make(map[string]any)
+
+	setThinkingMetadata(meta, "openai", "gpt-5.4(none)", []byte(`{"reasoning_effort":"high"}`))
+
+	if got := meta[coreexecutor.ThinkingMetadataKey]; got != false {
+		t.Fatalf("ThinkingMetadataKey = %v, want false", got)
+	}
+}
+
+func TestSetThinkingMetadataSupportsOpenAIResponses(t *testing.T) {
+	meta := make(map[string]any)
+
+	setThinkingMetadata(meta, "openai-response", "gpt-5.4", []byte(`{"reasoning":{"effort":"medium"}}`))
+
+	if got := meta[coreexecutor.ThinkingMetadataKey]; got != true {
+		t.Fatalf("ThinkingMetadataKey = %v, want true", got)
+	}
+}
+
+func TestSetThinkingMetadataCodexAlwaysTrue(t *testing.T) {
+	meta := make(map[string]any)
+
+	setThinkingMetadata(meta, "codex", "gpt-5.4(none)", []byte(`{"reasoning":{"effort":"none"}}`))
+
+	if got := meta[coreexecutor.ThinkingMetadataKey]; got != true {
+		t.Fatalf("ThinkingMetadataKey = %v, want true for codex", got)
+	}
+}
+
 func TestSetServiceTierMetadataExtractsValue(t *testing.T) {
 	meta := make(map[string]any)
 

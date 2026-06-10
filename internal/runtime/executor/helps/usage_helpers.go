@@ -33,6 +33,7 @@ type UsageReporter struct {
 	source       string
 	reasoning    string
 	serviceTier  string
+	thinking     bool
 	compact      bool
 	requestedAt  time.Time
 	ttftMu       sync.RWMutex
@@ -72,6 +73,7 @@ func NewUsageReporter(ctx context.Context, provider, model string, auth *cliprox
 		authType:    resolveUsageAuthType(auth),
 		reasoning:   usage.ReasoningEffortFromContext(ctx),
 		serviceTier: usage.ServiceTierFromContext(ctx),
+		thinking:    usage.ThinkingFromContext(ctx),
 		compact:     usage.CompactFromContext(ctx),
 	}
 	if auth != nil {
@@ -109,6 +111,11 @@ func (r *UsageReporter) SetTranslatedReasoningEffort(payload []byte, format stri
 		return
 	}
 	r.reasoning = thinking.ExtractTranslatedReasoningEffort(payload, format)
+	if strings.EqualFold(r.provider, "codex") || strings.EqualFold(format, "codex") {
+		r.thinking = true
+	} else {
+		r.thinking = thinking.ExtractTranslatedThinkingEnabled(payload, format)
+	}
 	r.serviceTier = extractServiceTierFromPayload(payload)
 }
 
@@ -261,6 +268,7 @@ func (r *UsageReporter) buildRecordForModel(model string, detail usage.Detail, f
 	if r == nil {
 		return usage.Record{Model: model, Detail: detail, Failed: failed, Fail: fail}
 	}
+	thinkingEnabled := r.thinking || strings.EqualFold(r.provider, "codex")
 	return usage.Record{
 		Provider:        r.provider,
 		ExecutorType:    r.executorType,
@@ -273,6 +281,7 @@ func (r *UsageReporter) buildRecordForModel(model string, detail usage.Detail, f
 		AuthType:        r.authType,
 		ReasoningEffort: r.reasoning,
 		ServiceTier:     r.serviceTier,
+		Thinking:        thinkingEnabled,
 		Compact:         r.compact,
 		RequestedAt:     r.requestedAt,
 		Latency:         r.latency(),

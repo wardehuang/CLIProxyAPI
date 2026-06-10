@@ -452,6 +452,30 @@ func ExtractReasoningEffort(body []byte, provider, model string) string {
 	return reasoningEffortFromConfig(config)
 }
 
+// ExtractThinkingEnabled returns whether the request explicitly enables thinking.
+// Codex is always reported as thinking-enabled because its upstream minimum is low.
+// For other providers, model suffixes have the same priority as ApplyThinking: a valid suffix overrides body fields.
+func ExtractThinkingEnabled(body []byte, provider, model string) bool {
+	provider = strings.ToLower(strings.TrimSpace(provider))
+	if provider == "codex" {
+		return true
+	}
+	if enabled, ok := thinkingEnabledFromSuffix(ParseSuffix(model)); ok {
+		return enabled
+	}
+
+	config := extractThinkingConfig(body, provider)
+	if !hasThinkingConfig(config) {
+		switch provider {
+		case "openai-response":
+			config = extractCodexConfig(body)
+		case "openai":
+			config = extractCodexConfig(body)
+		}
+	}
+	return thinkingEnabledFromConfig(config)
+}
+
 // ExtractTranslatedReasoningEffort returns the final provider payload's thinking
 // setting as a canonical reasoning_effort label for usage logging.
 func ExtractTranslatedReasoningEffort(body []byte, provider string) string {
@@ -469,11 +493,45 @@ func ExtractTranslatedReasoningEffort(body []byte, provider string) string {
 	return reasoningEffortFromConfig(config)
 }
 
+// ExtractTranslatedThinkingEnabled returns whether the final provider payload explicitly enables thinking.
+func ExtractTranslatedThinkingEnabled(body []byte, provider string) bool {
+	provider = strings.ToLower(strings.TrimSpace(provider))
+	if provider == "codex" {
+		return true
+	}
+	config := extractThinkingConfig(body, provider)
+	if !hasThinkingConfig(config) {
+		switch provider {
+		case "openai", "openai-response":
+			config = extractCodexConfig(body)
+			if !hasThinkingConfig(config) {
+				config = extractOpenAIConfig(body)
+			}
+		}
+	}
+	return thinkingEnabledFromConfig(config)
+}
+
 func reasoningEffortFromSuffix(suffix SuffixResult) string {
 	if !suffix.HasSuffix {
 		return ""
 	}
 	return reasoningEffortFromConfig(parseSuffixToConfig(suffix.RawSuffix, "", suffix.ModelName))
+}
+
+func thinkingEnabledFromSuffix(suffix SuffixResult) (bool, bool) {
+	if !suffix.HasSuffix {
+		return false, false
+	}
+	config := parseSuffixToConfig(suffix.RawSuffix, "", suffix.ModelName)
+	if !hasThinkingConfig(config) {
+		return false, false
+	}
+	return thinkingEnabledFromConfig(config), true
+}
+
+func thinkingEnabledFromConfig(config ThinkingConfig) bool {
+	return hasThinkingConfig(config) && config.Mode != ModeNone
 }
 
 func reasoningEffortFromConfig(config ThinkingConfig) string {

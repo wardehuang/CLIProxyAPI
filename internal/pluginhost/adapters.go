@@ -1715,6 +1715,7 @@ func (a *usageAdapter) HandleUsage(ctx context.Context, record coreusage.Record)
 		Source:          record.Source,
 		ReasoningEffort: record.ReasoningEffort,
 		ServiceTier:     record.ServiceTier,
+		Thinking:        record.Thinking,
 		RequestedAt:     record.RequestedAt,
 		Latency:         record.Latency,
 		TTFT:            record.TTFT,

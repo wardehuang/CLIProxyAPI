@@ -60,6 +60,7 @@ func (p *usageQueuePlugin) HandleUsage(ctx context.Context, record coreusage.Rec
 	if serviceTier == "" {
 		serviceTier = coreusage.ServiceTierFromContext(ctx)
 	}
+	thinkingEnabled := record.Thinking || coreusage.ThinkingFromContext(ctx) || strings.EqualFold(provider, "codex")
 
 	tokens := tokenStats{
 		InputTokens:         record.Detail.InputTokens,
@@ -112,6 +113,7 @@ func (p *usageQueuePlugin) HandleUsage(ctx context.Context, record coreusage.Rec
 		RequestID:         requestID,
 		ReasoningEffort:   reasoningEffort,
 		ServiceTier:       serviceTier,
+		Thinking:          thinkingEnabled,
 		Compact:           record.Compact,
 		StatusCode:        fail.StatusCode,
 	})
@@ -138,6 +140,7 @@ type queuedUsageDetail struct {
 	RequestID         string `json:"request_id"`
 	ReasoningEffort   string `json:"reasoning_effort"`
 	ServiceTier       string `json:"service_tier"`
+	Thinking          bool   `json:"thinking"`
 	Compact           bool   `json:"compact,omitempty"`
 	StatusCode        int    `json:"status_code"`
 }

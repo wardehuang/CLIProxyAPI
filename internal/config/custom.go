@@ -1,87 +1,58 @@
 package config
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
 
 	"gopkg.in/yaml.v3"
 )
 
-const (
-	DefaultCodexCompactModel       = "gpt-5.4-mini"
-	DefaultAntigravityCompactModel = "gemini-3.5-flash-low"
-	customConfigFileName           = "custom.yaml"
-)
-
-// ApplyCustomDefaults initializes default custom settings before YAML overlays are applied.
-func (cfg *Config) ApplyCustomDefaults() {
-	if cfg == nil {
-		return
-	}
-	cfg.CodexCompactModel = DefaultCodexCompactModel
-	cfg.AntigravityCompactModel = DefaultAntigravityCompactModel
+type customConfig struct {
+	CodexCompactModel       string `yaml:"codex-compact-model"`
+	AntigravityCompactModel string `yaml:"antigravity-compact-model"`
 }
 
-// LoadCustomConfigSibling overlays custom.yaml from the same directory as config.yaml.
+// ApplyCustomDefaults is kept as a hook for local-only defaults.
+func (cfg *Config) ApplyCustomDefaults() {}
+
+// LoadCustomConfigSibling loads optional local-only overrides from custom.yaml next to config.yaml.
 func (cfg *Config) LoadCustomConfigSibling(configFile string, optional bool) error {
-	if cfg == nil {
+	if cfg == nil || strings.TrimSpace(configFile) == "" {
 		return nil
 	}
-	configFile = strings.TrimSpace(configFile)
-	if configFile == "" {
-		return nil
-	}
-	customPath := filepath.Join(filepath.Dir(configFile), customConfigFileName)
+
+	customPath := filepath.Join(filepath.Dir(configFile), "custom.yaml")
 	data, err := os.ReadFile(customPath)
 	if err != nil {
-		if os.IsNotExist(err) || optional {
+		if os.IsNotExist(err) || errors.Is(err, syscall.EISDIR) {
+			return nil
+		}
+		if optional {
 			return nil
 		}
 		return fmt.Errorf("failed to read custom config file: %w", err)
 	}
-	if len(strings.TrimSpace(string(data))) == 0 {
+	if strings.TrimSpace(string(data)) == "" {
 		return nil
 	}
 
-	values, err := parseCustomConfigScalars(data)
-	if err != nil {
+	var custom customConfig
+	if err := yaml.Unmarshal(data, &custom); err != nil {
 		if optional {
 			return nil
 		}
 		return fmt.Errorf("failed to parse custom config file: %w", err)
 	}
-	if value, ok := values["codex-compact-model"]; ok {
-		cfg.CodexCompactModel = value
+
+	if model := strings.TrimSpace(custom.CodexCompactModel); model != "" {
+		cfg.CodexCompactModel = model
 	}
-	if value, ok := values["antigravity-compact-model"]; ok {
-		cfg.AntigravityCompactModel = value
+	if model := strings.TrimSpace(custom.AntigravityCompactModel); model != "" {
+		cfg.AntigravityCompactModel = model
 	}
 	return nil
-}
-
-func parseCustomConfigScalars(data []byte) (map[string]string, error) {
-	var doc yaml.Node
-	if err := yaml.Unmarshal(data, &doc); err != nil {
-		return nil, err
-	}
-	values := make(map[string]string)
-	if doc.Kind != yaml.DocumentNode || len(doc.Content) == 0 || doc.Content[0] == nil || doc.Content[0].Kind != yaml.MappingNode {
-		return values, nil
-	}
-	mapping := doc.Content[0]
-	for i := 0; i+1 < len(mapping.Content); i += 2 {
-		keyNode := mapping.Content[i]
-		valueNode := mapping.Content[i+1]
-		if keyNode == nil || valueNode == nil {
-			continue
-		}
-		key := strings.TrimSpace(keyNode.Value)
-		switch key {
-		case "codex-compact-model", "antigravity-compact-model":
-			values[key] = strings.TrimSpace(valueNode.Value)
-		}
-	}
-	return values, nil
 }
