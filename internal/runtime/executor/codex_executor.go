@@ -6,6 +6,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
@@ -42,6 +43,7 @@ const (
 
 var dataTag = []byte("data:")
 var codexClaudeCodeSessionPattern = regexp.MustCompile(`_session_([a-f0-9-]+)$`)
+var codexClaudeProjectIDPattern = regexp.MustCompile(`(?s)<project-id>\s*([^<]+?)\s*</project-id>`)
 
 func isCompactRequest(opts cliproxyexecutor.Options) bool {
 	if len(opts.Metadata) == 0 {
@@ -302,7 +304,59 @@ func codexClaudeCodeReplaySessionKey(payload []byte) string {
 	return "claude:" + sessionID
 }
 
-func codexClaudeCodePromptCacheStorageKey(req cliproxyexecutor.Request) string {
+func codexClaudeCodeProjectID(req cliproxyexecutor.Request, cfg *config.Config) string {
+	projectID := extractClaudeProjectIDFromPrompt(req.Payload)
+	sessionID := extractClaudeCodeSessionIDForCodexReplay(req.Payload)
+	if projectID != "" {
+		if sessionID != "" {
+			if baseDir, errBase := codexPromptCacheBaseDir(cfg); errBase != nil {
+				log.Warnf("codex Claude session project cache: resolve storage dir failed: %v", errBase)
+			} else if errSet := helps.SetCodexClaudeSessionProject(baseDir, sessionID, projectID); errSet != nil {
+				log.Warnf("codex Claude session project cache: write cache failed: %v", errSet)
+			}
+		}
+		return projectID
+	}
+	if sessionID == "" {
+		return ""
+	}
+	baseDir, errBase := codexPromptCacheBaseDir(cfg)
+	if errBase != nil {
+		log.Warnf("codex Claude session project cache: resolve storage dir failed: %v", errBase)
+		return ""
+	}
+	cachedProjectID, ok, errGet := helps.GetCodexClaudeSessionProject(baseDir, sessionID)
+	if errGet != nil {
+		log.Warnf("codex Claude session project cache: read cache failed: %v", errGet)
+		return ""
+	}
+	if !ok {
+		return ""
+	}
+	return cachedProjectID
+}
+
+func codexClaudeCodeCreatingTitle(req cliproxyexecutor.Request) bool {
+	if !strings.EqualFold(strings.TrimSpace(gjson.GetBytes(req.Payload, "thinking.type").String()), "disabled") {
+		return false
+	}
+	if !strings.EqualFold(strings.TrimSpace(gjson.GetBytes(req.Payload, "output_config.format.type").String()), "json_schema") {
+		return false
+	}
+	if !gjson.GetBytes(req.Payload, "output_config.format.schema.properties.title").Exists() {
+		return false
+	}
+	required := gjson.GetBytes(req.Payload, "output_config.format.schema.required").Array()
+	if len(required) != 1 {
+		return false
+	}
+	return required[0].String() == "title"
+}
+
+func codexClaudeCodePromptCacheStorageKey(req cliproxyexecutor.Request, cfg *config.Config) string {
+	if projectID := codexClaudeCodeProjectID(req, cfg); projectID != "" {
+		return fmt.Sprintf("%s-claude:%s", req.Model, projectID)
+	}
 	sessionID := extractClaudeCodeSessionIDForCodexReplay(req.Payload)
 	if sessionID == "" {
 		return ""
@@ -310,20 +364,41 @@ func codexClaudeCodePromptCacheStorageKey(req cliproxyexecutor.Request) string {
 	return fmt.Sprintf("%s-claude:%s", req.Model, sessionID)
 }
 
-func codexClaudeCodePromptCache(req cliproxyexecutor.Request) (helps.CodexCache, bool) {
-	key := codexClaudeCodePromptCacheStorageKey(req)
+func codexClaudeCodePromptCache(req cliproxyexecutor.Request, cfg *config.Config) (helps.CodexCache, bool) {
+	key := codexClaudeCodePromptCacheStorageKey(req, cfg)
 	if key == "" {
 		return helps.CodexCache{}, false
 	}
-	if cache, ok := helps.GetCodexCache(key); ok {
+	baseDir, err := codexPromptCacheBaseDir(cfg)
+	if err != nil {
+		log.Warnf("codex prompt cache: resolve storage dir failed: %v", err)
+		return helps.CodexCache{}, false
+	}
+	if cache, ok, errGet := helps.GetAndRefreshCodexCache(baseDir, key, helps.CodexPromptCacheTTL); errGet != nil {
+		log.Warnf("codex prompt cache: read cache failed: %v", errGet)
+	} else if ok {
 		return cache, true
 	}
 	cache := helps.CodexCache{
 		ID:     uuid.New().String(),
-		Expire: time.Now().Add(1 * time.Hour),
+		Expire: time.Now().Add(helps.CodexPromptCacheTTL),
 	}
-	helps.SetCodexCache(key, cache)
+	if errSet := helps.SetCodexCache(baseDir, key, cache); errSet != nil {
+		log.Warnf("codex prompt cache: write cache failed: %v", errSet)
+		return helps.CodexCache{}, false
+	}
 	return cache, true
+}
+
+func codexPromptCacheBaseDir(cfg *config.Config) (string, error) {
+	if writablePath := util.WritablePath(); writablePath != "" {
+		return writablePath, nil
+	}
+	authDir := ""
+	if cfg != nil {
+		authDir = cfg.AuthDir
+	}
+	return util.ResolveAuthDir(authDir)
 }
 
 func extractClaudeCodeSessionIDForCodexReplay(payload []byte) string {
@@ -341,6 +416,56 @@ func extractClaudeCodeSessionIDForCodexReplay(payload []byte) string {
 		return gjson.Get(userID, "session_id").String()
 	}
 	return ""
+}
+
+func extractClaudeProjectIDFromPrompt(payload []byte) string {
+	if len(payload) == 0 {
+		return ""
+	}
+	var root any
+	if err := json.Unmarshal(payload, &root); err == nil {
+		if projectID := extractClaudeProjectIDFromValue(root); projectID != "" {
+			return projectID
+		}
+	}
+	return extractClaudeProjectIDFromText(string(payload))
+}
+
+func extractClaudeProjectIDFromValue(value any) string {
+	switch typed := value.(type) {
+	case string:
+		return extractClaudeProjectIDFromText(typed)
+	case []any:
+		for _, item := range typed {
+			if projectID := extractClaudeProjectIDFromValue(item); projectID != "" {
+				return projectID
+			}
+		}
+	case map[string]any:
+		for _, key := range []string{"messages", "content", "text", "prompt", "system"} {
+			if projectID := extractClaudeProjectIDFromValue(typed[key]); projectID != "" {
+				return projectID
+			}
+		}
+		for key, item := range typed {
+			switch key {
+			case "metadata", "usage", "request_metadata":
+				continue
+			}
+			if projectID := extractClaudeProjectIDFromValue(item); projectID != "" {
+				return projectID
+			}
+		}
+	}
+	return ""
+}
+
+func extractClaudeProjectIDFromText(text string) string {
+	matches := codexClaudeProjectIDPattern.FindStringSubmatch(text)
+	if len(matches) < 2 {
+		return ""
+	}
+	return strings.TrimSpace(matches[1])
 }
 
 func codexReasoningReplaySessionKey(ctx context.Context, from sdktranslator.Format, req cliproxyexecutor.Request, opts cliproxyexecutor.Options, body []byte) string {
@@ -799,6 +924,10 @@ func (e *CodexExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, re
 
 	from := opts.SourceFormat
 	to := sdktranslator.FromString("codex")
+	if sourceFormatEqual(from, sdktranslator.FormatClaude) {
+		reporter.SetProjectID(codexClaudeCodeProjectID(req, e.cfg))
+		reporter.SetCreatingTitle(codexClaudeCodeCreatingTitle(req))
+	}
 	originalPayloadSource := req.Payload
 	if len(opts.OriginalRequest) > 0 {
 		originalPayloadSource = opts.OriginalRequest
@@ -973,6 +1102,10 @@ func (e *CodexExecutor) executeCompact(ctx context.Context, auth *cliproxyauth.A
 
 	from := opts.SourceFormat
 	to := sdktranslator.FromString("codex")
+	if sourceFormatEqual(from, sdktranslator.FormatClaude) {
+		reporter.SetProjectID(codexClaudeCodeProjectID(req, e.cfg))
+		reporter.SetCreatingTitle(codexClaudeCodeCreatingTitle(req))
+	}
 	originalPayloadSource := req.Payload
 	if len(opts.OriginalRequest) > 0 {
 		originalPayloadSource = opts.OriginalRequest
@@ -1087,6 +1220,10 @@ func (e *CodexExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Au
 
 	from := opts.SourceFormat
 	to := sdktranslator.FromString("codex")
+	if sourceFormatEqual(from, sdktranslator.FormatClaude) {
+		reporter.SetProjectID(codexClaudeCodeProjectID(req, e.cfg))
+		reporter.SetCreatingTitle(codexClaudeCodeCreatingTitle(req))
+	}
 	originalPayloadSource := req.Payload
 	if len(opts.OriginalRequest) > 0 {
 		originalPayloadSource = opts.OriginalRequest
@@ -1449,7 +1586,7 @@ type codexIdentityReplacement struct {
 func (e *CodexExecutor) cacheHelper(ctx context.Context, from sdktranslator.Format, url string, auth *cliproxyauth.Auth, req cliproxyexecutor.Request, userPayload []byte, rawJSON []byte) (*http.Request, []byte, codexIdentityConfuseState, error) {
 	var cache helps.CodexCache
 	if sourceFormatEqual(from, sdktranslator.FormatClaude) {
-		if cached, ok := codexClaudeCodePromptCache(req); ok {
+		if cached, ok := codexClaudeCodePromptCache(req, e.cfg); ok {
 			cache = cached
 		}
 	} else if sourceFormatEqual(from, sdktranslator.FormatOpenAIResponse) {

@@ -33,10 +33,12 @@ func TestUsageQueuePluginPayloadIncludesStableFieldsAndSuccess(t *testing.T) {
 			AuthIndex:       "0",
 			AuthType:        "apikey",
 			Source:          "user@example.com",
+			ProjectID:       "cpa",
 			ReasoningEffort: "medium",
 			ServiceTier:     "priority",
 			Thinking:        true,
 			Compact:         true,
+			CreatingTitle:   true,
 			RequestedAt:     time.Date(2026, 4, 25, 0, 0, 0, 0, time.UTC),
 			Latency:         1500 * time.Millisecond,
 			Detail: coreusage.Detail{
@@ -57,10 +59,12 @@ func TestUsageQueuePluginPayloadIncludesStableFieldsAndSuccess(t *testing.T) {
 		requireStringField(t, payload, "auth_type", "apikey")
 		requireMissingField(t, payload, "user_api_key")
 		requireStringField(t, payload, "request_id", "ctx-request-id")
+		requireStringField(t, payload, "project_id", "cpa")
 		requireStringField(t, payload, "reasoning_effort", "medium")
 		requireStringField(t, payload, "service_tier", "priority")
 		requireBoolField(t, payload, "thinking", true)
 		requireBoolField(t, payload, "compact", true)
+		requireBoolField(t, payload, "creating_title", true)
 		requireHeaderField(t, payload, "response_headers", "X-Upstream-Request-Id", []string{"upstream-req-1"})
 		requireHeaderField(t, payload, "response_headers", "Retry-After", []string{"30"})
 		requireBoolField(t, payload, "failed", false)

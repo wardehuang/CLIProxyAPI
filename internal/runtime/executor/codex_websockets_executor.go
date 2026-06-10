@@ -189,6 +189,10 @@ func (e *CodexWebsocketsExecutor) Execute(ctx context.Context, auth *cliproxyaut
 
 	from := opts.SourceFormat
 	to := sdktranslator.FromString("codex")
+	if sourceFormatEqual(from, sdktranslator.FormatClaude) {
+		reporter.SetProjectID(codexClaudeCodeProjectID(req, e.cfg))
+		reporter.SetCreatingTitle(codexClaudeCodeCreatingTitle(req))
+	}
 	originalPayloadSource := req.Payload
 	if len(opts.OriginalRequest) > 0 {
 		originalPayloadSource = opts.OriginalRequest
@@ -220,7 +224,7 @@ func (e *CodexWebsocketsExecutor) Execute(ctx context.Context, auth *cliproxyaut
 		return resp, err
 	}
 
-	body, wsHeaders := applyCodexPromptCacheHeaders(from, req, body)
+	body, wsHeaders := applyCodexPromptCacheHeaders(from, req, e.cfg, body)
 	clientBody := body
 	var identityState codexIdentityConfuseState
 	upstreamBody, identityState := applyCodexIdentityConfuseBody(e.cfg, auth, originalPayloadSource, body)
@@ -409,6 +413,10 @@ func (e *CodexWebsocketsExecutor) ExecuteStream(ctx context.Context, auth *clipr
 
 	from := opts.SourceFormat
 	to := sdktranslator.FromString("codex")
+	if sourceFormatEqual(from, sdktranslator.FormatClaude) {
+		reporter.SetProjectID(codexClaudeCodeProjectID(req, e.cfg))
+		reporter.SetCreatingTitle(codexClaudeCodeCreatingTitle(req))
+	}
 	body := req.Payload
 	userPayload := req.Payload
 	if len(opts.OriginalRequest) > 0 {
@@ -435,7 +443,7 @@ func (e *CodexWebsocketsExecutor) ExecuteStream(ctx context.Context, auth *clipr
 		return nil, err
 	}
 
-	body, wsHeaders := applyCodexPromptCacheHeaders(from, req, body)
+	body, wsHeaders := applyCodexPromptCacheHeaders(from, req, e.cfg, body)
 	clientBody := body
 	var identityState codexIdentityConfuseState
 	upstreamBody, identityState := applyCodexIdentityConfuseBody(e.cfg, auth, userPayload, body)
@@ -828,7 +836,7 @@ func buildCodexResponsesWebsocketURL(httpURL string) (string, error) {
 	return parsed.String(), nil
 }
 
-func applyCodexPromptCacheHeaders(from sdktranslator.Format, req cliproxyexecutor.Request, rawJSON []byte) ([]byte, http.Header) {
+func applyCodexPromptCacheHeaders(from sdktranslator.Format, req cliproxyexecutor.Request, cfg *config.Config, rawJSON []byte) ([]byte, http.Header) {
 	headers := http.Header{}
 	if len(rawJSON) == 0 {
 		return rawJSON, headers
@@ -836,7 +844,7 @@ func applyCodexPromptCacheHeaders(from sdktranslator.Format, req cliproxyexecuto
 
 	var cache helps.CodexCache
 	if sourceFormatEqual(from, sdktranslator.FormatClaude) {
-		if cached, ok := codexClaudeCodePromptCache(req); ok {
+		if cached, ok := codexClaudeCodePromptCache(req, cfg); ok {
 			cache = cached
 		}
 	} else if sourceFormatEqual(from, sdktranslator.FormatOpenAIResponse) {

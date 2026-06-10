@@ -89,6 +89,7 @@ func (p *usageQueuePlugin) HandleUsage(ctx context.Context, record coreusage.Rec
 		LatencyMs:       record.Latency.Milliseconds(),
 		TTFTMs:          record.TTFT.Milliseconds(),
 		Source:          record.Source,
+		ProjectID:       strings.TrimSpace(record.ProjectID),
 		AuthIndex:       record.AuthIndex,
 		Tokens:          tokens,
 		Failed:          failed,
@@ -115,6 +116,7 @@ func (p *usageQueuePlugin) HandleUsage(ctx context.Context, record coreusage.Rec
 		ServiceTier:       serviceTier,
 		Thinking:          thinkingEnabled,
 		Compact:           record.Compact,
+		CreatingTitle:     record.CreatingTitle,
 		StatusCode:        fail.StatusCode,
 	})
 	if err != nil {
@@ -142,6 +144,7 @@ type queuedUsageDetail struct {
 	ServiceTier       string `json:"service_tier"`
 	Thinking          bool   `json:"thinking"`
 	Compact           bool   `json:"compact,omitempty"`
+	CreatingTitle     bool   `json:"creating_title,omitempty"`
 	StatusCode        int    `json:"status_code"`
 }
 
@@ -150,6 +153,7 @@ type requestDetail struct {
 	LatencyMs       int64       `json:"latency_ms"`
 	TTFTMs          int64       `json:"ttft_ms"`
 	Source          string      `json:"source"`
+	ProjectID       string      `json:"project_id,omitempty"`
 	AuthIndex       string      `json:"auth_index"`
 	Tokens          tokenStats  `json:"tokens"`
 	Failed          bool        `json:"failed"`

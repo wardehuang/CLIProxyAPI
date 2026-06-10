@@ -97,7 +97,7 @@ type Capabilities struct {
 	ResponseBeforeTranslator ResponseNormalizer
 	// ResponseAfterTranslator normalizes translated responses before delivery.
 	ResponseAfterTranslator ResponseNormalizer
-	// RequestInterceptor rewrites execution requests before they reach the upstream executor.
+	// RequestInterceptor rewrites execution requests before and after credential selection.
 	RequestInterceptor RequestInterceptor
 	// ResponseInterceptor rewrites successful non-streaming HTTP execution responses before downstream delivery.
 	ResponseInterceptor ResponseInterceptor
@@ -680,9 +680,10 @@ type ResponseNormalizer interface {
 	NormalizeResponse(context.Context, ResponseTransformRequest) (PayloadResponse, error)
 }
 
-// RequestInterceptor rewrites execution requests before they reach the upstream executor.
+// RequestInterceptor rewrites execution requests before and after credential selection.
 type RequestInterceptor interface {
-	InterceptRequest(context.Context, RequestInterceptRequest) (RequestInterceptResponse, error)
+	InterceptRequestBeforeAuth(context.Context, RequestInterceptRequest) (RequestInterceptResponse, error)
+	InterceptRequestAfterAuth(context.Context, RequestInterceptRequest) (RequestInterceptResponse, error)
 }
 
 // ResponseInterceptor rewrites successful non-streaming execution responses before downstream delivery.
@@ -732,13 +733,22 @@ type ResponseTransformRequest struct {
 
 // RequestInterceptRequest describes a request about to be executed upstream.
 type RequestInterceptRequest struct {
-	SourceFormat   string
-	Model          string
+	// SourceFormat is the original client protocol format.
+	SourceFormat string
+	// ToFormat is the selected upstream protocol format. It is empty before credential selection.
+	ToFormat string
+	// Model is the current execution model. After credential selection this is the selected upstream model.
+	Model string
+	// RequestedModel is the client-requested model before alias/model-pool rewriting.
 	RequestedModel string
-	Stream         bool
-	Headers        http.Header
-	Body           []byte
-	Metadata       map[string]any
+	// Stream reports whether the request expects streaming output.
+	Stream bool
+	// Headers contains the current upstream request headers.
+	Headers http.Header
+	// Body contains the current request payload.
+	Body []byte
+	// Metadata is a best-effort cloned context snapshot. Treat it as read-only and JSON-like.
+	Metadata map[string]any
 }
 
 // RequestInterceptResponse returns request modifications.
@@ -1019,12 +1029,16 @@ type UsageRecord struct {
 	AuthType string
 	// Source identifies the request source or integration.
 	Source string
+	// ProjectID identifies the client project extracted from request prompts.
+	ProjectID string
 	// ReasoningEffort records the requested reasoning effort.
 	ReasoningEffort string
 	// ServiceTier records the requested or reported service tier.
 	ServiceTier string
 	// Thinking reports whether the request explicitly enabled thinking.
 	Thinking bool
+	// CreatingTitle marks requests generated to create a conversation title.
+	CreatingTitle bool
 	// RequestedAt is the time the request was received.
 	RequestedAt time.Time
 	// Latency is the total request latency.

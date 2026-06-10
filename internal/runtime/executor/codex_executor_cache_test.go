@@ -5,10 +5,12 @@ import (
 	"io"
 	"net/http/httptest"
 	"testing"
+	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/config"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/runtime/executor/helps"
 	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
 	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/executor"
 	sdktranslator "github.com/router-for-me/CLIProxyAPI/v7/sdk/translator"
@@ -69,7 +71,7 @@ func TestCodexExecutorCacheHelper_OpenAIChatCompletions_StablePromptCacheKeyFrom
 }
 
 func TestCodexExecutorCacheHelper_ClaudeUsesClaudeCodeSessionID(t *testing.T) {
-	executor := &CodexExecutor{}
+	executor := &CodexExecutor{cfg: &config.Config{AuthDir: t.TempDir()}}
 	ctx := context.Background()
 	url := "https://example.com/responses"
 	rawJSON := []byte(`{"model":"gpt-5.4","stream":true}`)
@@ -123,8 +125,145 @@ func TestCodexExecutorCacheHelper_ClaudeUsesClaudeCodeSessionID(t *testing.T) {
 	}
 }
 
+func TestCodexExecutorCacheHelper_ClaudeUsesProjectIDAcrossSessions(t *testing.T) {
+	executor := &CodexExecutor{cfg: &config.Config{AuthDir: t.TempDir()}}
+	ctx := context.Background()
+	url := "https://example.com/responses"
+	rawJSON := []byte(`{"model":"gpt-5.4","stream":true}`)
+	firstReq := cliproxyexecutor.Request{
+		Model: "gpt-5.4-claude-project-cache",
+		Payload: []byte(`{
+			"model":"gpt-5.4",
+			"metadata":{"user_id":"{\"device_id\":\"device-a\",\"account_uuid\":\"\",\"session_id\":\"cache-session-1\"}"},
+			"messages":[{"role":"user","content":[{"type":"text","text":"<project-id>cpa</project-id> first"}]}]
+		}`),
+	}
+	secondReq := cliproxyexecutor.Request{
+		Model: "gpt-5.4-claude-project-cache",
+		Payload: []byte(`{
+			"model":"gpt-5.4",
+			"metadata":{"user_id":"{\"device_id\":\"device-b\",\"account_uuid\":\"\",\"session_id\":\"cache-session-2\"}"},
+			"messages":[{"role":"user","content":[{"type":"text","text":"next <project-id>cpa</project-id>"}]}]
+		}`),
+	}
+
+	firstHTTPReq, _, _, err := executor.cacheHelper(ctx, sdktranslator.FromString("claude"), url, nil, firstReq, firstReq.Payload, rawJSON)
+	if err != nil {
+		t.Fatalf("cacheHelper first error: %v", err)
+	}
+	secondHTTPReq, _, _, err := executor.cacheHelper(ctx, sdktranslator.FromString("claude"), url, nil, secondReq, secondReq.Payload, rawJSON)
+	if err != nil {
+		t.Fatalf("cacheHelper second error: %v", err)
+	}
+
+	firstBody, errRead := io.ReadAll(firstHTTPReq.Body)
+	if errRead != nil {
+		t.Fatalf("read first request body: %v", errRead)
+	}
+	secondBody, errRead := io.ReadAll(secondHTTPReq.Body)
+	if errRead != nil {
+		t.Fatalf("read second request body: %v", errRead)
+	}
+	firstKey := gjson.GetBytes(firstBody, "prompt_cache_key").String()
+	secondKey := gjson.GetBytes(secondBody, "prompt_cache_key").String()
+	if firstKey == "" {
+		t.Fatalf("first prompt_cache_key is empty; body=%s", string(firstBody))
+	}
+	if secondKey != firstKey {
+		t.Fatalf("same Claude project produced different prompt_cache_key: first=%q second=%q", firstKey, secondKey)
+	}
+	if gotProjectID := codexClaudeCodeProjectID(firstReq, executor.cfg); gotProjectID != "cpa" {
+		t.Fatalf("project_id = %q, want cpa", gotProjectID)
+	}
+}
+
+func TestCodexClaudeCodeProjectIDUsesPersistedSessionMapping(t *testing.T) {
+	dir := t.TempDir()
+	cfg := &config.Config{AuthDir: dir}
+	firstReq := cliproxyexecutor.Request{
+		Model: "gpt-5.4-claude-session-project",
+		Payload: []byte(`{
+			"metadata":{"user_id":"{\"session_id\":\"mapped-session-1\"}"},
+			"messages":[{"role":"user","content":[{"type":"text","text":"<project-id>cpa</project-id>"}]}]
+		}`),
+	}
+	secondReq := cliproxyexecutor.Request{
+		Model: "gpt-5.4-claude-session-project",
+		Payload: []byte(`{
+			"metadata":{"user_id":"{\"session_id\":\"mapped-session-1\"}"},
+			"messages":[{"role":"user","content":[{"type":"text","text":"next request without project id"}]}]
+		}`),
+	}
+
+	if gotProjectID := codexClaudeCodeProjectID(firstReq, cfg); gotProjectID != "cpa" {
+		t.Fatalf("first project_id = %q, want cpa", gotProjectID)
+	}
+	if gotProjectID := codexClaudeCodeProjectID(secondReq, cfg); gotProjectID != "cpa" {
+		t.Fatalf("mapped project_id = %q, want cpa", gotProjectID)
+	}
+	if gotKey := codexClaudeCodePromptCacheStorageKey(secondReq, cfg); gotKey != "gpt-5.4-claude-session-project-claude:cpa" {
+		t.Fatalf("storage key = %q, want project key", gotKey)
+	}
+}
+
+func TestCodexClaudeCodeCreatingTitle(t *testing.T) {
+	titleReq := cliproxyexecutor.Request{Payload: []byte(`{
+		"model":"gpt-5.4-mini",
+		"messages":[{"role":"user","content":[{"type":"text","text":"<session>test</session>"}]}],
+		"system":[{"type":"text","text":"Generate a concise, sentence-case title"}],
+		"thinking":{"type":"disabled"},
+		"output_config":{"effort":"high","format":{"type":"json_schema","schema":{"type":"object","properties":{"title":{"type":"string"}},"required":["title"],"additionalProperties":false}}}
+	}`)}
+	mainReq := cliproxyexecutor.Request{Payload: []byte(`{
+		"model":"gpt-5.5",
+		"messages":[{"role":"user","content":[{"type":"text","text":"hello"}]}],
+		"thinking":{"type":"enabled"}
+	}`)}
+
+	if !codexClaudeCodeCreatingTitle(titleReq) {
+		t.Fatalf("expected title request")
+	}
+	if codexClaudeCodeCreatingTitle(mainReq) {
+		t.Fatalf("main request must not be treated as title request")
+	}
+}
+
+func TestCodexClaudeCodePromptCacheReplacesExpiredPersistentEntry(t *testing.T) {
+	dir := t.TempDir()
+	req := cliproxyexecutor.Request{
+		Model:   "gpt-5.4-claude-project-expired",
+		Payload: []byte(`{"metadata":{"user_id":"{\"session_id\":\"cache-session-1\"}"},"messages":[{"role":"user","content":[{"type":"text","text":"<project-id>cpa</project-id>"}]}]}`),
+	}
+	key := codexClaudeCodePromptCacheStorageKey(req, &config.Config{AuthDir: dir})
+	if key == "" {
+		t.Fatalf("storage key is empty")
+	}
+	if err := helps.SetCodexCache(dir, key, helps.CodexCache{ID: "expired-cache", Expire: time.Now().Add(-time.Hour)}); err != nil {
+		t.Fatalf("seed expired cache: %v", err)
+	}
+
+	cache, ok := codexClaudeCodePromptCache(req, &config.Config{AuthDir: dir})
+	if !ok {
+		t.Fatalf("expected cache")
+	}
+	if cache.ID == "" || cache.ID == "expired-cache" {
+		t.Fatalf("cache ID = %q, want fresh non-empty ID", cache.ID)
+	}
+	if cache.Expire.Before(time.Now().Add(23 * time.Hour)) {
+		t.Fatalf("cache expiry = %v, want roughly 24h sliding expiry", cache.Expire)
+	}
+
+	refreshed, ok := codexClaudeCodePromptCache(req, &config.Config{AuthDir: dir})
+	if !ok {
+		t.Fatalf("expected refreshed cache")
+	}
+	if refreshed.ID != cache.ID {
+		t.Fatalf("refreshed cache ID = %q, want %q", refreshed.ID, cache.ID)
+	}
+}
+
 func TestCodexExecutorCacheHelper_ClaudeRejectsBareUserID(t *testing.T) {
-	executor := &CodexExecutor{}
+	executor := &CodexExecutor{cfg: &config.Config{AuthDir: t.TempDir()}}
 	req := cliproxyexecutor.Request{
 		Model:   "gpt-5.4-claude-cache-bare-user",
 		Payload: []byte(`{"model":"gpt-5.4","metadata":{"user_id":"same-user-across-chats"},"messages":[{"role":"user","content":[{"type":"text","text":"first"}]}]}`),

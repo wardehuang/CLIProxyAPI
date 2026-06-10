@@ -22,25 +22,27 @@ import (
 )
 
 type UsageReporter struct {
-	provider     string
-	executorType string
-	model        string
-	alias        string
-	authID       string
-	authIndex    string
-	authType     string
-	apiKey       string
-	source       string
-	reasoning    string
-	serviceTier  string
-	thinking     bool
-	compact      bool
-	requestedAt  time.Time
-	ttftMu       sync.RWMutex
-	ttft         time.Duration
-	ttftStart    time.Time
-	ttftSet      bool
-	once         sync.Once
+	provider      string
+	executorType  string
+	model         string
+	alias         string
+	authID        string
+	authIndex     string
+	authType      string
+	apiKey        string
+	source        string
+	projectID     string
+	reasoning     string
+	serviceTier   string
+	thinking      bool
+	compact       bool
+	creatingTitle bool
+	requestedAt   time.Time
+	ttftMu        sync.RWMutex
+	ttft          time.Duration
+	ttftStart     time.Time
+	ttftSet       bool
+	once          sync.Once
 }
 
 type usageExecutor interface {
@@ -81,6 +83,20 @@ func NewUsageReporter(ctx context.Context, provider, model string, auth *cliprox
 		reporter.authIndex = auth.EnsureIndex()
 	}
 	return reporter
+}
+
+func (r *UsageReporter) SetProjectID(projectID string) {
+	if r == nil {
+		return
+	}
+	r.projectID = strings.TrimSpace(projectID)
+}
+
+func (r *UsageReporter) SetCreatingTitle(creatingTitle bool) {
+	if r == nil {
+		return
+	}
+	r.creatingTitle = creatingTitle
 }
 
 func ExecutorTypeName(executor any) string {
@@ -275,6 +291,7 @@ func (r *UsageReporter) buildRecordForModel(model string, detail usage.Detail, f
 		Model:           model,
 		Alias:           r.alias,
 		Source:          r.source,
+		ProjectID:       r.projectID,
 		APIKey:          r.apiKey,
 		AuthID:          r.authID,
 		AuthIndex:       r.authIndex,
@@ -283,6 +300,7 @@ func (r *UsageReporter) buildRecordForModel(model string, detail usage.Detail, f
 		ServiceTier:     r.serviceTier,
 		Thinking:        thinkingEnabled,
 		Compact:         r.compact,
+		CreatingTitle:   r.creatingTitle,
 		RequestedAt:     r.requestedAt,
 		Latency:         r.latency(),
 		TTFT:            r.ttftDuration(),
