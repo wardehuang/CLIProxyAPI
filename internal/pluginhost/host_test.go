@@ -3,6 +3,7 @@ package pluginhost
 import (
 	"context"
 	"encoding/json"
+	"net/http"
 	"testing"
 
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/config"
@@ -60,6 +61,116 @@ func TestHostApplyConfig_DisabledPluginSkipsCapability(t *testing.T) {
 	}
 	if len(h.Snapshot().records) != 0 {
 		t.Fatalf("Snapshot records = %d, want 0", len(h.Snapshot().records))
+	}
+}
+
+func TestPluginLoadedTracksLoadedPluginAfterDisabled(t *testing.T) {
+	disabled := false
+	loader := newTestSymbolLoader()
+	plugin := &testPlugin{
+		registerResult:    validTestPlugin("alpha"),
+		reconfigureResult: validTestPlugin("alpha"),
+	}
+	loader.lookups["alpha"] = newTestSymbolLookup(plugin)
+	h := NewForTest(loader)
+	t.Cleanup(h.ShutdownAll)
+	pluginsDir := makePluginDir(t, "alpha")
+
+	h.ApplyConfig(context.Background(), &config.Config{
+		Plugins: config.PluginsConfig{
+			Enabled: true,
+			Dir:     pluginsDir,
+		},
+	})
+
+	if !h.PluginLoaded("alpha") {
+		t.Fatal("PluginLoaded(alpha) = false, want true after load")
+	}
+	if len(h.RegisteredPlugins()) != 1 {
+		t.Fatalf("RegisteredPlugins() len = %d, want 1", len(h.RegisteredPlugins()))
+	}
+
+	h.ApplyConfig(context.Background(), &config.Config{
+		Plugins: config.PluginsConfig{
+			Enabled: true,
+			Dir:     pluginsDir,
+			Configs: map[string]config.PluginInstanceConfig{
+				"alpha": {Enabled: &disabled},
+			},
+		},
+	})
+
+	if len(h.RegisteredPlugins()) != 0 {
+		t.Fatalf("RegisteredPlugins() len = %d, want 0 after disable", len(h.RegisteredPlugins()))
+	}
+	if !h.PluginLoaded("alpha") {
+		t.Fatal("PluginLoaded(alpha) = false, want true while library remains loaded")
+	}
+
+	h.ShutdownAll()
+	if h.PluginLoaded("alpha") {
+		t.Fatal("PluginLoaded(alpha) = true, want false after ShutdownAll")
+	}
+}
+
+func TestHostUnloadPluginTargetsOnlyRequestedPlugin(t *testing.T) {
+	loader := newTestSymbolLoader()
+	alpha := &testPlugin{
+		registerResult:    validTestPlugin("alpha"),
+		reconfigureResult: validTestPlugin("alpha"),
+	}
+	bravo := &testPlugin{
+		registerResult:    validTestPlugin("bravo"),
+		reconfigureResult: validTestPlugin("bravo"),
+	}
+	alphaLookup := newTestSymbolLookup(alpha)
+	bravoLookup := newTestSymbolLookup(bravo)
+	loader.lookups["alpha"] = alphaLookup
+	loader.lookups["bravo"] = bravoLookup
+	h := NewForTest(loader)
+	t.Cleanup(h.ShutdownAll)
+	cfg := &config.Config{
+		Plugins: config.PluginsConfig{
+			Enabled: true,
+			Dir:     makePluginDir(t, "alpha", "bravo"),
+		},
+	}
+
+	h.ApplyConfig(context.Background(), cfg)
+
+	if !h.UnloadPlugin("alpha") {
+		t.Fatal("UnloadPlugin(alpha) = false, want true")
+	}
+	if h.PluginLoaded("alpha") {
+		t.Fatal("PluginLoaded(alpha) = true, want false after targeted unload")
+	}
+	if !h.PluginLoaded("bravo") {
+		t.Fatal("PluginLoaded(bravo) = false, want true after alpha unload")
+	}
+	if alphaLookup.shutdownCalls != 1 {
+		t.Fatalf("alpha shutdown calls = %d, want 1", alphaLookup.shutdownCalls)
+	}
+	if bravoLookup.shutdownCalls != 0 {
+		t.Fatalf("bravo shutdown calls = %d, want 0", bravoLookup.shutdownCalls)
+	}
+	plugins := h.RegisteredPlugins()
+	if len(plugins) != 1 || plugins[0].ID != "bravo" {
+		t.Fatalf("RegisteredPlugins() = %#v, want only bravo", plugins)
+	}
+
+	h.ApplyConfig(context.Background(), cfg)
+
+	if loader.openCalls != 3 {
+		t.Fatalf("Open calls = %d, want 3", loader.openCalls)
+	}
+	if alpha.registerCalls != 2 {
+		t.Fatalf("alpha register calls = %d, want 2", alpha.registerCalls)
+	}
+	if bravo.registerCalls != 1 {
+		t.Fatalf("bravo register calls = %d, want 1", bravo.registerCalls)
+	}
+	if bravo.reconfigureCalls != 1 {
+		t.Fatalf("bravo reconfigure calls = %d, want 1", bravo.reconfigureCalls)
 	}
 }
 
@@ -265,6 +376,40 @@ func TestRPCInterceptorsIncludeHostCallbackID(t *testing.T) {
 	}
 	if chunk.HostCallbackID == "" {
 		t.Fatal("stream chunk interceptor host_callback_id is empty")
+	}
+}
+
+func TestRPCManagementIncludesHostCallbackID(t *testing.T) {
+	client := &capturePluginClient{}
+	host := New()
+	adapter := &rpcPluginAdapter{
+		host:   host,
+		client: client,
+	}
+
+	if _, errHandle := adapter.HandleManagement(context.Background(), pluginapi.ManagementRequest{
+		Method: http.MethodGet,
+		Path:   "/v0/management/plugins/test/status",
+		Body:   []byte("request"),
+	}); errHandle != nil {
+		t.Fatalf("HandleManagement() error = %v", errHandle)
+	}
+	var req rpcManagementRequest
+	if errDecode := json.Unmarshal(client.requests[pluginabi.MethodManagementHandle], &req); errDecode != nil {
+		t.Fatalf("decode management request: %v", errDecode)
+	}
+	if req.HostCallbackID == "" {
+		t.Fatal("management handle host_callback_id is empty")
+	}
+	if req.Method != http.MethodGet || req.Path != "/v0/management/plugins/test/status" || string(req.Body) != "request" {
+		t.Fatalf("management request = %#v, want forwarded request fields", req.ManagementRequest)
+	}
+
+	host.callbackContexts.mu.RLock()
+	_, exists := host.callbackContexts.contexts[req.HostCallbackID]
+	host.callbackContexts.mu.RUnlock()
+	if exists {
+		t.Fatal("management host_callback_id scope was not closed")
 	}
 }
 

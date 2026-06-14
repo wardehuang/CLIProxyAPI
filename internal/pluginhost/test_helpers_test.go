@@ -22,11 +22,11 @@ func newTestSymbolLoader() *testSymbolLoader {
 	return &testSymbolLoader{lookups: make(map[string]*testSymbolLookup)}
 }
 
-func (l *testSymbolLoader) Open(path string, host *Host) (pluginClient, error) {
+func (l *testSymbolLoader) Open(file pluginFile, host *Host) (pluginClient, error) {
 	l.openCalls++
-	lookup := l.lookups[pluginIDFromPath(path)]
+	lookup := l.lookups[file.ID]
 	if lookup == nil {
-		return nil, fmt.Errorf("missing test plugin for %s", path)
+		return nil, fmt.Errorf("missing test plugin for %s", file.Path)
 	}
 	return lookup, nil
 }
@@ -34,6 +34,7 @@ func (l *testSymbolLoader) Open(path string, host *Host) (pluginClient, error) {
 type testSymbolLookup struct {
 	plugin              *testPlugin
 	active              pluginapi.Plugin
+	shutdownCalls       int
 	registerOverride    func([]byte) pluginapi.Plugin
 	reconfigureOverride func([]byte) pluginapi.Plugin
 }
@@ -148,7 +149,9 @@ func (l *testSymbolLookup) Call(ctx context.Context, method string, request []by
 	}
 }
 
-func (l *testSymbolLookup) Shutdown() {}
+func (l *testSymbolLookup) Shutdown() {
+	l.shutdownCalls++
+}
 
 func (l *testSymbolLookup) callLifecycle(request []byte, reload bool) ([]byte, error) {
 	var req rpcLifecycleRequest
