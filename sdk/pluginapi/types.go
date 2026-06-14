@@ -1093,6 +1093,10 @@ type UsageRecord struct {
 	Source string
 	// ProjectID identifies the client project extracted from request prompts.
 	ProjectID string
+	// PromptCachedID identifies the upstream prompt cache ID sent with the request.
+	PromptCachedID string
+	// SessionID identifies the upstream session ID sent with the request.
+	SessionID string
 	// ReasoningEffort records the requested reasoning effort.
 	ReasoningEffort string
 	// ServiceTier records the requested or reported service tier.

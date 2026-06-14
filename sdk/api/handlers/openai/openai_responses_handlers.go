@@ -381,6 +381,10 @@ func (h *OpenAIResponsesAPIHandler) Responses(c *gin.Context) {
 		})
 		return
 	}
+	if compact := h.PrepareOpenAIResponsesCompactRequest(rawJSON, c.Request.Header); compact.Applied {
+		c.Set(handlers.CompactRequestGinKey, true)
+		rawJSON = compact.RawJSON
+	}
 
 	// Check if the client requested a streaming response.
 	streamResult := gjson.GetBytes(rawJSON, "stream")

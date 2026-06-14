@@ -555,6 +555,7 @@ func (e *AntigravityExecutor) Execute(ctx context.Context, auth *cliproxyauth.Au
 	if errValidate != nil {
 		return resp, errValidate
 	}
+	reporter.SetProjectID(antigravityPromptProjectID(originalPayload))
 	req.Payload = originalPayload
 	token, updatedAuth, errToken := e.ensureAccessToken(ctx, auth)
 	if errToken != nil {
@@ -574,6 +575,7 @@ func (e *AntigravityExecutor) Execute(ctx context.Context, auth *cliproxyauth.Au
 	requestedModel := helps.PayloadRequestedModel(opts, req.Model)
 	requestPath := helps.PayloadRequestPath(opts)
 	translated = helps.ApplyPayloadConfigWithRequest(e.cfg, baseModel, "antigravity", from.String(), "request", translated, originalTranslated, requestedModel, requestPath, opts.Headers)
+	reporter.SetSessionID(antigravityRequestSessionID(translated))
 	reporter.SetTranslatedReasoningEffort(translated, to.String())
 
 	useCredits := cliproxyauth.AntigravityCreditsRequested(ctx) && antigravityCreditsRetryEnabled(e.cfg)
@@ -756,6 +758,7 @@ func (e *AntigravityExecutor) executeClaudeNonStream(ctx context.Context, auth *
 	if errValidate != nil {
 		return resp, errValidate
 	}
+	reporter.SetProjectID(antigravityPromptProjectID(originalPayload))
 	req.Payload = originalPayload
 	token, updatedAuth, errToken := e.ensureAccessToken(ctx, auth)
 	if errToken != nil {
@@ -775,6 +778,7 @@ func (e *AntigravityExecutor) executeClaudeNonStream(ctx context.Context, auth *
 	requestedModel := helps.PayloadRequestedModel(opts, req.Model)
 	requestPath := helps.PayloadRequestPath(opts)
 	translated = helps.ApplyPayloadConfigWithRequest(e.cfg, baseModel, "antigravity", from.String(), "request", translated, originalTranslated, requestedModel, requestPath, opts.Headers)
+	reporter.SetSessionID(antigravityRequestSessionID(translated))
 	reporter.SetTranslatedReasoningEffort(translated, to.String())
 
 	useCredits := cliproxyauth.AntigravityCreditsRequested(ctx) && antigravityCreditsRetryEnabled(e.cfg)
@@ -1219,6 +1223,7 @@ func (e *AntigravityExecutor) ExecuteStream(ctx context.Context, auth *cliproxya
 	if errValidate != nil {
 		return nil, errValidate
 	}
+	reporter.SetProjectID(antigravityPromptProjectID(originalPayload))
 	req.Payload = originalPayload
 	token, updatedAuth, errToken := e.ensureAccessToken(ctx, auth)
 	if errToken != nil {
@@ -1239,6 +1244,7 @@ func (e *AntigravityExecutor) ExecuteStream(ctx context.Context, auth *cliproxya
 	requestedModel := helps.PayloadRequestedModel(opts, req.Model)
 	requestPath := helps.PayloadRequestPath(opts)
 	translated = helps.ApplyPayloadConfigWithRequest(e.cfg, baseModel, "antigravity", from.String(), "request", translated, originalTranslated, requestedModel, requestPath, opts.Headers)
+	reporter.SetSessionID(antigravityRequestSessionID(translated))
 	reporter.SetTranslatedReasoningEffort(translated, to.String())
 
 	useCredits := cliproxyauth.AntigravityCreditsRequested(ctx) && antigravityCreditsRetryEnabled(e.cfg)
@@ -2492,7 +2498,7 @@ func geminiToAntigravity(modelName string, payload []byte, projectID string) []b
 		template, _ = sjson.SetBytes(template, "requestId", generateImageGenRequestID())
 	} else {
 		template, _ = sjson.SetBytes(template, "requestId", generateRequestID())
-		template, _ = sjson.SetBytes(template, "request.sessionId", generateStableSessionID(payload))
+		template, _ = sjson.SetBytes(template, "request.sessionId", generateStableSessionID(modelName, payload))
 	}
 
 	template, _ = sjson.DeleteBytes(template, "request.safetySettings")
@@ -2518,19 +2524,34 @@ func generateSessionID() string {
 	return "-" + strconv.FormatInt(n, 10)
 }
 
-func generateStableSessionID(payload []byte) string {
+func antigravityPromptProjectID(payload []byte) string {
+	return extractClaudeProjectIDFromPrompt(payload)
+}
+
+func antigravityRequestSessionID(payload []byte) string {
+	return strings.TrimSpace(gjson.GetBytes(payload, "request.sessionId").String())
+}
+
+func generateStableSessionID(modelName string, payload []byte) string {
+	if projectID := antigravityPromptProjectID(payload); projectID != "" {
+		return stableAntigravitySessionID("project:" + strings.TrimSpace(modelName) + ":" + projectID)
+	}
 	contents := gjson.GetBytes(payload, "request.contents")
 	if contents.IsArray() {
 		for _, content := range contents.Array() {
 			if content.Get("role").String() == "user" {
 				text := content.Get("parts.0.text").String()
 				if text != "" {
-					h := sha256.Sum256([]byte(text))
-					n := int64(binary.BigEndian.Uint64(h[:8])) & 0x7FFFFFFFFFFFFFFF
-					return "-" + strconv.FormatInt(n, 10)
+					return stableAntigravitySessionID(text)
 				}
 			}
 		}
 	}
 	return generateSessionID()
+}
+
+func stableAntigravitySessionID(seed string) string {
+	h := sha256.Sum256([]byte(seed))
+	n := int64(binary.BigEndian.Uint64(h[:8])) & 0x7FFFFFFFFFFFFFFF
+	return "-" + strconv.FormatInt(n, 10)
 }

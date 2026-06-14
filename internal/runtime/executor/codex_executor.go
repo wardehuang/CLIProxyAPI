@@ -391,6 +391,90 @@ func codexClaudeCodePromptCache(req cliproxyexecutor.Request, cfg *config.Config
 	return cache, true
 }
 
+func codexPromptCacheKey(req cliproxyexecutor.Request) string {
+	return strings.TrimSpace(gjson.GetBytes(req.Payload, "prompt_cache_key").String())
+}
+
+func codexCursorPromptCacheKey(req cliproxyexecutor.Request) string {
+	promptCacheKey := codexPromptCacheKey(req)
+	if promptCacheKey == "" || !strings.HasPrefix(strings.ToLower(promptCacheKey), "cursor") {
+		return ""
+	}
+	return promptCacheKey
+}
+
+func codexCursorProjectID(req cliproxyexecutor.Request, cfg *config.Config) string {
+	projectID := extractClaudeProjectIDFromPrompt(req.Payload)
+	promptCacheKey := codexPromptCacheKey(req)
+	if projectID != "" {
+		if promptCacheKey != "" {
+			if baseDir, errBase := codexPromptCacheBaseDir(cfg); errBase != nil {
+				log.Warnf("codex Cursor prompt cache project cache: resolve storage dir failed: %v", errBase)
+			} else if errSet := helps.SetCodexCursorPromptCacheProject(baseDir, promptCacheKey, projectID); errSet != nil {
+				log.Warnf("codex Cursor prompt cache project cache: write cache failed: %v", errSet)
+			}
+		}
+		return projectID
+	}
+	if promptCacheKey == "" {
+		return ""
+	}
+	baseDir, errBase := codexPromptCacheBaseDir(cfg)
+	if errBase != nil {
+		log.Warnf("codex Cursor prompt cache project cache: resolve storage dir failed: %v", errBase)
+		return ""
+	}
+	cachedProjectID, ok, errGet := helps.GetCodexCursorPromptCacheProject(baseDir, promptCacheKey)
+	if errGet != nil {
+		log.Warnf("codex Cursor prompt cache project cache: read cache failed: %v", errGet)
+		return ""
+	}
+	if !ok {
+		return ""
+	}
+	return cachedProjectID
+}
+
+func codexCursorPromptCacheStorageKey(req cliproxyexecutor.Request, cfg *config.Config) string {
+	promptCacheKey := codexPromptCacheKey(req)
+	if promptCacheKey == "" {
+		return ""
+	}
+	if projectID := codexCursorProjectID(req, cfg); projectID != "" {
+		return fmt.Sprintf("%s-cursor:%s", req.Model, projectID)
+	}
+	if codexCursorPromptCacheKey(req) == "" {
+		return ""
+	}
+	return fmt.Sprintf("%s-cursor:%s", req.Model, promptCacheKey)
+}
+
+func codexCursorPromptCache(req cliproxyexecutor.Request, cfg *config.Config) (helps.CodexCache, bool) {
+	key := codexCursorPromptCacheStorageKey(req, cfg)
+	if key == "" {
+		return helps.CodexCache{}, false
+	}
+	baseDir, err := codexPromptCacheBaseDir(cfg)
+	if err != nil {
+		log.Warnf("codex Cursor prompt cache: resolve storage dir failed: %v", err)
+		return helps.CodexCache{}, false
+	}
+	if cache, ok, errGet := helps.GetAndRefreshCodexCache(baseDir, key, helps.CodexPromptCacheTTL); errGet != nil {
+		log.Warnf("codex Cursor prompt cache: read cache failed: %v", errGet)
+	} else if ok {
+		return cache, true
+	}
+	cache := helps.CodexCache{
+		ID:     "cursor:" + uuid.New().String(),
+		Expire: time.Now().Add(helps.CodexPromptCacheTTL),
+	}
+	if errSet := helps.SetCodexCache(baseDir, key, cache); errSet != nil {
+		log.Warnf("codex Cursor prompt cache: write cache failed: %v", errSet)
+		return helps.CodexCache{}, false
+	}
+	return cache, true
+}
+
 func codexPromptCacheBaseDir(cfg *config.Config) (string, error) {
 	if writablePath := util.WritablePath(); writablePath != "" {
 		if err := helps.MigrateCodexCacheFiles(writablePath, writablePath); err != nil {
@@ -940,6 +1024,8 @@ func (e *CodexExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, re
 	if sourceFormatEqual(from, sdktranslator.FormatClaude) {
 		reporter.SetProjectID(codexClaudeCodeProjectID(req, e.cfg))
 		reporter.SetCreatingTitle(codexClaudeCodeCreatingTitle(req))
+	} else if sourceFormatEqual(from, sdktranslator.FormatOpenAIResponse) && codexCursorPromptCacheKey(req) != "" {
+		reporter.SetProjectID(codexCursorProjectID(req, e.cfg))
 	}
 	originalPayloadSource := req.Payload
 	if len(opts.OriginalRequest) > 0 {
@@ -979,6 +1065,7 @@ func (e *CodexExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, re
 	if err != nil {
 		return resp, err
 	}
+	setCodexUsagePromptCacheMetadata(reporter, upstreamBody, httpReq.Header)
 	applyCodexHeaders(httpReq, auth, apiKey, true, e.cfg)
 	applyCodexIdentityConfuseHeaders(httpReq.Header, &identityState)
 	var authID, authLabel, authType, authValue string
@@ -1119,6 +1206,8 @@ func (e *CodexExecutor) executeCompact(ctx context.Context, auth *cliproxyauth.A
 	if sourceFormatEqual(from, sdktranslator.FormatClaude) {
 		reporter.SetProjectID(codexClaudeCodeProjectID(req, e.cfg))
 		reporter.SetCreatingTitle(codexClaudeCodeCreatingTitle(req))
+	} else if sourceFormatEqual(from, sdktranslator.FormatOpenAIResponse) && codexCursorPromptCacheKey(req) != "" {
+		reporter.SetProjectID(codexCursorProjectID(req, e.cfg))
 	}
 	originalPayloadSource := req.Payload
 	if len(opts.OriginalRequest) > 0 {
@@ -1158,6 +1247,7 @@ func (e *CodexExecutor) executeCompact(ctx context.Context, auth *cliproxyauth.A
 	if err != nil {
 		return resp, err
 	}
+	setCodexUsagePromptCacheMetadata(reporter, upstreamBody, httpReq.Header)
 	applyCodexHeaders(httpReq, auth, apiKey, true, e.cfg)
 	applyCodexIdentityConfuseHeaders(httpReq.Header, &identityState)
 	var authID, authLabel, authType, authValue string
@@ -1238,6 +1328,8 @@ func (e *CodexExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Au
 	if sourceFormatEqual(from, sdktranslator.FormatClaude) {
 		reporter.SetProjectID(codexClaudeCodeProjectID(req, e.cfg))
 		reporter.SetCreatingTitle(codexClaudeCodeCreatingTitle(req))
+	} else if sourceFormatEqual(from, sdktranslator.FormatOpenAIResponse) && codexCursorPromptCacheKey(req) != "" {
+		reporter.SetProjectID(codexCursorProjectID(req, e.cfg))
 	}
 	originalPayloadSource := req.Payload
 	if len(opts.OriginalRequest) > 0 {
@@ -1276,6 +1368,7 @@ func (e *CodexExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Au
 	if err != nil {
 		return nil, err
 	}
+	setCodexUsagePromptCacheMetadata(reporter, upstreamBody, httpReq.Header)
 	applyCodexHeaders(httpReq, auth, apiKey, true, e.cfg)
 	applyCodexIdentityConfuseHeaders(httpReq.Header, &identityState)
 	var authID, authLabel, authType, authValue string
@@ -1601,18 +1694,25 @@ type codexIdentityReplacement struct {
 
 func (e *CodexExecutor) cacheHelper(ctx context.Context, from sdktranslator.Format, url string, auth *cliproxyauth.Auth, req cliproxyexecutor.Request, userPayload []byte, rawJSON []byte) (*http.Request, []byte, codexIdentityConfuseState, error) {
 	var cache helps.CodexCache
+	sessionID := ""
 	if sourceFormatEqual(from, sdktranslator.FormatClaude) {
 		if cached, ok := codexClaudeCodePromptCache(req, e.cfg); ok {
 			cache = cached
+			sessionID = cache.ID
 		}
 	} else if sourceFormatEqual(from, sdktranslator.FormatOpenAIResponse) {
-		promptCacheKey := gjson.GetBytes(req.Payload, "prompt_cache_key")
-		if promptCacheKey.Exists() {
-			cache.ID = promptCacheKey.String()
+		promptCacheKey := codexPromptCacheKey(req)
+		if cached, ok := codexCursorPromptCache(req, e.cfg); ok {
+			cache = cached
+			sessionID = promptCacheKey
+		} else if promptCacheKey != "" {
+			cache.ID = promptCacheKey
+			sessionID = promptCacheKey
 		}
 	} else if sourceFormatEqual(from, sdktranslator.FormatOpenAI) {
 		if apiKey := strings.TrimSpace(helps.APIKeyFromContext(ctx)); apiKey != "" {
 			cache.ID = uuid.NewSHA1(uuid.NameSpaceOID, []byte("cli-proxy-api:codex:prompt-cache:"+apiKey)).String()
+			sessionID = cache.ID
 		}
 	}
 
@@ -1628,10 +1728,46 @@ func (e *CodexExecutor) cacheHelper(ctx context.Context, from sdktranslator.Form
 	if err != nil {
 		return nil, nil, codexIdentityConfuseState{}, err
 	}
-	if cache.ID != "" {
-		httpReq.Header.Set("Session_id", cache.ID)
+	if sessionID != "" {
+		httpReq.Header.Set("Session_id", sessionID)
 	}
 	return httpReq, rawJSON, identityState, nil
+}
+
+func setCodexUsagePromptCacheMetadata(reporter *helps.UsageReporter, payload []byte, headers http.Header) {
+	if reporter == nil {
+		return
+	}
+	if promptCachedID := strings.TrimSpace(gjson.GetBytes(payload, "prompt_cache_key").String()); promptCachedID != "" {
+		reporter.SetPromptCachedID(promptCachedID)
+	}
+	if sessionID := usageHeaderValue(headers, "Session_id", "session_id", "Conversation_id"); sessionID != "" {
+		reporter.SetSessionID(sessionID)
+	}
+}
+
+func usageHeaderValue(headers http.Header, names ...string) string {
+	if len(headers) == 0 {
+		return ""
+	}
+	for _, name := range names {
+		if value := strings.TrimSpace(headers.Get(name)); value != "" {
+			return value
+		}
+	}
+	for key, values := range headers {
+		for _, name := range names {
+			if !strings.EqualFold(strings.TrimSpace(key), strings.TrimSpace(name)) {
+				continue
+			}
+			for _, value := range values {
+				if trimmed := strings.TrimSpace(value); trimmed != "" {
+					return trimmed
+				}
+			}
+		}
+	}
+	return ""
 }
 
 func applyCodexIdentityConfuseBody(cfg *config.Config, auth *cliproxyauth.Auth, userPayload []byte, rawJSON []byte) ([]byte, codexIdentityConfuseState) {

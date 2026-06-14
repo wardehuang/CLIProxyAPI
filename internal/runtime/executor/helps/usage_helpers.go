@@ -32,6 +32,8 @@ type UsageReporter struct {
 	apiKey        string
 	source        string
 	projectID     string
+	promptCachedID string
+	sessionID     string
 	reasoning     string
 	serviceTier   string
 	thinking      bool
@@ -90,6 +92,20 @@ func (r *UsageReporter) SetProjectID(projectID string) {
 		return
 	}
 	r.projectID = strings.TrimSpace(projectID)
+}
+
+func (r *UsageReporter) SetPromptCachedID(promptCachedID string) {
+	if r == nil {
+		return
+	}
+	r.promptCachedID = strings.TrimSpace(promptCachedID)
+}
+
+func (r *UsageReporter) SetSessionID(sessionID string) {
+	if r == nil {
+		return
+	}
+	r.sessionID = strings.TrimSpace(sessionID)
 }
 
 func (r *UsageReporter) SetCreatingTitle(creatingTitle bool) {
@@ -292,6 +308,8 @@ func (r *UsageReporter) buildRecordForModel(model string, detail usage.Detail, f
 		Alias:           r.alias,
 		Source:          r.source,
 		ProjectID:       r.projectID,
+		PromptCachedID:  r.promptCachedID,
+		SessionID:       r.sessionID,
 		APIKey:          r.apiKey,
 		AuthID:          r.authID,
 		AuthIndex:       r.authIndex,

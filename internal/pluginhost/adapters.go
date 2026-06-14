@@ -1808,6 +1808,8 @@ func (a *usageAdapter) HandleUsage(ctx context.Context, record coreusage.Record)
 		AuthType:        record.AuthType,
 		Source:          record.Source,
 		ProjectID:       record.ProjectID,
+		PromptCachedID:  record.PromptCachedID,
+		SessionID:       record.SessionID,
 		ReasoningEffort: record.ReasoningEffort,
 		ServiceTier:     record.ServiceTier,
 		Thinking:        record.Thinking,

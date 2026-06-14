@@ -90,6 +90,8 @@ func (p *usageQueuePlugin) HandleUsage(ctx context.Context, record coreusage.Rec
 		TTFTMs:          record.TTFT.Milliseconds(),
 		Source:          record.Source,
 		ProjectID:       strings.TrimSpace(record.ProjectID),
+		PromptCachedID:  strings.TrimSpace(record.PromptCachedID),
+		SessionID:       strings.TrimSpace(record.SessionID),
 		AuthIndex:       record.AuthIndex,
 		Tokens:          tokens,
 		Failed:          failed,
@@ -154,6 +156,8 @@ type requestDetail struct {
 	TTFTMs          int64       `json:"ttft_ms"`
 	Source          string      `json:"source"`
 	ProjectID       string      `json:"project_id,omitempty"`
+	PromptCachedID  string      `json:"prompt_cached_id,omitempty"`
+	SessionID       string      `json:"session_id,omitempty"`
 	AuthIndex       string      `json:"auth_index"`
 	Tokens          tokenStats  `json:"tokens"`
 	Failed          bool        `json:"failed"`

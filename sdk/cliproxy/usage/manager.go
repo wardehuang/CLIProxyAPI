@@ -27,6 +27,10 @@ type Record struct {
 	Source       string
 	// ProjectID stores the client project identifier extracted from request prompts.
 	ProjectID string
+	// PromptCachedID stores the upstream prompt cache identifier sent with the request.
+	PromptCachedID string
+	// SessionID stores the upstream session identifier sent with the request.
+	SessionID string
 	// ReasoningEffort stores the translated upstream thinking level for request event logs.
 	ReasoningEffort string
 	// ServiceTier stores the client-requested service tier for request event logs.

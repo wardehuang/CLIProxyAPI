@@ -193,6 +193,8 @@ func (e *CodexWebsocketsExecutor) Execute(ctx context.Context, auth *cliproxyaut
 	if sourceFormatEqual(from, sdktranslator.FormatClaude) {
 		reporter.SetProjectID(codexClaudeCodeProjectID(req, e.cfg))
 		reporter.SetCreatingTitle(codexClaudeCodeCreatingTitle(req))
+	} else if sourceFormatEqual(from, sdktranslator.FormatOpenAIResponse) && codexCursorPromptCacheKey(req) != "" {
+		reporter.SetProjectID(codexCursorProjectID(req, e.cfg))
 	}
 	originalPayloadSource := req.Payload
 	if len(opts.OriginalRequest) > 0 {
@@ -229,6 +231,7 @@ func (e *CodexWebsocketsExecutor) Execute(ctx context.Context, auth *cliproxyaut
 	clientBody := body
 	var identityState codexIdentityConfuseState
 	upstreamBody, identityState := applyCodexIdentityConfuseBody(e.cfg, auth, originalPayloadSource, body)
+	setCodexUsagePromptCacheMetadata(reporter, upstreamBody, wsHeaders)
 	reporter.SetTranslatedReasoningEffort(clientBody, to.String())
 	wsHeaders = applyCodexWebsocketHeaders(ctx, wsHeaders, auth, apiKey, e.cfg)
 	applyCodexIdentityConfuseHeaders(wsHeaders, &identityState)
@@ -418,6 +421,8 @@ func (e *CodexWebsocketsExecutor) ExecuteStream(ctx context.Context, auth *clipr
 	if sourceFormatEqual(from, sdktranslator.FormatClaude) {
 		reporter.SetProjectID(codexClaudeCodeProjectID(req, e.cfg))
 		reporter.SetCreatingTitle(codexClaudeCodeCreatingTitle(req))
+	} else if sourceFormatEqual(from, sdktranslator.FormatOpenAIResponse) && codexCursorPromptCacheKey(req) != "" {
+		reporter.SetProjectID(codexCursorProjectID(req, e.cfg))
 	}
 	body := req.Payload
 	userPayload := req.Payload
@@ -449,6 +454,7 @@ func (e *CodexWebsocketsExecutor) ExecuteStream(ctx context.Context, auth *clipr
 	clientBody := body
 	var identityState codexIdentityConfuseState
 	upstreamBody, identityState := applyCodexIdentityConfuseBody(e.cfg, auth, userPayload, body)
+	setCodexUsagePromptCacheMetadata(reporter, upstreamBody, wsHeaders)
 	reporter.SetTranslatedReasoningEffort(clientBody, to.String())
 	wsHeaders = applyCodexWebsocketHeaders(ctx, wsHeaders, auth, apiKey, e.cfg)
 	applyCodexIdentityConfuseHeaders(wsHeaders, &identityState)
@@ -845,20 +851,30 @@ func applyCodexPromptCacheHeaders(from sdktranslator.Format, req cliproxyexecuto
 	}
 
 	var cache helps.CodexCache
+	sessionID := ""
 	if sourceFormatEqual(from, sdktranslator.FormatClaude) {
 		if cached, ok := codexClaudeCodePromptCache(req, cfg); ok {
 			cache = cached
+			sessionID = cache.ID
 		}
 	} else if sourceFormatEqual(from, sdktranslator.FormatOpenAIResponse) {
-		if promptCacheKey := gjson.GetBytes(req.Payload, "prompt_cache_key"); promptCacheKey.Exists() {
-			cache.ID = promptCacheKey.String()
+		promptCacheKey := codexPromptCacheKey(req)
+		if cached, ok := codexCursorPromptCache(req, cfg); ok {
+			cache = cached
+			sessionID = promptCacheKey
+		} else if promptCacheKey != "" {
+			cache.ID = promptCacheKey
+			sessionID = promptCacheKey
 		}
 	}
 
 	if cache.ID != "" {
 		rawJSON, _ = sjson.SetBytes(rawJSON, "prompt_cache_key", cache.ID)
-		setHeaderCasePreserved(headers, "session_id", cache.ID)
-		headers.Set("Conversation_id", cache.ID)
+		if sessionID == "" {
+			sessionID = cache.ID
+		}
+		setHeaderCasePreserved(headers, "session_id", sessionID)
+		headers.Set("Conversation_id", sessionID)
 	}
 
 	return rawJSON, headers
