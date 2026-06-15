@@ -22,6 +22,8 @@ var _ RequestTranslator = (*compileTimePlugin)(nil)
 var _ RequestNormalizer = (*compileTimePlugin)(nil)
 var _ ResponseTranslator = (*compileTimePlugin)(nil)
 var _ ResponseNormalizer = (*compileTimePlugin)(nil)
+var _ RequestMetadataEnricher = (*compileTimePlugin)(nil)
+var _ RouteRewriter = (*compileTimePlugin)(nil)
 var _ RequestInterceptor = (*compileTimePlugin)(nil)
 var _ ResponseInterceptor = (*compileTimePlugin)(nil)
 var _ StreamChunkInterceptor = (*compileTimePlugin)(nil)
@@ -411,6 +413,14 @@ func (compileTimePlugin) InterceptRequestBeforeAuth(context.Context, RequestInte
 
 func (compileTimePlugin) InterceptRequestAfterAuth(context.Context, RequestInterceptRequest) (RequestInterceptResponse, error) {
 	return RequestInterceptResponse{}, nil
+}
+
+func (compileTimePlugin) EnrichRequestMetadata(context.Context, RequestMetadataEnrichRequest) (RequestMetadataEnrichResponse, error) {
+	return RequestMetadataEnrichResponse{}, nil
+}
+
+func (compileTimePlugin) RewriteRoute(context.Context, RouteRewriteRequest) (RouteRewriteResponse, error) {
+	return RouteRewriteResponse{}, nil
 }
 
 func (compileTimePlugin) InterceptResponse(context.Context, ResponseInterceptRequest) (ResponseInterceptResponse, error) {

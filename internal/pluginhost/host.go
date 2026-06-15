@@ -58,6 +58,7 @@ type Host struct {
 	httpStreams            *hostHTTPStreamBridge
 	modelStreams           *modelStreamBridge
 	callbackContexts       *callbackContextRegistry
+	storage                *scopedStorage
 	snapshot               atomic.Value
 }
 
@@ -81,6 +82,7 @@ func New() *Host {
 		httpStreams:            newHostHTTPStreamBridge(),
 		modelStreams:           newModelStreamBridge(),
 		callbackContexts:       newCallbackContextRegistry(),
+		storage:                newScopedStorage(),
 	}
 	h.snapshot.Store(emptySnapshot())
 	return h
@@ -416,6 +418,8 @@ func validPlugin(plugin pluginapi.Plugin) bool {
 		caps.Executor != nil ||
 		caps.RequestTranslator != nil ||
 		caps.RequestNormalizer != nil ||
+		caps.RequestMetadataEnricher != nil ||
+		caps.RouteRewriter != nil ||
 		caps.RequestInterceptor != nil ||
 		caps.ResponseTranslator != nil ||
 		caps.ResponseBeforeTranslator != nil ||

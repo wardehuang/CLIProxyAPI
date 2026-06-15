@@ -82,6 +82,12 @@ func registerRPCPlugin(ctx context.Context, host *Host, id string, client plugin
 	if resp.Capabilities.RequestNormalizer {
 		plugin.Capabilities.RequestNormalizer = adapter
 	}
+	if resp.Capabilities.RequestMetadataEnricher {
+		plugin.Capabilities.RequestMetadataEnricher = adapter
+	}
+	if resp.Capabilities.RouteRewriter {
+		plugin.Capabilities.RouteRewriter = adapter
+	}
 	if resp.Capabilities.RequestInterceptor {
 		plugin.Capabilities.RequestInterceptor = adapter
 	}
@@ -163,6 +169,12 @@ func sanitizePluginRequest(request any) any {
 	case pluginapi.RequestInterceptRequest:
 		req.Metadata = sanitizePluginMetadata(req.Metadata)
 		return req
+	case pluginapi.RequestMetadataEnrichRequest:
+		req.Metadata = sanitizePluginMetadata(req.Metadata)
+		return req
+	case pluginapi.RouteRewriteRequest:
+		req.Metadata = sanitizePluginMetadata(req.Metadata)
+		return req
 	case pluginapi.ResponseInterceptRequest:
 		req.Metadata = sanitizePluginMetadata(req.Metadata)
 		return req
@@ -170,6 +182,12 @@ func sanitizePluginRequest(request any) any {
 		req.Metadata = sanitizePluginMetadata(req.Metadata)
 		return req
 	case rpcRequestInterceptRequest:
+		req.Metadata = sanitizePluginMetadata(req.Metadata)
+		return req
+	case rpcRequestMetadataEnrichRequest:
+		req.Metadata = sanitizePluginMetadata(req.Metadata)
+		return req
+	case rpcRouteRewriteRequest:
 		req.Metadata = sanitizePluginMetadata(req.Metadata)
 		return req
 	case rpcResponseInterceptRequest:
@@ -307,6 +325,24 @@ func (a *rpcPluginAdapter) ModelsForAuth(ctx context.Context, req pluginapi.Auth
 
 func (a *rpcPluginAdapter) Pick(ctx context.Context, req pluginapi.SchedulerPickRequest) (pluginapi.SchedulerPickResponse, error) {
 	return callPlugin[pluginapi.SchedulerPickResponse](ctx, a.client, pluginabi.MethodSchedulerPick, req)
+}
+
+func (a *rpcPluginAdapter) EnrichRequestMetadata(ctx context.Context, req pluginapi.RequestMetadataEnrichRequest) (pluginapi.RequestMetadataEnrichResponse, error) {
+	callbackID, closeCallback := a.openHostCallbackContext(ctx)
+	defer closeCallback()
+	return callPlugin[pluginapi.RequestMetadataEnrichResponse](ctx, a.client, pluginabi.MethodRequestMetadataEnrich, rpcRequestMetadataEnrichRequest{
+		RequestMetadataEnrichRequest: req,
+		HostCallbackID:               callbackID,
+	})
+}
+
+func (a *rpcPluginAdapter) RewriteRoute(ctx context.Context, req pluginapi.RouteRewriteRequest) (pluginapi.RouteRewriteResponse, error) {
+	callbackID, closeCallback := a.openHostCallbackContext(ctx)
+	defer closeCallback()
+	return callPlugin[pluginapi.RouteRewriteResponse](ctx, a.client, pluginabi.MethodRouteRewrite, rpcRouteRewriteRequest{
+		RouteRewriteRequest: req,
+		HostCallbackID:      callbackID,
+	})
 }
 
 func callPluginIdentifier(client pluginClient, method string) string {

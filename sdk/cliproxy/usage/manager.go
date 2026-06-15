@@ -37,6 +37,8 @@ type Record struct {
 	Detail      Detail
 	// ResponseHeaders stores a snapshot of upstream response headers for usage sinks.
 	ResponseHeaders http.Header
+	// Metadata carries sanitized request-scoped metadata for usage sinks.
+	Metadata map[string]any
 }
 
 // Failure holds HTTP failure metadata for an upstream request attempt.
@@ -59,6 +61,7 @@ type Detail struct {
 type requestedModelAliasContextKey struct{}
 type reasoningEffortContextKey struct{}
 type serviceTierContextKey struct{}
+type requestMetadataContextKey struct{}
 
 // WithRequestedModelAlias stores the client-requested model name for usage sinks.
 func WithRequestedModelAlias(ctx context.Context, alias string) context.Context {
@@ -150,6 +153,37 @@ func ServiceTierFromContext(ctx context.Context) string {
 	default:
 		return DefaultServiceTier
 	}
+}
+
+// WithRequestMetadata stores request-scoped metadata for usage sinks.
+func WithRequestMetadata(ctx context.Context, metadata map[string]any) context.Context {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if len(metadata) == 0 {
+		return ctx
+	}
+	return context.WithValue(ctx, requestMetadataContextKey{}, cloneMetadata(metadata))
+}
+
+// RequestMetadataFromContext returns request-scoped metadata stored in ctx.
+func RequestMetadataFromContext(ctx context.Context) map[string]any {
+	if ctx == nil {
+		return nil
+	}
+	metadata, _ := ctx.Value(requestMetadataContextKey{}).(map[string]any)
+	return cloneMetadata(metadata)
+}
+
+func cloneMetadata(src map[string]any) map[string]any {
+	if len(src) == 0 {
+		return nil
+	}
+	dst := make(map[string]any, len(src))
+	for key, value := range src {
+		dst[key] = value
+	}
+	return dst
 }
 
 // Plugin consumes usage records emitted by the proxy runtime.

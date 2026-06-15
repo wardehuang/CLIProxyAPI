@@ -33,6 +33,7 @@ type UsageReporter struct {
 	source       string
 	reasoning    string
 	serviceTier  string
+	metadata     map[string]any
 	requestedAt  time.Time
 	ttftMu       sync.RWMutex
 	ttft         time.Duration
@@ -71,6 +72,7 @@ func NewUsageReporter(ctx context.Context, provider, model string, auth *cliprox
 		authType:    resolveUsageAuthType(auth),
 		reasoning:   usage.ReasoningEffortFromContext(ctx),
 		serviceTier: usage.ServiceTierFromContext(ctx),
+		metadata:    usage.RequestMetadataFromContext(ctx),
 	}
 	if auth != nil {
 		reporter.authID = auth.ID
@@ -277,7 +279,19 @@ func (r *UsageReporter) buildRecordForModel(model string, detail usage.Detail, f
 		Failed:          failed,
 		Fail:            fail,
 		Detail:          detail,
+		Metadata:        cloneUsageMetadata(r.metadata),
 	}
+}
+
+func cloneUsageMetadata(src map[string]any) map[string]any {
+	if len(src) == 0 {
+		return nil
+	}
+	dst := make(map[string]any, len(src))
+	for key, value := range src {
+		dst[key] = value
+	}
+	return dst
 }
 
 func extractServiceTierFromPayload(payload []byte) string {

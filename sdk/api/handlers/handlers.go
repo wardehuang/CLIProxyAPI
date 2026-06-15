@@ -649,6 +649,9 @@ func (h *BaseAPIHandler) executeWithAuthManagerFormats(ctx context.Context, entr
 	addModelExecutionSourceMetadata(reqMeta, execOptions.InternalSource)
 	setReasoningEffortMetadata(reqMeta, entryProtocol, normalizedModel, rawJSON)
 	setServiceTierMetadata(reqMeta, rawJSON)
+	headers := modelExecutionHeaders(ctx, execOptions.Headers)
+	query := cloneURLValues(execOptions.Query)
+	modelName, normalizedModel, providers, responseProtocol, reqMeta = h.applyExecutionPluginHooks(ctx, entryProtocol, responseProtocol, modelName, normalizedModel, providers, false, alt, headers, query, rawJSON, reqMeta, execOptions.SkipInterceptorPluginID)
 	payload := rawJSON
 	if len(payload) == 0 {
 		payload = nil
@@ -664,8 +667,8 @@ func (h *BaseAPIHandler) executeWithAuthManagerFormats(ctx context.Context, entr
 		OriginalRequest:             rawJSON,
 		SourceFormat:                sdktranslator.FromString(entryProtocol),
 		ResponseFormat:              sdktranslator.FromString(responseProtocol),
-		Headers:                     modelExecutionHeaders(ctx, execOptions.Headers),
-		Query:                       cloneURLValues(execOptions.Query),
+		Headers:                     headers,
+		Query:                       query,
 		RequestAfterAuthInterceptor: h.requestAfterAuthInterceptor(afterAuthCapture, execOptions.SkipInterceptorPluginID),
 	}
 	opts.Metadata = reqMeta
@@ -778,6 +781,9 @@ func (h *BaseAPIHandler) executeStreamWithAuthManagerFormats(ctx context.Context
 	addModelExecutionSourceMetadata(reqMeta, execOptions.InternalSource)
 	setReasoningEffortMetadata(reqMeta, entryProtocol, normalizedModel, rawJSON)
 	setServiceTierMetadata(reqMeta, rawJSON)
+	headers := modelExecutionHeaders(ctx, execOptions.Headers)
+	query := cloneURLValues(execOptions.Query)
+	modelName, normalizedModel, providers, responseProtocol, reqMeta = h.applyExecutionPluginHooks(ctx, entryProtocol, responseProtocol, modelName, normalizedModel, providers, true, alt, headers, query, rawJSON, reqMeta, execOptions.SkipInterceptorPluginID)
 	payload := rawJSON
 	if len(payload) == 0 {
 		payload = nil
@@ -793,8 +799,8 @@ func (h *BaseAPIHandler) executeStreamWithAuthManagerFormats(ctx context.Context
 		OriginalRequest:             rawJSON,
 		SourceFormat:                sdktranslator.FromString(entryProtocol),
 		ResponseFormat:              sdktranslator.FromString(responseProtocol),
-		Headers:                     modelExecutionHeaders(ctx, execOptions.Headers),
-		Query:                       cloneURLValues(execOptions.Query),
+		Headers:                     headers,
+		Query:                       query,
 		RequestAfterAuthInterceptor: h.requestAfterAuthInterceptor(afterAuthCapture, execOptions.SkipInterceptorPluginID),
 	}
 	opts.Metadata = reqMeta

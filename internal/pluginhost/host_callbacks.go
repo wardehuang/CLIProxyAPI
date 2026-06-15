@@ -105,6 +105,14 @@ func (h *Host) callFromPlugin(ctx context.Context, method string, request []byte
 		return h.callHostModelStreamRead(ctx, request)
 	case pluginabi.MethodHostModelStreamClose:
 		return h.callHostModelStreamClose(request)
+	case pluginabi.MethodHostStorageGet:
+		return h.callHostStorageGet(ctx, request)
+	case pluginabi.MethodHostStorageSet:
+		return h.callHostStorageSet(ctx, request)
+	case pluginabi.MethodHostStorageDelete:
+		return h.callHostStorageDelete(ctx, request)
+	case pluginabi.MethodHostStorageList:
+		return h.callHostStorageList(ctx, request)
 	case pluginabi.MethodHostHTTPDo:
 		return h.callHostHTTPDo(ctx, request)
 	case pluginabi.MethodHostHTTPDoStream:

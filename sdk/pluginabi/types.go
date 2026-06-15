@@ -36,6 +36,8 @@ const (
 
 	MethodRequestTranslate       = "request.translate"
 	MethodRequestNormalize       = "request.normalize"
+	MethodRequestMetadataEnrich  = "request.metadata_enrich"
+	MethodRouteRewrite           = "route.rewrite"
 	MethodRequestInterceptBefore = "request.intercept_before"
 	MethodRequestInterceptAfter  = "request.intercept_after"
 
@@ -64,6 +66,10 @@ const (
 	MethodHostModelExecuteStream = "host.model.execute_stream"
 	MethodHostModelStreamRead    = "host.model.stream_read"
 	MethodHostModelStreamClose   = "host.model.stream_close"
+	MethodHostStorageGet         = "host.storage.get"
+	MethodHostStorageSet         = "host.storage.set"
+	MethodHostStorageDelete      = "host.storage.delete"
+	MethodHostStorageList        = "host.storage.list"
 	MethodHostStreamEmit         = "host.stream.emit"
 	MethodHostStreamClose        = "host.stream.close"
 	MethodHostLog                = "host.log"

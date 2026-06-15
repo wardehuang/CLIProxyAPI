@@ -1827,6 +1827,7 @@ func (a *usageAdapter) HandleUsage(ctx context.Context, record coreusage.Record)
 			TotalTokens:         record.Detail.TotalTokens,
 		},
 		ResponseHeaders: cloneHeader(record.ResponseHeaders),
+		Metadata:        sanitizeUsageMetadata(record.Metadata),
 	})
 }
 

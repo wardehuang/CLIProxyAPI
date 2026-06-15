@@ -98,6 +98,10 @@ type Capabilities struct {
 	ResponseBeforeTranslator ResponseNormalizer
 	// ResponseAfterTranslator normalizes translated responses before delivery.
 	ResponseAfterTranslator ResponseNormalizer
+	// RequestMetadataEnricher adds request-scoped metadata before routing and execution.
+	RequestMetadataEnricher RequestMetadataEnricher
+	// RouteRewriter rewrites model routing after registry resolution and before execution.
+	RouteRewriter RouteRewriter
 	// RequestInterceptor rewrites execution requests before and after credential selection.
 	RequestInterceptor RequestInterceptor
 	// ResponseInterceptor rewrites successful non-streaming HTTP execution responses before downstream delivery.
@@ -935,6 +939,84 @@ type RequestInterceptResponse struct {
 	ClearHeaders []string
 }
 
+// RequestMetadataEnricher contributes request-scoped metadata for routing, scheduling, execution, and usage sinks.
+type RequestMetadataEnricher interface {
+	EnrichRequestMetadata(context.Context, RequestMetadataEnrichRequest) (RequestMetadataEnrichResponse, error)
+}
+
+// RequestMetadataEnrichRequest describes an inbound request before route rewriting.
+type RequestMetadataEnrichRequest struct {
+	// SourceFormat is the original client protocol format.
+	SourceFormat string
+	// Model is the client-requested model before alias/model-pool rewriting.
+	Model string
+	// Stream reports whether the request expects streaming output.
+	Stream bool
+	// Headers contains inbound request headers or internal execution headers.
+	Headers http.Header
+	// Query contains inbound query parameters.
+	Query url.Values
+	// Body contains the raw client request body.
+	Body []byte
+	// Metadata is the current request-scoped metadata snapshot.
+	Metadata map[string]any
+}
+
+// RequestMetadataEnrichResponse returns metadata mutations.
+type RequestMetadataEnrichResponse struct {
+	// Metadata adds or replaces request-scoped metadata values.
+	Metadata map[string]any
+	// ClearMetadata removes metadata keys before Metadata is applied.
+	ClearMetadata []string
+}
+
+// RouteRewriter rewrites the resolved route before credential selection and execution.
+type RouteRewriter interface {
+	RewriteRoute(context.Context, RouteRewriteRequest) (RouteRewriteResponse, error)
+}
+
+// RouteRewriteRequest describes a route after registry resolution and before execution.
+type RouteRewriteRequest struct {
+	// SourceFormat is the original client protocol format.
+	SourceFormat string
+	// ResponseFormat is the downstream response protocol format.
+	ResponseFormat string
+	// RequestedModel is the client-requested model before alias/model-pool rewriting.
+	RequestedModel string
+	// NormalizedModel is the registry-resolved execution model.
+	NormalizedModel string
+	// Providers contains every provider key accepted by the resolved route.
+	Providers []string
+	// Stream reports whether the request expects streaming output.
+	Stream bool
+	// Alt carries optional alternate format hints.
+	Alt string
+	// Headers contains inbound request headers or internal execution headers.
+	Headers http.Header
+	// Query contains inbound query parameters.
+	Query url.Values
+	// Body contains the raw client request body.
+	Body []byte
+	// Metadata is the current request-scoped metadata snapshot.
+	Metadata map[string]any
+}
+
+// RouteRewriteResponse returns route and metadata mutations.
+type RouteRewriteResponse struct {
+	// RequestedModel replaces the client-requested model alias when non-empty.
+	RequestedModel string
+	// NormalizedModel replaces the registry-resolved execution model when non-empty.
+	NormalizedModel string
+	// Providers replaces the accepted provider list when non-empty.
+	Providers []string
+	// ResponseFormat replaces the downstream response protocol format when non-empty.
+	ResponseFormat string
+	// Metadata adds or replaces request-scoped metadata values.
+	Metadata map[string]any
+	// ClearMetadata removes metadata keys before Metadata is applied.
+	ClearMetadata []string
+}
+
 // ResponseInterceptRequest describes a successful non-streaming response.
 type ResponseInterceptRequest struct {
 	SourceFormat    string
@@ -1221,6 +1303,40 @@ type UsageRecord struct {
 	Detail UsageDetail
 	// ResponseHeaders contains selected upstream response headers.
 	ResponseHeaders http.Header
+	// Metadata carries sanitized request-scoped metadata for usage sinks.
+	Metadata map[string]any
+}
+
+// HostStorageGetRequest asks the host for a plugin-scoped storage value.
+type HostStorageGetRequest struct {
+	Key string `json:"key"`
+}
+
+// HostStorageGetResponse returns a plugin-scoped storage value.
+type HostStorageGetResponse struct {
+	Value []byte `json:"value,omitempty"`
+	Found bool   `json:"found"`
+}
+
+// HostStorageSetRequest asks the host to write a plugin-scoped storage value.
+type HostStorageSetRequest struct {
+	Key   string `json:"key"`
+	Value []byte `json:"value,omitempty"`
+}
+
+// HostStorageDeleteRequest asks the host to delete a plugin-scoped storage value.
+type HostStorageDeleteRequest struct {
+	Key string `json:"key"`
+}
+
+// HostStorageListRequest asks the host to list plugin-scoped storage keys under Prefix.
+type HostStorageListRequest struct {
+	Prefix string `json:"prefix,omitempty"`
+}
+
+// HostStorageListResponse returns plugin-scoped storage keys.
+type HostStorageListResponse struct {
+	Keys []string `json:"keys,omitempty"`
 }
 
 // UsageFailure describes an upstream or executor failure.

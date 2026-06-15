@@ -2183,6 +2183,9 @@ func contextWithRequestedModelAlias(ctx context.Context, opts cliproxyexecutor.O
 	if serviceTier != "" {
 		ctx = coreusage.WithServiceTier(ctx, serviceTier)
 	}
+	if len(opts.Metadata) > 0 {
+		ctx = coreusage.WithRequestMetadata(ctx, opts.Metadata)
+	}
 	return ctx
 }
 
