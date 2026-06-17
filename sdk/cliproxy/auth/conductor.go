@@ -82,7 +82,7 @@ const (
 	// wasn't updated). Without this guard, the auto-refresh loop can tight-loop and
 	// burn CPU at idle.
 	refreshIneffectiveBackoff = 30 * time.Second
-	quotaBackoffBase          = time.Second
+	quotaBackoffBase          = 30 * time.Minute
 	quotaBackoffMax           = 30 * time.Minute
 )
 
