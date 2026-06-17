@@ -21,8 +21,9 @@ const (
 	metadataCompactProvider       = "cpa.compact.provider"
 	metadataCompactRouteRewritten = "cpa.compact.route_rewritten"
 
-	compactKindClaudeMessages = "claude_messages"
-	compactKindOpenAIResponse = "openai_responses"
+	compactKindCursorSummarization = "cursor_summarization"
+	compactKindClaudeMessages      = "claude_messages"
+	compactKindOpenAIResponse      = "openai_responses"
 
 	providerCodex       = "codex"
 	providerAntigravity = "antigravity"
@@ -37,8 +38,11 @@ var compactConfigState = struct {
 }{config: defaultCompactPluginConfig()}
 
 type compactPluginConfig struct {
-	CodexCompactModel       string `yaml:"codex-compact-model" json:"codex-compact-model"`
-	AntigravityCompactModel string `yaml:"antigravity-compact-model" json:"antigravity-compact-model"`
+	Debug                             bool   `yaml:"debug" json:"debug"`
+	CodexCompactModel                 string `yaml:"codex-compact-model" json:"codex-compact-model"`
+	CodexCompactReasoningEffort       string `yaml:"codex-compact-reasoning-effort" json:"codex-compact-reasoning-effort"`
+	AntigravityCompactModel           string `yaml:"antigravity-compact-model" json:"antigravity-compact-model"`
+	AntigravityCompactReasoningEffort string `yaml:"antigravity-compact-reasoning-effort" json:"antigravity-compact-reasoning-effort"`
 }
 
 type compactDetection struct {
@@ -59,8 +63,11 @@ func configurePlugin(configYAML []byte) {
 	if len(bytes.TrimSpace(configYAML)) > 0 {
 		var parsed compactPluginConfig
 		if errUnmarshal := yaml.Unmarshal(configYAML, &parsed); errUnmarshal == nil {
+			config.Debug = parsed.Debug
 			config.CodexCompactModel = firstNonEmpty(parsed.CodexCompactModel, config.CodexCompactModel)
+			config.CodexCompactReasoningEffort = strings.TrimSpace(parsed.CodexCompactReasoningEffort)
 			config.AntigravityCompactModel = firstNonEmpty(parsed.AntigravityCompactModel, config.AntigravityCompactModel)
+			config.AntigravityCompactReasoningEffort = strings.TrimSpace(parsed.AntigravityCompactReasoningEffort)
 		}
 	}
 	compactConfigState.Lock()
@@ -68,12 +75,29 @@ func configurePlugin(configYAML []byte) {
 	compactConfigState.Unlock()
 }
 
-func enrichRequestMetadata(ctx context.Context, req pluginapi.RequestMetadataEnrichRequest) pluginapi.RequestMetadataEnrichResponse {
+func pluginDebugEnabled() bool {
+	compactConfigState.RLock()
+	defer compactConfigState.RUnlock()
+	return compactConfigState.config.Debug
+}
+
+func enrichRequestMetadata(ctx context.Context, req pluginapi.RequestMetadataEnrichRequest, hostCallbackID string) pluginapi.RequestMetadataEnrichResponse {
 	_ = ctx
 	detection := detectCompactRequest(req.SourceFormat, "", req.Body)
 	if !detection.Detected {
+		logPluginDebug(hostCallbackID, "compact metadata skipped", map[string]any{
+			"reason":        "not_compact_request",
+			"source_format": req.SourceFormat,
+			"model":         req.Model,
+		})
 		return pluginapi.RequestMetadataEnrichResponse{}
 	}
+	logPluginDebug(hostCallbackID, "compact request detected", map[string]any{
+		"kind":           detection.Kind,
+		"reason":         detection.Reason,
+		"source_format":  req.SourceFormat,
+		"original_model": firstNonEmpty(req.Model, jsonString(req.Body, "model")),
+	})
 	return pluginapi.RequestMetadataEnrichResponse{Metadata: map[string]any{
 		metadataCompactDetected:      true,
 		metadataCompactKind:          detection.Kind,
@@ -82,16 +106,23 @@ func enrichRequestMetadata(ctx context.Context, req pluginapi.RequestMetadataEnr
 	}}
 }
 
-func rewriteCompactRoute(ctx context.Context, req pluginapi.RouteRewriteRequest) pluginapi.RouteRewriteResponse {
+func rewriteCompactRoute(ctx context.Context, req pluginapi.RouteRewriteRequest, hostCallbackID string) pluginapi.RouteRewriteResponse {
 	_ = ctx
 	detection := compactDetectionFromMetadata(req.Metadata)
 	if !detection.Detected {
 		detection = detectCompactRequest(req.SourceFormat, req.Alt, req.Body)
 	}
 	if !detection.Detected {
+		logPluginDebug(hostCallbackID, "compact route skipped", map[string]any{
+			"reason":           "not_compact_request",
+			"source_format":    req.SourceFormat,
+			"alt":              req.Alt,
+			"requested_model":  req.RequestedModel,
+			"normalized_model": req.NormalizedModel,
+		})
 		return pluginapi.RouteRewriteResponse{}
 	}
-	provider, targetModel := compactTargetForProviders(req.Providers)
+	provider, targetModel, reasoningEffort := compactTargetForProviders(req.Providers)
 	metadata := map[string]any{
 		metadataCompactDetected:      true,
 		metadataCompactKind:          detection.Kind,
@@ -101,11 +132,32 @@ func rewriteCompactRoute(ctx context.Context, req pluginapi.RouteRewriteRequest)
 	if provider != "" {
 		metadata[metadataCompactProvider] = provider
 	}
+	if reasoningEffort != "" {
+		metadata["reasoning_effort"] = reasoningEffort
+	}
 	if targetModel == "" {
+		logPluginDebug(hostCallbackID, "compact route detected without target model", map[string]any{
+			"kind":             detection.Kind,
+			"reason":           detection.Reason,
+			"providers":        req.Providers,
+			"requested_model":  req.RequestedModel,
+			"normalized_model": req.NormalizedModel,
+			"reasoning_effort": reasoningEffort,
+		})
 		return pluginapi.RouteRewriteResponse{Metadata: metadata}
 	}
 	metadata[metadataCompactTargetModel] = targetModel
 	metadata[metadataCompactRouteRewritten] = true
+	logPluginDebug(hostCallbackID, "compact route rewritten", map[string]any{
+		"kind":             detection.Kind,
+		"reason":           detection.Reason,
+		"provider":         provider,
+		"target_model":     targetModel,
+		"reasoning_effort": reasoningEffort,
+		"requested_model":  req.RequestedModel,
+		"normalized_model": req.NormalizedModel,
+		"stream":           req.Stream,
+	})
 	return pluginapi.RouteRewriteResponse{
 		RequestedModel:  targetModel,
 		NormalizedModel: targetModel,
@@ -120,7 +172,10 @@ func detectCompactRequest(sourceFormat, alt string, body []byte) compactDetectio
 	if len(bytes.TrimSpace(body)) == 0 || !json.Valid(body) {
 		return compactDetection{}
 	}
-	if isOpenAIResponseFormat(sourceFormat) && isOpenAIResponsesSummarizationRequest(body) {
+	if isCursorSummarizationRequest(body) {
+		return compactDetection{Detected: true, Kind: compactKindCursorSummarization, Reason: "cursor_summarization"}
+	}
+	if isOpenAIResponsesSummarizationRequest(body) {
 		return compactDetection{Detected: true, Kind: compactKindOpenAIResponse, Reason: "openai_responses_summarization"}
 	}
 	if isClaudeMessagesFormat(sourceFormat) && isClaudeMessagesCompactRequest(body) {
@@ -128,6 +183,7 @@ func detectCompactRequest(sourceFormat, alt string, body []byte) compactDetectio
 	}
 	return compactDetection{}
 }
+
 
 func isOpenAIResponsesSummarizationRequest(body []byte) bool {
 	if strings.EqualFold(gjson.GetBytes(body, "context_management.type").String(), "compaction") {
@@ -138,6 +194,7 @@ func isOpenAIResponsesSummarizationRequest(body []byte) bool {
 	}
 	return strings.EqualFold(gjson.GetBytes(body, "metadata.cpa_compact").String(), "true")
 }
+
 
 func isClaudeMessagesCompactRequest(body []byte) bool {
 	return jsonContainsAnyString(body,
@@ -150,19 +207,87 @@ func isClaudeMessagesCompactRequest(body []byte) bool {
 	)
 }
 
-func compactTargetForProviders(providers []string) (string, string) {
+func isCursorSummarizationRequest(body []byte) bool {
+	var value any
+	if errUnmarshal := json.Unmarshal(body, &value); errUnmarshal != nil {
+		return false
+	}
+	root, ok := value.(map[string]any)
+	if !ok {
+		return false
+	}
+	if cursorRequestHasTools(root) {
+		return false
+	}
+	for _, text := range cursorActiveInstructionTexts(root) {
+		if textHasCursorSummarizationIntent(text) {
+			return true
+		}
+	}
+	return false
+}
+
+func cursorRequestHasTools(root map[string]any) bool {
+	if jsonArrayHasItems(root["tools"]) {
+		return true
+	}
+	if response, ok := root["response"].(map[string]any); ok {
+		return jsonArrayHasItems(response["tools"])
+	}
+	return false
+}
+
+func jsonArrayHasItems(value any) bool {
+	items, ok := value.([]any)
+	return ok && len(items) > 0
+}
+
+func cursorActiveInstructionTexts(root map[string]any) []string {
+	var texts []string
+	appendCursorActiveText(&texts, root["instructions"])
+	appendCursorActiveText(&texts, root["system"])
+	if response, ok := root["response"].(map[string]any); ok {
+		appendCursorActiveText(&texts, response["instructions"])
+		appendCursorActiveText(&texts, response["system"])
+	}
+	return texts
+}
+
+func appendCursorActiveText(texts *[]string, value any) {
+	switch typed := value.(type) {
+	case string:
+		if trimmed := strings.TrimSpace(typed); trimmed != "" {
+			*texts = append(*texts, trimmed)
+		}
+	case []any:
+		for _, item := range typed {
+			appendCursorActiveText(texts, item)
+		}
+	case map[string]any:
+		for _, item := range typed {
+			appendCursorActiveText(texts, item)
+		}
+	}
+}
+
+func textHasCursorSummarizationIntent(text string) bool {
+	lower := strings.ToLower(text)
+	return strings.Contains(lower, "<summarization_request")
+}
+
+func compactTargetForProviders(providers []string) (string, string, string) {
 	compactConfigState.RLock()
 	config := compactConfigState.config
 	compactConfigState.RUnlock()
 	for _, provider := range providers {
 		switch normalizeProvider(provider) {
 		case providerCodex:
-			return providerCodex, strings.TrimSpace(config.CodexCompactModel)
+			return providerCodex, strings.TrimSpace(config.CodexCompactModel), strings.TrimSpace(config.CodexCompactReasoningEffort)
 		case providerAntigravity:
-			return providerAntigravity, strings.TrimSpace(config.AntigravityCompactModel)
+			return providerAntigravity, strings.TrimSpace(config.AntigravityCompactModel), strings.TrimSpace(config.AntigravityCompactReasoningEffort)
 		}
 	}
-	return "", ""
+	return "", "", ""
 }
 
 func compactDetectionFromMetadata(metadata map[string]any) compactDetection {

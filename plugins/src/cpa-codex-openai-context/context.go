@@ -33,35 +33,117 @@ type requestContextInfo struct {
 
 func enrichRequestMetadata(ctx context.Context, req pluginapi.RequestMetadataEnrichRequest, hostCallbackID string) pluginapi.RequestMetadataEnrichResponse {
 	if !isCodexOpenAIRequest(req.SourceFormat, "", req.Model) {
+		logPluginDebug(hostCallbackID, "request metadata skipped", map[string]any{
+			"reason":        "not_codex_openai_request",
+			"source_format": req.SourceFormat,
+			"model":         req.Model,
+		})
 		return pluginapi.RequestMetadataEnrichResponse{}
 	}
-	info, ok := buildRequestContext(ctx, req.Headers, req.Body, req.Metadata, hostCallbackID)
+	info, ok := buildRequestContext(ctx, req.Headers, req.Body, req.Metadata, req.Model, hostCallbackID)
 	if !ok {
+		logPluginDebug(hostCallbackID, "request metadata skipped", map[string]any{
+			"reason":        "missing_prompt_cache_context",
+			"source_format": req.SourceFormat,
+			"model":         req.Model,
+		})
 		return pluginapi.RequestMetadataEnrichResponse{}
 	}
+	logPluginDebug(hostCallbackID, "request metadata enriched", map[string]any{
+		"project_id":                info.ProjectID,
+		"prompt_cache_key":          info.PromptCacheKey,
+		"upstream_prompt_cache_key": info.UpstreamPromptCacheKey,
+		"prompt_cached_id":          info.PromptCachedID,
+	})
 	return pluginapi.RequestMetadataEnrichResponse{Metadata: metadataFromContextInfo(info)}
 }
 
 func interceptRequestAfterAuth(ctx context.Context, req pluginapi.RequestInterceptRequest, hostCallbackID string) pluginapi.RequestInterceptResponse {
 	if !isCodexOpenAIRequest(req.SourceFormat, req.ToFormat, req.Model) {
+		logPluginDebug(hostCallbackID, "prompt cache rewrite skipped", map[string]any{
+			"reason":        "not_codex_openai_request",
+			"source_format": req.SourceFormat,
+			"to_format":     req.ToFormat,
+			"model":         req.Model,
+		})
 		return pluginapi.RequestInterceptResponse{}
 	}
 	info, ok := contextInfoFromMetadata(req.Metadata)
 	if !ok || info.UpstreamPromptCacheKey == "" {
 		var built bool
-		info, built = buildRequestContext(ctx, req.Headers, req.Body, req.Metadata, hostCallbackID)
+		info, built = buildRequestContext(ctx, req.Headers, req.Body, req.Metadata, req.Model, hostCallbackID)
 		if !built || info.UpstreamPromptCacheKey == "" {
+			logPluginDebug(hostCallbackID, "prompt cache rewrite skipped", map[string]any{
+				"reason": "missing_upstream_prompt_cache_key",
+				"model":  req.Model,
+			})
 			return pluginapi.RequestInterceptResponse{}
 		}
 	}
 	body, changed := setPromptCacheKey(req.Body, info.UpstreamPromptCacheKey)
 	if !changed {
+		logPluginDebug(hostCallbackID, "prompt cache rewrite skipped", map[string]any{
+			"reason":                    "request_body_unchanged",
+			"prompt_cache_key":          info.PromptCacheKey,
+			"upstream_prompt_cache_key": info.UpstreamPromptCacheKey,
+		})
 		return pluginapi.RequestInterceptResponse{}
 	}
+	logPluginDebug(hostCallbackID, "prompt cache key rewritten", map[string]any{
+		"project_id":                info.ProjectID,
+		"prompt_cache_key":          info.PromptCacheKey,
+		"upstream_prompt_cache_key": info.UpstreamPromptCacheKey,
+		"prompt_cached_id":          info.PromptCachedID,
+	})
 	return pluginapi.RequestInterceptResponse{Body: body}
 }
 
-func buildRequestContext(ctx context.Context, headers http.Header, body []byte, metadata map[string]any, hostCallbackID string) (requestContextInfo, bool) {
+func finalizeRequest(ctx context.Context, req pluginapi.RequestFinalizeRequest, hostCallbackID string) pluginapi.RequestFinalizeResponse {
+	if !isCodexOpenAIRequest(req.SourceFormat, req.ToFormat, req.Model) {
+		logPluginDebug(hostCallbackID, "prompt cache finalizer skipped", map[string]any{
+			"reason":        "not_codex_openai_request",
+			"source_format": req.SourceFormat,
+			"to_format":     req.ToFormat,
+			"model":         req.Model,
+		})
+		return pluginapi.RequestFinalizeResponse{}
+	}
+	info, ok := buildRequestContext(ctx, req.Headers, req.Body, req.Metadata, req.Model, hostCallbackID)
+	if !ok || info.ProjectID == "" || info.UpstreamPromptCacheKey == "" {
+		logPluginDebug(hostCallbackID, "prompt cache finalizer skipped", map[string]any{
+			"reason":     "missing_project_prompt_cache_context",
+			"model":      req.Model,
+			"project_id": info.ProjectID,
+		})
+		return pluginapi.RequestFinalizeResponse{}
+	}
+
+	body, changed := setPromptCacheKey(req.Body, info.UpstreamPromptCacheKey)
+	if !changed && topLevelPromptCacheKey(req.Body) != info.UpstreamPromptCacheKey {
+		logPluginDebug(hostCallbackID, "prompt cache finalizer skipped", map[string]any{
+			"reason":                    "request_body_unsettable",
+			"project_id":                info.ProjectID,
+			"prompt_cache_key":          info.PromptCacheKey,
+			"upstream_prompt_cache_key": info.UpstreamPromptCacheKey,
+		})
+		return pluginapi.RequestFinalizeResponse{}
+	}
+	resp := pluginapi.RequestFinalizeResponse{}
+	if changed {
+		resp.Body = body
+	}
+	logPluginDebug(hostCallbackID, "prompt cache key finalized", map[string]any{
+		"project_id":                info.ProjectID,
+		"prompt_cache_key":          info.PromptCacheKey,
+		"upstream_prompt_cache_key": info.UpstreamPromptCacheKey,
+		"prompt_cached_id":          info.PromptCachedID,
+		"body_changed":              changed,
+		"headers_synced":            false,
+	})
+	return resp
+}
+
+func buildRequestContext(ctx context.Context, headers http.Header, body []byte, metadata map[string]any, model string, hostCallbackID string) (requestContextInfo, bool) {
 	projectID := firstNonEmpty(
 		stringFromMetadata(metadata, metadataProjectID),
 		stringFromMetadata(metadata, metadataCPAProjectID),
@@ -73,8 +155,8 @@ func buildRequestContext(ctx context.Context, headers http.Header, body []byte, 
 		extractPromptCacheKey(headers, body),
 	)
 	logicalKey := promptCacheKey
-	if logicalKey == "" && projectID != "" {
-		logicalKey = "project:" + projectID
+	if projectID != "" {
+		logicalKey = "project:" + strings.TrimSpace(model) + ":" + projectID
 	}
 	if logicalKey == "" {
 		return requestContextInfo{}, false
@@ -82,6 +164,11 @@ func buildRequestContext(ctx context.Context, headers http.Header, body []byte, 
 
 	entry, errEntry := loadOrCreatePromptCacheEntry(ctx, hostCallbackID, projectID, logicalKey)
 	if errEntry != nil {
+		logPluginDebug(hostCallbackID, "prompt cache storage fallback", map[string]any{
+			"project_id":       projectID,
+			"prompt_cache_key": logicalKey,
+			"error":            errEntry.Error(),
+		})
 		entry = promptCacheEntryFor(projectID, logicalKey)
 	}
 	return requestContextInfo{
@@ -139,7 +226,51 @@ func extractProjectID(headers http.Header, body []byte) string {
 		jsonStringAt(root, "metadata", "project-id"),
 		jsonStringAt(root, "client_metadata", "project_id"),
 		jsonStringAt(root, "client_metadata", "project-id"),
+		extractProjectIDFromBodyText(root),
 	)
+}
+
+func extractProjectIDFromBodyText(value any) string {
+	switch typed := value.(type) {
+	case string:
+		return projectIDFromTaggedText(typed)
+	case []any:
+		for _, item := range typed {
+			if projectID := extractProjectIDFromBodyText(item); projectID != "" {
+				return projectID
+			}
+		}
+	case map[string]any:
+		for _, key := range []string{"input", "messages", "content", "text", "instructions"} {
+			if projectID := extractProjectIDFromBodyText(typed[key]); projectID != "" {
+				return projectID
+			}
+		}
+		for _, item := range typed {
+			if projectID := extractProjectIDFromBodyText(item); projectID != "" {
+				return projectID
+			}
+		}
+	}
+	return ""
+}
+
+func projectIDFromTaggedText(text string) string {
+	lowerText := strings.ToLower(text)
+	start := strings.Index(lowerText, "<project-id>")
+	if start < 0 {
+		return ""
+	}
+	start += len("<project-id>")
+	end := strings.Index(lowerText[start:], "</project-id>")
+	if end < 0 {
+		return ""
+	}
+	projectID := strings.TrimSpace(text[start : start+end])
+	if projectID == "" || len(projectID) > 256 || strings.Contains(projectID, "<") {
+		return ""
+	}
+	return projectID
 }
 
 func extractPromptCacheKey(headers http.Header, body []byte) string {
@@ -182,6 +313,10 @@ func setPromptCacheKey(body []byte, key string) ([]byte, bool) {
 		return nil, false
 	}
 	return out, true
+}
+
+func topLevelPromptCacheKey(body []byte) string {
+	return strings.TrimSpace(jsonStringAt(parseJSONObject(body), "prompt_cache_key"))
 }
 
 func promptCacheKeyFromTurnMetadata(raw string) string {

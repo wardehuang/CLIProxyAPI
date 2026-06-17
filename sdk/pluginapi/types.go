@@ -107,6 +107,8 @@ type Capabilities struct {
 	RouteRewriter RouteRewriter
 	// RequestInterceptor rewrites execution requests before and after credential selection.
 	RequestInterceptor RequestInterceptor
+	// RequestFinalizer rewrites the final provider request body and headers immediately before upstream send.
+	RequestFinalizer RequestFinalizer
 	// ResponseInterceptor rewrites successful non-streaming HTTP execution responses before downstream delivery.
 	ResponseInterceptor ResponseInterceptor
 	// StreamChunkInterceptor rewrites successful HTTP stream chunks before downstream delivery.
@@ -929,6 +931,11 @@ type RequestInterceptor interface {
 	InterceptRequestAfterAuth(context.Context, RequestInterceptRequest) (RequestInterceptResponse, error)
 }
 
+// RequestFinalizer rewrites the final provider request body and headers immediately before upstream send.
+type RequestFinalizer interface {
+	FinalizeRequest(context.Context, RequestFinalizeRequest) (RequestFinalizeResponse, error)
+}
+
 // ResponseInterceptor rewrites successful non-streaming execution responses before downstream delivery.
 type ResponseInterceptor interface {
 	InterceptResponse(context.Context, ResponseInterceptRequest) (ResponseInterceptResponse, error)
@@ -996,6 +1003,36 @@ type RequestInterceptRequest struct {
 
 // RequestInterceptResponse returns request modifications.
 type RequestInterceptResponse struct {
+	// Headers replaces matching current request headers and preserves headers not mentioned here.
+	Headers http.Header
+	// Body replaces the current request body only when non-empty.
+	Body []byte
+	// ClearHeaders explicitly removes current request headers before Headers is applied.
+	ClearHeaders []string
+}
+
+// RequestFinalizeRequest describes the final provider request immediately before upstream send.
+type RequestFinalizeRequest struct {
+	// SourceFormat is the original client protocol format.
+	SourceFormat string
+	// ToFormat is the selected upstream protocol format.
+	ToFormat string
+	// Model is the selected upstream model for this attempt.
+	Model string
+	// RequestedModel is the client-requested model before alias/model-pool rewriting.
+	RequestedModel string
+	// Stream reports whether the request expects streaming output.
+	Stream bool
+	// Headers contains the final upstream request headers.
+	Headers http.Header
+	// Body contains the final upstream request payload.
+	Body []byte
+	// Metadata is a best-effort cloned context snapshot. Treat it as read-only and JSON-like.
+	Metadata map[string]any
+}
+
+// RequestFinalizeResponse returns final upstream request modifications.
+type RequestFinalizeResponse struct {
 	// Headers replaces matching current request headers and preserves headers not mentioned here.
 	Headers http.Header
 	// Body replaces the current request body only when non-empty.

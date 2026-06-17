@@ -107,6 +107,7 @@ func (p *usageQueuePlugin) HandleUsage(ctx context.Context, record coreusage.Rec
 		RequestID:       requestID,
 		ReasoningEffort: reasoningEffort,
 		ServiceTier:     serviceTier,
+		Metadata:        cloneMetadata(record.Metadata),
 	})
 	if err != nil {
 		return
@@ -116,16 +117,17 @@ func (p *usageQueuePlugin) HandleUsage(ctx context.Context, record coreusage.Rec
 
 type queuedUsageDetail struct {
 	requestDetail
-	Provider        string `json:"provider"`
-	ExecutorType    string `json:"executor_type"`
-	Model           string `json:"model"`
-	Alias           string `json:"alias"`
-	Endpoint        string `json:"endpoint"`
-	AuthType        string `json:"auth_type"`
-	APIKey          string `json:"api_key"`
-	RequestID       string `json:"request_id"`
-	ReasoningEffort string `json:"reasoning_effort"`
-	ServiceTier     string `json:"service_tier"`
+	Provider        string         `json:"provider"`
+	ExecutorType    string         `json:"executor_type"`
+	Model           string         `json:"model"`
+	Alias           string         `json:"alias"`
+	Endpoint        string         `json:"endpoint"`
+	AuthType        string         `json:"auth_type"`
+	APIKey          string         `json:"api_key"`
+	RequestID       string         `json:"request_id"`
+	ReasoningEffort string         `json:"reasoning_effort"`
+	ServiceTier     string         `json:"service_tier"`
+	Metadata        map[string]any `json:"metadata,omitempty"`
 }
 
 type requestDetail struct {
@@ -182,6 +184,17 @@ func resolveSuccess(ctx context.Context) bool {
 
 func resolveEndpoint(ctx context.Context) string {
 	return strings.TrimSpace(internallogging.GetEndpoint(ctx))
+}
+
+func cloneMetadata(src map[string]any) map[string]any {
+	if len(src) == 0 {
+		return nil
+	}
+	dst := make(map[string]any, len(src))
+	for key, value := range src {
+		dst[key] = value
+	}
+	return dst
 }
 
 const httpStatusBadRequest = 400

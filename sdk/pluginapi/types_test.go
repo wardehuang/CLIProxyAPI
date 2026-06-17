@@ -26,6 +26,7 @@ var _ ResponseNormalizer = (*compileTimePlugin)(nil)
 var _ RequestMetadataEnricher = (*compileTimePlugin)(nil)
 var _ RouteRewriter = (*compileTimePlugin)(nil)
 var _ RequestInterceptor = (*compileTimePlugin)(nil)
+var _ RequestFinalizer = (*compileTimePlugin)(nil)
 var _ ResponseInterceptor = (*compileTimePlugin)(nil)
 var _ StreamChunkInterceptor = (*compileTimePlugin)(nil)
 var _ ThinkingApplier = (*compileTimePlugin)(nil)
@@ -463,6 +464,10 @@ func (compileTimePlugin) InterceptRequestBeforeAuth(context.Context, RequestInte
 
 func (compileTimePlugin) InterceptRequestAfterAuth(context.Context, RequestInterceptRequest) (RequestInterceptResponse, error) {
 	return RequestInterceptResponse{}, nil
+}
+
+func (compileTimePlugin) FinalizeRequest(context.Context, RequestFinalizeRequest) (RequestFinalizeResponse, error) {
+	return RequestFinalizeResponse{}, nil
 }
 
 func (compileTimePlugin) EnrichRequestMetadata(context.Context, RequestMetadataEnrichRequest) (RequestMetadataEnrichResponse, error) {

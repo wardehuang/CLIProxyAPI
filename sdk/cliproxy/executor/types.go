@@ -50,6 +50,9 @@ type Request struct {
 // RequestAfterAuthInterceptor rewrites a request after credential selection and before executor translation.
 type RequestAfterAuthInterceptor func(context.Context, RequestAfterAuthInterceptRequest) RequestAfterAuthInterceptResponse
 
+// RequestFinalizer rewrites the final provider request immediately before upstream send.
+type RequestFinalizer func(context.Context, RequestFinalizeRequest) RequestFinalizeResponse
+
 // RequestAfterAuthInterceptRequest describes a selected-auth request before executor translation.
 type RequestAfterAuthInterceptRequest struct {
 	// SourceFormat is the original client protocol format.
@@ -80,6 +83,36 @@ type RequestAfterAuthInterceptResponse struct {
 	ClearHeaders []string
 }
 
+// RequestFinalizeRequest describes the final provider request immediately before upstream send.
+type RequestFinalizeRequest struct {
+	// SourceFormat is the original client protocol format.
+	SourceFormat sdktranslator.Format
+	// ToFormat is the selected upstream protocol format.
+	ToFormat sdktranslator.Format
+	// Model is the selected upstream model for this attempt.
+	Model string
+	// RequestedModel is the client-requested model before alias/model-pool rewriting.
+	RequestedModel string
+	// Stream reports whether the request expects streaming output.
+	Stream bool
+	// Headers contains the final upstream request headers.
+	Headers http.Header
+	// Body contains the final upstream request payload.
+	Body []byte
+	// Metadata is a best-effort cloned context snapshot. Treat it as read-only and JSON-like.
+	Metadata map[string]any
+}
+
+// RequestFinalizeResponse returns final upstream request modifications.
+type RequestFinalizeResponse struct {
+	// Headers replaces matching current request headers and preserves headers not mentioned here.
+	Headers http.Header
+	// Body replaces the current request body only when non-empty.
+	Body []byte
+	// ClearHeaders explicitly removes current request headers before Headers is applied.
+	ClearHeaders []string
+}
+
 // Options controls execution behavior for both streaming and non-streaming calls.
 type Options struct {
 	// Stream toggles streaming mode.
@@ -101,6 +134,8 @@ type Options struct {
 	Metadata map[string]any
 	// RequestAfterAuthInterceptor runs after credential selection and before executor translation.
 	RequestAfterAuthInterceptor RequestAfterAuthInterceptor
+	// RequestFinalizer runs after provider payload construction and immediately before upstream send.
+	RequestFinalizer RequestFinalizer
 }
 
 // ResponseFormatOrSource returns the response target format for an execution.

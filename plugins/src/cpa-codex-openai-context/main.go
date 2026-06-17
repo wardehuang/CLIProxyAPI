@@ -65,11 +65,6 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginapi"
 )
 
-const (
-	pluginName    = "cpa-codex-openai-context"
-	pluginVersion = "0.1.0"
-)
-
 type envelope struct {
 	OK     bool            `json:"ok"`
 	Result json.RawMessage `json:"result,omitempty"`
@@ -90,6 +85,7 @@ type registration struct {
 type registrationCapabilities struct {
 	RequestMetadataEnricher bool `json:"request_metadata_enricher"`
 	RequestInterceptor      bool `json:"request_interceptor"`
+	RequestFinalizer        bool `json:"request_finalizer"`
 }
 
 type requestMetadataEnrichRequest struct {
@@ -100,6 +96,15 @@ type requestMetadataEnrichRequest struct {
 type requestInterceptRequest struct {
 	pluginapi.RequestInterceptRequest
 	HostCallbackID string `json:"host_callback_id,omitempty"`
+}
+
+type requestFinalizeRequest struct {
+	pluginapi.RequestFinalizeRequest
+	HostCallbackID string `json:"host_callback_id,omitempty"`
+}
+
+type lifecycleRequest struct {
+	ConfigYAML []byte `json:"config_yaml"`
 }
 
 func main() {}
@@ -154,6 +159,13 @@ func cliproxyPluginShutdown() {}
 func handleMethod(ctx context.Context, method string, request []byte) ([]byte, error) {
 	switch method {
 	case pluginabi.MethodPluginRegister, pluginabi.MethodPluginReconfigure:
+		var req lifecycleRequest
+		if len(request) > 0 {
+			if errUnmarshal := json.Unmarshal(request, &req); errUnmarshal != nil {
+				return nil, fmt.Errorf("decode lifecycle request: %w", errUnmarshal)
+			}
+		}
+		configurePlugin(req.ConfigYAML)
 		return okEnvelope(pluginRegistration())
 	case pluginabi.MethodRequestMetadataEnrich:
 		var req requestMetadataEnrichRequest
@@ -164,11 +176,13 @@ func handleMethod(ctx context.Context, method string, request []byte) ([]byte, e
 	case pluginabi.MethodRequestInterceptBefore:
 		return okEnvelope(pluginapi.RequestInterceptResponse{})
 	case pluginabi.MethodRequestInterceptAfter:
-		var req requestInterceptRequest
+		return okEnvelope(pluginapi.RequestInterceptResponse{})
+	case pluginabi.MethodRequestFinalize:
+		var req requestFinalizeRequest
 		if errUnmarshal := json.Unmarshal(request, &req); errUnmarshal != nil {
-			return nil, fmt.Errorf("decode request intercept request: %w", errUnmarshal)
+			return nil, fmt.Errorf("decode request finalize request: %w", errUnmarshal)
 		}
-		return okEnvelope(interceptRequestAfterAuth(ctx, req.RequestInterceptRequest, req.HostCallbackID))
+		return okEnvelope(finalizeRequest(ctx, req.RequestFinalizeRequest, req.HostCallbackID))
 	default:
 		return errorEnvelope("unknown_method", "unknown method: "+method), nil
 	}
@@ -182,11 +196,17 @@ func pluginRegistration() registration {
 			Version:          pluginVersion,
 			Author:           "wardehuang",
 			GitHubRepository: "https://github.com/wardehuang/CLIProxyAPI",
-			ConfigFields:     []pluginapi.ConfigField{},
+			ConfigFields: []pluginapi.ConfigField{
+				{
+					Name:        "debug",
+					Type:        pluginapi.ConfigFieldTypeBoolean,
+					Description: "Write detailed request metadata and prompt cache rewrite diagnostics to the host log.",
+				},
+			},
 		},
 		Capabilities: registrationCapabilities{
 			RequestMetadataEnricher: true,
-			RequestInterceptor:      true,
+			RequestFinalizer:        true,
 		},
 	}
 }

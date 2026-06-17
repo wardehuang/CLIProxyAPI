@@ -64,6 +64,42 @@ func TestUsageQueuePluginPayloadIncludesStableFieldsAndSuccess(t *testing.T) {
 	})
 }
 
+func TestUsageQueuePluginPayloadIncludesMetadata(t *testing.T) {
+	withEnabledQueue(t, func() {
+		ctx := internallogging.WithRequestID(context.Background(), "ctx-request-id")
+		ctx = internallogging.WithEndpoint(ctx, "POST /v1/responses")
+		ctx = internallogging.WithResponseStatusHolder(ctx)
+		internallogging.SetResponseStatus(ctx, http.StatusOK)
+
+		metadata := map[string]any{
+			"cpa.project_id":              "cpa",
+			"cpa.prompt_cache_key":        "project:gpt-5-codex:cpa",
+			"cpa.compact.detected":        true,
+			"cpa.compact.route_rewritten": true,
+		}
+		plugin := &usageQueuePlugin{}
+		plugin.HandleUsage(ctx, coreusage.Record{
+			Provider:    "codex",
+			Model:       "gpt-5.4-mini",
+			Alias:       "gpt-5.4-mini",
+			APIKey:      "test-key",
+			AuthIndex:   "0",
+			AuthType:    "oauth",
+			Source:      "user@example.com",
+			RequestedAt: time.Date(2026, 4, 25, 0, 0, 0, 0, time.UTC),
+			Detail:      coreusage.Detail{InputTokens: 10, TotalTokens: 10},
+			Metadata:    metadata,
+		})
+		metadata["cpa.project_id"] = "mutated"
+
+		payload := popSinglePayload(t)
+		requireMetadataField(t, payload, "cpa.project_id", "cpa")
+		requireMetadataField(t, payload, "cpa.prompt_cache_key", "project:gpt-5-codex:cpa")
+		requireMetadataBoolField(t, payload, "cpa.compact.detected", true)
+		requireMetadataBoolField(t, payload, "cpa.compact.route_rewritten", true)
+	})
+}
+
 func TestUsageQueuePluginAsyncUsesRecordResponseHeaders(t *testing.T) {
 	withEnabledQueue(t, func() {
 		ctx := internallogging.WithRequestID(context.Background(), "ctx-request-id")
@@ -357,4 +393,52 @@ func requireHeaderField(t *testing.T, payload map[string]json.RawMessage, field,
 			t.Fatalf("%s[%q] = %v, want %v", field, key, got, want)
 		}
 	}
+}
+
+func requireMetadataField(t *testing.T, payload map[string]json.RawMessage, key, want string) {
+	t.Helper()
+
+	metadata := metadataPayload(t, payload)
+	raw, ok := metadata[key]
+	if !ok {
+		t.Fatalf("metadata missing %q", key)
+	}
+	var got string
+	if err := json.Unmarshal(raw, &got); err != nil {
+		t.Fatalf("unmarshal metadata %q: %v", key, err)
+	}
+	if got != want {
+		t.Fatalf("metadata[%q] = %q, want %q", key, got, want)
+	}
+}
+
+func requireMetadataBoolField(t *testing.T, payload map[string]json.RawMessage, key string, want bool) {
+	t.Helper()
+
+	metadata := metadataPayload(t, payload)
+	raw, ok := metadata[key]
+	if !ok {
+		t.Fatalf("metadata missing %q", key)
+	}
+	var got bool
+	if err := json.Unmarshal(raw, &got); err != nil {
+		t.Fatalf("unmarshal metadata %q: %v", key, err)
+	}
+	if got != want {
+		t.Fatalf("metadata[%q] = %t, want %t", key, got, want)
+	}
+}
+
+func metadataPayload(t *testing.T, payload map[string]json.RawMessage) map[string]json.RawMessage {
+	t.Helper()
+
+	raw, ok := payload["metadata"]
+	if !ok {
+		t.Fatalf("payload missing %q", "metadata")
+	}
+	var metadata map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &metadata); err != nil {
+		t.Fatalf("unmarshal metadata: %v", err)
+	}
+	return metadata
 }

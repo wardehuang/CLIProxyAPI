@@ -65,11 +65,6 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginapi"
 )
 
-const (
-	pluginName    = "cpa-prompt-cache-usage"
-	pluginVersion = "0.1.0"
-)
-
 type envelope struct {
 	OK     bool            `json:"ok"`
 	Result json.RawMessage `json:"result,omitempty"`
@@ -89,6 +84,10 @@ type registration struct {
 
 type registrationCapabilities struct {
 	UsagePlugin bool `json:"usage_plugin"`
+}
+
+type lifecycleRequest struct {
+	ConfigYAML []byte `json:"config_yaml"`
 }
 
 func main() {}
@@ -143,13 +142,27 @@ func cliproxyPluginShutdown() {}
 func handleMethod(ctx context.Context, method string, request []byte) ([]byte, error) {
 	switch method {
 	case pluginabi.MethodPluginRegister, pluginabi.MethodPluginReconfigure:
+		var req lifecycleRequest
+		if len(request) > 0 {
+			if errUnmarshal := json.Unmarshal(request, &req); errUnmarshal != nil {
+				return nil, fmt.Errorf("decode lifecycle request: %w", errUnmarshal)
+			}
+		}
+		configurePlugin(req.ConfigYAML)
 		return okEnvelope(pluginRegistration())
 	case pluginabi.MethodUsageHandle:
 		var record pluginapi.UsageRecord
 		if errUnmarshal := json.Unmarshal(request, &record); errUnmarshal != nil {
 			return nil, fmt.Errorf("decode usage record: %w", errUnmarshal)
 		}
-		_ = handleUsage(ctx, record)
+		if errUsage := handleUsage(ctx, record); errUsage != nil {
+			logPluginDebug("usage aggregation failed", map[string]any{
+				"error":  errUsage.Error(),
+				"model":  record.Model,
+				"alias":  record.Alias,
+				"source": record.Source,
+			})
+		}
 		return okEnvelope(map[string]any{})
 	default:
 		return errorEnvelope("unknown_method", "unknown method: "+method), nil
@@ -164,7 +177,13 @@ func pluginRegistration() registration {
 			Version:          pluginVersion,
 			Author:           "wardehuang",
 			GitHubRepository: "https://github.com/wardehuang/CLIProxyAPI",
-			ConfigFields:     []pluginapi.ConfigField{},
+			ConfigFields: []pluginapi.ConfigField{
+				{
+					Name:        "debug",
+					Type:        pluginapi.ConfigFieldTypeBoolean,
+					Description: "Write prompt-cache usage aggregation diagnostics to the host log.",
+				},
+			},
 		},
 		Capabilities: registrationCapabilities{UsagePlugin: true},
 	}

@@ -46,6 +46,7 @@ const (
 	MethodRouteRewrite           = "route.rewrite"
 	MethodRequestInterceptBefore = "request.intercept_before"
 	MethodRequestInterceptAfter  = "request.intercept_after"
+	MethodRequestFinalize        = "request.finalize"
 
 	MethodResponseTranslate            = "response.translate"
 	MethodResponseNormalizeBefore      = "response.normalize_before"

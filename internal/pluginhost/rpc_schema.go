@@ -35,6 +35,7 @@ type rpcCapabilities struct {
 	RequestMetadataEnricher       bool                         `json:"request_metadata_enricher"`
 	RouteRewriter                 bool                         `json:"route_rewriter"`
 	RequestInterceptor            bool                         `json:"request_interceptor"`
+	RequestFinalizer              bool                         `json:"request_finalizer"`
 	ResponseTranslator            bool                         `json:"response_translator"`
 	ResponseBeforeTranslator      bool                         `json:"response_before_translator"`
 	ResponseAfterTranslator       bool                         `json:"response_after_translator"`
@@ -88,6 +89,11 @@ type rpcExecutorHTTPRequest struct {
 
 type rpcRequestInterceptRequest struct {
 	pluginapi.RequestInterceptRequest
+	HostCallbackID string `json:"host_callback_id,omitempty"`
+}
+
+type rpcRequestFinalizeRequest struct {
+	pluginapi.RequestFinalizeRequest
 	HostCallbackID string `json:"host_callback_id,omitempty"`
 }
 
@@ -152,6 +158,7 @@ func rpcCapabilitiesFromPlugin(plugin pluginapi.Plugin) rpcCapabilities {
 		RequestMetadataEnricher:       caps.RequestMetadataEnricher != nil,
 		RouteRewriter:                 caps.RouteRewriter != nil,
 		RequestInterceptor:            caps.RequestInterceptor != nil,
+		RequestFinalizer:              caps.RequestFinalizer != nil,
 		ResponseTranslator:            caps.ResponseTranslator != nil,
 		ResponseBeforeTranslator:      caps.ResponseBeforeTranslator != nil,
 		ResponseAfterTranslator:       caps.ResponseAfterTranslator != nil,

@@ -843,6 +843,10 @@ func (e *CodexExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, re
 	}
 	applyCodexHeaders(httpReq, auth, apiKey, true, e.cfg)
 	applyCodexIdentityConfuseHeaders(httpReq.Header, &identityState)
+	finalHeaders, finalBody := applyRequestFinalizer(ctx, opts, to, baseModel, httpReq.Header, upstreamBody)
+	httpReq.Header = finalHeaders
+	upstreamBody = finalBody
+	setRequestBody(httpReq, upstreamBody)
 	var authID, authLabel, authType, authValue string
 	if auth != nil {
 		authID = auth.ID
@@ -1127,6 +1131,10 @@ func (e *CodexExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Au
 	}
 	applyCodexHeaders(httpReq, auth, apiKey, true, e.cfg)
 	applyCodexIdentityConfuseHeaders(httpReq.Header, &identityState)
+	finalHeaders, finalBody := applyRequestFinalizer(ctx, opts, to, baseModel, httpReq.Header, upstreamBody)
+	httpReq.Header = finalHeaders
+	upstreamBody = finalBody
+	setRequestBody(httpReq, upstreamBody)
 	var authID, authLabel, authType, authValue string
 	if auth != nil {
 		authID = auth.ID

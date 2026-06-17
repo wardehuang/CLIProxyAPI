@@ -77,6 +77,12 @@ func handleUsage(ctx context.Context, record pluginapi.UsageRecord) error {
 	_ = ctx
 	info, ok := usageContextInfoFromMetadata(record.Metadata)
 	if !ok {
+		logPluginDebug("usage aggregation skipped", map[string]any{
+			"reason": "missing_prompt_cache_metadata",
+			"model":  record.Model,
+			"alias":  record.Alias,
+			"source": record.Source,
+		})
 		return nil
 	}
 	usageStatsMu.Lock()
@@ -87,13 +93,39 @@ func handleUsage(ctx context.Context, record pluginapi.UsageRecord) error {
 	} else {
 		now = now.UTC()
 	}
-	if errUpdate := updatePromptCacheUsageStats(info, record, now); errUpdate != nil {
-		return errUpdate
+	promptStorageKey := promptCacheUsageStorageKey(info)
+	promptStats, errUpdatePrompt := updatePromptCacheUsageStats(info, record, now)
+	if errUpdatePrompt != nil {
+		return errUpdatePrompt
 	}
+	logPluginDebug("prompt-cache usage updated", map[string]any{
+		"storage_key":               promptStorageKey,
+		"project_id":                info.ProjectID,
+		"prompt_cache_key":          info.PromptCacheKey,
+		"upstream_prompt_cache_key": info.UpstreamPromptCacheKey,
+		"prompt_cached_id":          info.PromptCachedID,
+		"model":                     record.Model,
+		"alias":                     record.Alias,
+		"source":                    record.Source,
+		"failed":                    record.Failed,
+		"usage":                     promptStats,
+	})
 	if strings.TrimSpace(info.ProjectID) == "" {
 		return nil
 	}
-	return updateProjectUsageStats(info, record, now)
+	projectStorageKey := projectUsageStorageKey(info.ProjectID)
+	projectStats, errUpdateProject := updateProjectUsageStats(info, record, now)
+	if errUpdateProject != nil {
+		return errUpdateProject
+	}
+	logPluginDebug("project usage updated", map[string]any{
+		"storage_key":      projectStorageKey,
+		"project_id":       info.ProjectID,
+		"prompt_cache_key": info.PromptCacheKey,
+		"prompt_cached_id": info.PromptCachedID,
+		"usage":            projectStats,
+	})
+	return nil
 }
 
 func usageContextInfoFromMetadata(metadata map[string]any) (usageContextInfo, bool) {
@@ -106,11 +138,11 @@ func usageContextInfoFromMetadata(metadata map[string]any) (usageContextInfo, bo
 	return info, info.PromptCacheKey != "" || info.UpstreamPromptCacheKey != "" || info.PromptCachedID != ""
 }
 
-func updatePromptCacheUsageStats(info usageContextInfo, record pluginapi.UsageRecord, now time.Time) error {
+func updatePromptCacheUsageStats(info usageContextInfo, record pluginapi.UsageRecord, now time.Time) (promptCacheUsageStats, error) {
 	storageKey := promptCacheUsageStorageKey(info)
 	stats := promptCacheUsageStats{}
 	if ok, errLoad := loadStorageJSON(storageKey, &stats); errLoad != nil {
-		return errLoad
+		return promptCacheUsageStats{}, errLoad
 	} else if !ok {
 		stats = promptCacheUsageStats{
 			ProjectID:              info.ProjectID,
@@ -139,14 +171,14 @@ func updatePromptCacheUsageStats(info usageContextInfo, record pluginapi.UsageRe
 		stats.FirstSeenAt = now
 	}
 	stats.LastSeenAt = now
-	return saveStorageJSON(storageKey, stats)
+	return stats, saveStorageJSON(storageKey, stats)
 }
 
-func updateProjectUsageStats(info usageContextInfo, record pluginapi.UsageRecord, now time.Time) error {
+func updateProjectUsageStats(info usageContextInfo, record pluginapi.UsageRecord, now time.Time) (projectUsageStats, error) {
 	storageKey := projectUsageStorageKey(info.ProjectID)
 	stats := projectUsageStats{}
 	if ok, errLoad := loadStorageJSON(storageKey, &stats); errLoad != nil {
-		return errLoad
+		return projectUsageStats{}, errLoad
 	} else if !ok {
 		stats = projectUsageStats{
 			ProjectID:       info.ProjectID,
@@ -167,7 +199,7 @@ func updateProjectUsageStats(info usageContextInfo, record pluginapi.UsageRecord
 		stats.FirstSeenAt = now
 	}
 	stats.LastSeenAt = now
-	return saveStorageJSON(storageKey, stats)
+	return stats, saveStorageJSON(storageKey, stats)
 }
 
 func addUsageDetailToPromptStats(stats *promptCacheUsageStats, detail pluginapi.UsageDetail) {

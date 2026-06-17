@@ -80,12 +80,24 @@ type pluginInterceptorSkipHost interface {
 	InterceptStreamChunkExcept(context.Context, pluginapi.StreamChunkInterceptRequest, string) pluginapi.StreamChunkInterceptResponse
 }
 
+type requestFinalizerHost interface {
+	FinalizeRequest(context.Context, pluginapi.RequestFinalizeRequest) pluginapi.RequestFinalizeResponse
+}
+
+type requestFinalizerSkipHost interface {
+	FinalizeRequestExcept(context.Context, pluginapi.RequestFinalizeRequest, string) pluginapi.RequestFinalizeResponse
+}
+
 type streamInterceptorDetector interface {
 	HasStreamInterceptors() bool
 }
 
 type requestInterceptorDetector interface {
 	HasRequestInterceptors() bool
+}
+
+type requestFinalizerDetector interface {
+	HasRequestFinalizers() bool
 }
 
 // PluginModelRouterHost routes matching requests to a plugin executor, the router's own executor,
@@ -743,6 +755,7 @@ func (h *BaseAPIHandler) executeWithAuthManagerFormats(ctx context.Context, entr
 		Headers:                     headers,
 		Query:                       query,
 		RequestAfterAuthInterceptor: h.requestAfterAuthInterceptor(afterAuthCapture, execOptions.SkipInterceptorPluginID),
+		RequestFinalizer:            h.requestFinalizer(execOptions.SkipInterceptorPluginID),
 	}
 	opts.Metadata = reqMeta
 	req, opts = h.applyRequestInterceptorsBeforeAuth(ctx, entryProtocol, originalRequestedModel, req, opts, execOptions.SkipInterceptorPluginID)
@@ -807,6 +820,7 @@ func (h *BaseAPIHandler) executeCountWithAuthManager(ctx context.Context, handle
 		Headers:                     modelExecutionHeaders(ctx, execOptions.Headers),
 		Query:                       modelExecutionQuery(ctx, execOptions.Query),
 		RequestAfterAuthInterceptor: h.requestAfterAuthInterceptor(afterAuthCapture, execOptions.SkipInterceptorPluginID),
+		RequestFinalizer:            h.requestFinalizer(execOptions.SkipInterceptorPluginID),
 	}
 	opts.Metadata = reqMeta
 	req, opts = h.applyRequestInterceptorsBeforeAuth(ctx, handlerType, originalRequestedModel, req, opts, execOptions.SkipInterceptorPluginID)
@@ -1136,6 +1150,7 @@ func (h *BaseAPIHandler) executeStreamWithAuthManagerFormats(ctx context.Context
 		Headers:                     headers,
 		Query:                       query,
 		RequestAfterAuthInterceptor: h.requestAfterAuthInterceptor(afterAuthCapture, execOptions.SkipInterceptorPluginID),
+		RequestFinalizer:            h.requestFinalizer(execOptions.SkipInterceptorPluginID),
 	}
 	opts.Metadata = reqMeta
 	req, opts = h.applyRequestInterceptorsBeforeAuth(ctx, entryProtocol, originalRequestedModel, req, opts, execOptions.SkipInterceptorPluginID)
@@ -1809,6 +1824,16 @@ func requestInterceptorsEnabled(host PluginInterceptorHost) bool {
 	return true
 }
 
+func requestFinalizersEnabled(host PluginInterceptorHost) bool {
+	if host == nil {
+		return false
+	}
+	if detector, ok := host.(requestFinalizerDetector); ok {
+		return detector.HasRequestFinalizers()
+	}
+	return true
+}
+
 type requestAfterAuthCapture struct {
 	mu                      sync.Mutex
 	set                     bool
@@ -1896,6 +1921,18 @@ func interceptRequestAfterAuth(ctx context.Context, host PluginInterceptorHost, 
 	return host.InterceptRequestAfterAuth(ctx, req)
 }
 
+func finalizeRequest(ctx context.Context, host requestFinalizerHost, req pluginapi.RequestFinalizeRequest, skipPluginID string) pluginapi.RequestFinalizeResponse {
+	if host == nil {
+		return pluginapi.RequestFinalizeResponse{}
+	}
+	if skipPluginID != "" {
+		if skipper, ok := host.(requestFinalizerSkipHost); ok {
+			return skipper.FinalizeRequestExcept(ctx, req, skipPluginID)
+		}
+	}
+	return host.FinalizeRequest(ctx, req)
+}
+
 func interceptResponse(ctx context.Context, host PluginInterceptorHost, req pluginapi.ResponseInterceptRequest, skipPluginID string) pluginapi.ResponseInterceptResponse {
 	if skipPluginID != "" {
 		if skipper, ok := host.(pluginInterceptorSkipHost); ok {
@@ -1946,6 +1983,41 @@ func (h *BaseAPIHandler) requestAfterAuthInterceptor(capture *requestAfterAuthCa
 			capture.record(req, resp)
 		}
 		return resp
+	}
+}
+
+func (h *BaseAPIHandler) requestFinalizer(skipPluginID string) coreexecutor.RequestFinalizer {
+	if !requestFinalizersEnabled(h.interceptorHost()) {
+		return nil
+	}
+	return func(ctx context.Context, req coreexecutor.RequestFinalizeRequest) coreexecutor.RequestFinalizeResponse {
+		return h.applyRequestFinalizers(ctx, req, skipPluginID)
+	}
+}
+
+func (h *BaseAPIHandler) applyRequestFinalizers(ctx context.Context, req coreexecutor.RequestFinalizeRequest, skipPluginID string) coreexecutor.RequestFinalizeResponse {
+	host := h.interceptorHost()
+	if !requestFinalizersEnabled(host) {
+		return coreexecutor.RequestFinalizeResponse{}
+	}
+	finalizerHost, ok := host.(requestFinalizerHost)
+	if !ok || finalizerHost == nil {
+		return coreexecutor.RequestFinalizeResponse{}
+	}
+	resp := finalizeRequest(ctx, finalizerHost, pluginapi.RequestFinalizeRequest{
+		SourceFormat:   req.SourceFormat.String(),
+		ToFormat:       req.ToFormat.String(),
+		Model:          req.Model,
+		RequestedModel: req.RequestedModel,
+		Stream:         req.Stream,
+		Headers:        cloneHeader(req.Headers),
+		Body:           cloneBytes(req.Body),
+		Metadata:       req.Metadata,
+	}, skipPluginID)
+	return coreexecutor.RequestFinalizeResponse{
+		Headers:      resp.Headers,
+		Body:         resp.Body,
+		ClearHeaders: resp.ClearHeaders,
 	}
 }
 

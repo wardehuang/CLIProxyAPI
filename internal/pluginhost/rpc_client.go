@@ -100,6 +100,9 @@ func registerRPCPlugin(ctx context.Context, host *Host, id string, client plugin
 	if resp.Capabilities.RequestInterceptor {
 		plugin.Capabilities.RequestInterceptor = adapter
 	}
+	if resp.Capabilities.RequestFinalizer {
+		plugin.Capabilities.RequestFinalizer = adapter
+	}
 	if resp.Capabilities.ResponseTranslator {
 		plugin.Capabilities.ResponseTranslator = adapter
 	}
@@ -181,6 +184,9 @@ func sanitizePluginRequest(request any) any {
 	case pluginapi.RequestInterceptRequest:
 		req.Metadata = sanitizePluginMetadata(req.Metadata)
 		return req
+	case pluginapi.RequestFinalizeRequest:
+		req.Metadata = sanitizePluginMetadata(req.Metadata)
+		return req
 	case pluginapi.RequestMetadataEnrichRequest:
 		req.Metadata = sanitizePluginMetadata(req.Metadata)
 		return req
@@ -194,6 +200,9 @@ func sanitizePluginRequest(request any) any {
 		req.Metadata = sanitizePluginMetadata(req.Metadata)
 		return req
 	case rpcRequestInterceptRequest:
+		req.Metadata = sanitizePluginMetadata(req.Metadata)
+		return req
+	case rpcRequestFinalizeRequest:
 		req.Metadata = sanitizePluginMetadata(req.Metadata)
 		return req
 	case rpcRequestMetadataEnrichRequest:
@@ -478,6 +487,15 @@ func (a *rpcPluginAdapter) InterceptRequestAfterAuth(ctx context.Context, req pl
 	return callPlugin[pluginapi.RequestInterceptResponse](ctx, a.client, pluginabi.MethodRequestInterceptAfter, rpcRequestInterceptRequest{
 		RequestInterceptRequest: req,
 		HostCallbackID:          callbackID,
+	})
+}
+
+func (a *rpcPluginAdapter) FinalizeRequest(ctx context.Context, req pluginapi.RequestFinalizeRequest) (pluginapi.RequestFinalizeResponse, error) {
+	callbackID, closeCallback := a.openHostCallbackContext(ctx)
+	defer closeCallback()
+	return callPlugin[pluginapi.RequestFinalizeResponse](ctx, a.client, pluginabi.MethodRequestFinalize, rpcRequestFinalizeRequest{
+		RequestFinalizeRequest: req,
+		HostCallbackID:         callbackID,
 	})
 }
 
