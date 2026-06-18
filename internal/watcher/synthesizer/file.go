@@ -172,6 +172,9 @@ func synthesizeFileAuths(ctx *SynthesisContext, fullPath string, data []byte) []
 			}
 		}
 	}
+	// CPA extension: keep antigravity family priorities available to scheduler plugins.
+	copyIntegerMetadataAttribute(a.Attributes, metadata, "priority_claude")
+	copyIntegerMetadataAttribute(a.Attributes, metadata, "priority_gemini")
 	// Read note from auth file.
 	if rawNote, ok := metadata["note"]; ok {
 		if note, isStr := rawNote.(string); isStr {
@@ -204,6 +207,25 @@ func synthesizeFileAuths(ctx *SynthesisContext, fullPath string, data []byte) []
 		}
 	}
 	return []*coreauth.Auth{a}
+}
+
+func copyIntegerMetadataAttribute(attrs map[string]string, metadata map[string]any, key string) {
+	if attrs == nil || metadata == nil || strings.TrimSpace(key) == "" {
+		return
+	}
+	rawValue, ok := metadata[key]
+	if !ok {
+		return
+	}
+	switch v := rawValue.(type) {
+	case float64:
+		attrs[key] = strconv.Itoa(int(v))
+	case string:
+		trimmed := strings.TrimSpace(v)
+		if _, errAtoi := strconv.Atoi(trimmed); errAtoi == nil {
+			attrs[key] = trimmed
+		}
+	}
 }
 
 // SynthesizeGeminiVirtualAuths creates virtual Auth entries for multi-project Gemini credentials.
