@@ -425,6 +425,8 @@ func (h *Handler) listAuthFilesFromDisk(c *gin.Context) {
 						}
 					}
 				}
+				exposeIntegerJSONFileValue(fileData, data, "priority_claude")
+				exposeIntegerJSONFileValue(fileData, data, "priority_gemini")
 				if nv := gjson.GetBytes(data, "note"); nv.Exists() && nv.Type == gjson.String {
 					if trimmed := strings.TrimSpace(nv.String()); trimmed != "" {
 						fileData["note"] = trimmed
@@ -448,6 +450,28 @@ func (h *Handler) listAuthFilesFromDisk(c *gin.Context) {
 		}
 	}
 	c.JSON(200, gin.H{"files": files})
+}
+
+func exposeIntegerJSONFileValue(entry gin.H, data []byte, key string) {
+	if entry == nil || key == "" {
+		return
+	}
+	for _, path := range []string{key, "attributes." + key, "metadata." + key} {
+		value := gjson.GetBytes(data, path)
+		if !value.Exists() {
+			continue
+		}
+		switch value.Type {
+		case gjson.Number:
+			entry[key] = int(value.Int())
+			return
+		case gjson.String:
+			if parsed, err := strconv.Atoi(strings.TrimSpace(value.String())); err == nil {
+				entry[key] = parsed
+				return
+			}
+		}
+	}
 }
 
 func (h *Handler) buildAuthFileEntry(auth *coreauth.Auth) gin.H {
@@ -551,6 +575,9 @@ func (h *Handler) buildAuthFileEntry(auth *coreauth.Auth) gin.H {
 			}
 		}
 	}
+	exposeIntegerAuthFileEntryValue(entry, auth, path, "priority_claude")
+	exposeIntegerAuthFileEntryValue(entry, auth, path, "priority_gemini")
+	exposeAntigravityCreditsHint(entry, auth)
 	// Expose note from Attributes (set by synthesizer from JSON "note" field).
 	// Fall back to Metadata for auths registered via UploadAuthFile (no synthesizer).
 	if note := strings.TrimSpace(authAttribute(auth, "note")); note != "" {
@@ -566,6 +593,59 @@ func (h *Handler) buildAuthFileEntry(auth *coreauth.Auth) gin.H {
 		entry["websockets"] = websockets
 	}
 	return entry
+}
+
+func exposeIntegerAuthFileEntryValue(entry gin.H, auth *coreauth.Auth, path string, key string) {
+	if entry == nil || auth == nil || key == "" {
+		return
+	}
+	if value := strings.TrimSpace(authAttribute(auth, key)); value != "" {
+		if parsed, err := strconv.Atoi(value); err == nil {
+			entry[key] = parsed
+			return
+		}
+	}
+	if auth.Metadata != nil {
+		switch raw := auth.Metadata[key].(type) {
+		case float64:
+			entry[key] = int(raw)
+		case int:
+			entry[key] = raw
+		case string:
+			if parsed, err := strconv.Atoi(strings.TrimSpace(raw)); err == nil {
+				entry[key] = parsed
+			}
+		}
+	}
+	if _, exists := entry[key]; exists {
+		return
+	}
+	if path = strings.TrimSpace(path); path == "" {
+		return
+	}
+	if data, err := os.ReadFile(path); err == nil {
+		exposeIntegerJSONFileValue(entry, data, key)
+	}
+}
+
+func exposeAntigravityCreditsHint(entry gin.H, auth *coreauth.Auth) {
+	if entry == nil || auth == nil || !strings.EqualFold(strings.TrimSpace(auth.Provider), "antigravity") {
+		return
+	}
+	hint, ok := coreauth.GetAntigravityCreditsHint(auth.ID)
+	if !ok || !hint.Known {
+		return
+	}
+	entry["antigravity_credits_known"] = hint.Known
+	entry["antigravity_credits_available"] = hint.Available
+	entry["antigravity_credit_amount"] = hint.CreditAmount
+	entry["antigravity_min_credit_amount"] = hint.MinCreditAmount
+	if strings.TrimSpace(hint.PaidTierID) != "" {
+		entry["antigravity_paid_tier_id"] = hint.PaidTierID
+	}
+	if !hint.UpdatedAt.IsZero() {
+		entry["antigravity_credits_updated_at"] = hint.UpdatedAt
+	}
 }
 
 func authWebsocketsValue(auth *coreauth.Auth) (bool, bool) {
@@ -1543,6 +1623,12 @@ func syncAuthFileMetadataFields(auth *coreauth.Auth, touchedRoots map[string]str
 	if _, ok := touchedRoots["priority"]; ok {
 		syncAuthFilePriorityAttribute(auth)
 	}
+	if _, ok := touchedRoots["priority_claude"]; ok {
+		syncAuthFileIntegerAttribute(auth, "priority_claude")
+	}
+	if _, ok := touchedRoots["priority_gemini"]; ok {
+		syncAuthFileIntegerAttribute(auth, "priority_gemini")
+	}
 	if _, ok := touchedRoots["note"]; ok {
 		syncAuthFileNoteAttribute(auth)
 	}
@@ -1588,6 +1674,21 @@ func syncAuthFilePriorityAttribute(auth *coreauth.Auth) {
 		return
 	}
 	auth.Attributes["priority"] = strconv.Itoa(priority)
+}
+
+func syncAuthFileIntegerAttribute(auth *coreauth.Auth, key string) {
+	if auth == nil || key == "" {
+		return
+	}
+	if auth.Attributes == nil {
+		auth.Attributes = make(map[string]string)
+	}
+	priority, ok := authFileIntValue(auth.Metadata[key])
+	if !ok || priority == 0 {
+		delete(auth.Attributes, key)
+		return
+	}
+	auth.Attributes[key] = strconv.Itoa(priority)
 }
 
 func authFileIntValue(value any) (int, bool) {
