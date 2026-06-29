@@ -193,24 +193,49 @@ func pluginRegistration() registration {
 					Description: "Write compact/summarize detection and route rewrite diagnostics to the host log.",
 				},
 				{
+					Name:        "compact-provider",
+					Type:        pluginapi.ConfigFieldTypeString,
+					Description: "Default provider used for compact/summarize route rewrites.",
+				},
+				{
+					Name:        "compact-model",
+					Type:        pluginapi.ConfigFieldTypeString,
+					Description: "Default model used for compact/summarize route rewrites.",
+				},
+				{
+					Name:        "compact-reasoning-effort",
+					Type:        pluginapi.ConfigFieldTypeString,
+					Description: "Default reasoning effort for compact/summarize route rewrites.",
+				},
+				{
+					Name:        "codex-compact-provider",
+					Type:        pluginapi.ConfigFieldTypeString,
+					Description: "Override provider for compact/summarize requests whose source route includes Codex.",
+				},
+				{
 					Name:        "codex-compact-model",
 					Type:        pluginapi.ConfigFieldTypeString,
-					Description: "Model used for Codex compact/summarize requests.",
+					Description: "Override model for compact/summarize requests whose source route includes Codex.",
 				},
 				{
 					Name:        "codex-compact-reasoning-effort",
 					Type:        pluginapi.ConfigFieldTypeString,
-					Description: "Reasoning effort for Codex compact/summarize requests.",
+					Description: "Override reasoning effort for compact/summarize requests whose source route includes Codex.",
+				},
+				{
+					Name:        "antigravity-compact-provider",
+					Type:        pluginapi.ConfigFieldTypeString,
+					Description: "Override provider for compact/summarize requests whose source route includes Antigravity.",
 				},
 				{
 					Name:        "antigravity-compact-model",
 					Type:        pluginapi.ConfigFieldTypeString,
-					Description: "Model used for Antigravity compact/summarize requests.",
+					Description: "Override model for compact/summarize requests whose source route includes Antigravity.",
 				},
 				{
 					Name:        "antigravity-compact-reasoning-effort",
 					Type:        pluginapi.ConfigFieldTypeString,
-					Description: "Reasoning effort for Antigravity compact/summarize requests.",
+					Description: "Override reasoning effort for compact/summarize requests whose source route includes Antigravity.",
 				},
 			},
 		},

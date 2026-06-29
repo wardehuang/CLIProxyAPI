@@ -39,10 +39,21 @@ var compactConfigState = struct {
 
 type compactPluginConfig struct {
 	Debug                             bool   `yaml:"debug" json:"debug"`
+	CompactProvider                   string `yaml:"compact-provider" json:"compact-provider"`
+	CompactModel                      string `yaml:"compact-model" json:"compact-model"`
+	CompactReasoningEffort            string `yaml:"compact-reasoning-effort" json:"compact-reasoning-effort"`
+	CodexCompactProvider              string `yaml:"codex-compact-provider" json:"codex-compact-provider"`
 	CodexCompactModel                 string `yaml:"codex-compact-model" json:"codex-compact-model"`
 	CodexCompactReasoningEffort       string `yaml:"codex-compact-reasoning-effort" json:"codex-compact-reasoning-effort"`
+	AntigravityCompactProvider        string `yaml:"antigravity-compact-provider" json:"antigravity-compact-provider"`
 	AntigravityCompactModel           string `yaml:"antigravity-compact-model" json:"antigravity-compact-model"`
 	AntigravityCompactReasoningEffort string `yaml:"antigravity-compact-reasoning-effort" json:"antigravity-compact-reasoning-effort"`
+}
+
+type compactRouteTarget struct {
+	Provider        string
+	Model           string
+	ReasoningEffort string
 }
 
 type compactDetection struct {
@@ -52,10 +63,7 @@ type compactDetection struct {
 }
 
 func defaultCompactPluginConfig() compactPluginConfig {
-	return compactPluginConfig{
-		CodexCompactModel:       defaultCodexCompactModel,
-		AntigravityCompactModel: defaultAntigravityCompactModel,
-	}
+	return compactPluginConfig{}
 }
 
 func configurePlugin(configYAML []byte) {
@@ -64,9 +72,14 @@ func configurePlugin(configYAML []byte) {
 		var parsed compactPluginConfig
 		if errUnmarshal := yaml.Unmarshal(configYAML, &parsed); errUnmarshal == nil {
 			config.Debug = parsed.Debug
-			config.CodexCompactModel = firstNonEmpty(parsed.CodexCompactModel, config.CodexCompactModel)
+			config.CompactProvider = strings.TrimSpace(parsed.CompactProvider)
+			config.CompactModel = strings.TrimSpace(parsed.CompactModel)
+			config.CompactReasoningEffort = strings.TrimSpace(parsed.CompactReasoningEffort)
+			config.CodexCompactProvider = strings.TrimSpace(parsed.CodexCompactProvider)
+			config.CodexCompactModel = strings.TrimSpace(parsed.CodexCompactModel)
 			config.CodexCompactReasoningEffort = strings.TrimSpace(parsed.CodexCompactReasoningEffort)
-			config.AntigravityCompactModel = firstNonEmpty(parsed.AntigravityCompactModel, config.AntigravityCompactModel)
+			config.AntigravityCompactProvider = strings.TrimSpace(parsed.AntigravityCompactProvider)
+			config.AntigravityCompactModel = strings.TrimSpace(parsed.AntigravityCompactModel)
 			config.AntigravityCompactReasoningEffort = strings.TrimSpace(parsed.AntigravityCompactReasoningEffort)
 		}
 	}
@@ -122,47 +135,55 @@ func rewriteCompactRoute(ctx context.Context, req pluginapi.RouteRewriteRequest,
 		})
 		return pluginapi.RouteRewriteResponse{}
 	}
-	provider, targetModel, reasoningEffort := compactTargetForProviders(req.Providers)
+	target := compactTargetForProviders(req.Providers)
 	metadata := map[string]any{
 		metadataCompactDetected:      true,
 		metadataCompactKind:          detection.Kind,
 		metadataCompactReason:        detection.Reason,
 		metadataCompactOriginalModel: firstNonEmpty(req.RequestedModel, req.NormalizedModel, jsonString(req.Body, "model")),
 	}
-	if provider != "" {
-		metadata[metadataCompactProvider] = provider
+	if target.Provider != "" {
+		metadata[metadataCompactProvider] = target.Provider
 	}
-	if reasoningEffort != "" {
-		metadata["reasoning_effort"] = reasoningEffort
+	if target.ReasoningEffort != "" {
+		metadata["reasoning_effort"] = target.ReasoningEffort
 	}
-	if targetModel == "" {
-		logPluginDebug(hostCallbackID, "compact route detected without target model", map[string]any{
+	if target.Model == "" && target.Provider == "" {
+		logPluginDebug(hostCallbackID, "compact route detected without target", map[string]any{
 			"kind":             detection.Kind,
 			"reason":           detection.Reason,
 			"providers":        req.Providers,
 			"requested_model":  req.RequestedModel,
 			"normalized_model": req.NormalizedModel,
-			"reasoning_effort": reasoningEffort,
+			"reasoning_effort": target.ReasoningEffort,
 		})
 		return pluginapi.RouteRewriteResponse{Metadata: metadata}
 	}
-	metadata[metadataCompactTargetModel] = targetModel
+	if target.Model != "" {
+		metadata[metadataCompactTargetModel] = target.Model
+	}
 	metadata[metadataCompactRouteRewritten] = true
 	logPluginDebug(hostCallbackID, "compact route rewritten", map[string]any{
 		"kind":             detection.Kind,
 		"reason":           detection.Reason,
-		"provider":         provider,
-		"target_model":     targetModel,
-		"reasoning_effort": reasoningEffort,
+		"provider":         target.Provider,
+		"target_model":     target.Model,
+		"reasoning_effort": target.ReasoningEffort,
 		"requested_model":  req.RequestedModel,
 		"normalized_model": req.NormalizedModel,
 		"stream":           req.Stream,
 	})
-	return pluginapi.RouteRewriteResponse{
-		RequestedModel:  targetModel,
-		NormalizedModel: targetModel,
-		Metadata:        metadata,
+	response := pluginapi.RouteRewriteResponse{
+		Metadata: metadata,
 	}
+	if target.Model != "" {
+		response.RequestedModel = target.Model
+		response.NormalizedModel = target.Model
+	}
+	if target.Provider != "" {
+		response.Providers = []string{target.Provider}
+	}
+	return response
 }
 
 func detectCompactRequest(sourceFormat, alt string, body []byte) compactDetection {
@@ -184,7 +205,6 @@ func detectCompactRequest(sourceFormat, alt string, body []byte) compactDetectio
 	return compactDetection{}
 }
 
-
 func isOpenAIResponsesSummarizationRequest(body []byte) bool {
 	if strings.EqualFold(gjson.GetBytes(body, "context_management.type").String(), "compaction") {
 		return true
@@ -194,7 +214,6 @@ func isOpenAIResponsesSummarizationRequest(body []byte) bool {
 	}
 	return strings.EqualFold(gjson.GetBytes(body, "metadata.cpa_compact").String(), "true")
 }
-
 
 func isClaudeMessagesCompactRequest(body []byte) bool {
 	return jsonContainsAnyString(body,
@@ -275,19 +294,82 @@ func textHasCursorSummarizationIntent(text string) bool {
 	return strings.Contains(lower, "<summarization_request")
 }
 
-func compactTargetForProviders(providers []string) (string, string, string) {
+func compactTargetForProviders(providers []string) compactRouteTarget {
 	compactConfigState.RLock()
 	config := compactConfigState.config
 	compactConfigState.RUnlock()
+	target := compactTargetFromConfig(config)
+	sourceProvider := ""
 	for _, provider := range providers {
 		switch normalizeProvider(provider) {
 		case providerCodex:
-			return providerCodex, strings.TrimSpace(config.CodexCompactModel), strings.TrimSpace(config.CodexCompactReasoningEffort)
+			sourceProvider = providerCodex
 		case providerAntigravity:
-			return providerAntigravity, strings.TrimSpace(config.AntigravityCompactModel), strings.TrimSpace(config.AntigravityCompactReasoningEffort)
+			sourceProvider = providerAntigravity
+		}
+		if sourceProvider != "" {
+			break
 		}
 	}
-	return "", "", ""
+	target = applySourceCompactOverride(target, config, sourceProvider)
+	if targetEmpty(target) {
+		target = defaultCompactTargetForSource(sourceProvider)
+	}
+	if target.Provider == "" && sourceProvider != "" && target.Model != "" {
+		target.Provider = sourceProvider
+	}
+	return target
+}
+
+func compactTargetFromConfig(config compactPluginConfig) compactRouteTarget {
+	return compactRouteTarget{
+		Provider:        normalizeProvider(config.CompactProvider),
+		Model:           strings.TrimSpace(config.CompactModel),
+		ReasoningEffort: strings.TrimSpace(config.CompactReasoningEffort),
+	}
+}
+
+func applySourceCompactOverride(target compactRouteTarget, config compactPluginConfig, sourceProvider string) compactRouteTarget {
+	var override compactRouteTarget
+	switch sourceProvider {
+	case providerCodex:
+		override = compactRouteTarget{
+			Provider:        normalizeProvider(config.CodexCompactProvider),
+			Model:           strings.TrimSpace(config.CodexCompactModel),
+			ReasoningEffort: strings.TrimSpace(config.CodexCompactReasoningEffort),
+		}
+	case providerAntigravity:
+		override = compactRouteTarget{
+			Provider:        normalizeProvider(config.AntigravityCompactProvider),
+			Model:           strings.TrimSpace(config.AntigravityCompactModel),
+			ReasoningEffort: strings.TrimSpace(config.AntigravityCompactReasoningEffort),
+		}
+	}
+	if override.Provider != "" {
+		target.Provider = override.Provider
+	}
+	if override.Model != "" {
+		target.Model = override.Model
+	}
+	if override.ReasoningEffort != "" {
+		target.ReasoningEffort = override.ReasoningEffort
+	}
+	return target
+}
+
+func defaultCompactTargetForSource(sourceProvider string) compactRouteTarget {
+	switch sourceProvider {
+	case providerCodex:
+		return compactRouteTarget{Provider: providerCodex, Model: defaultCodexCompactModel}
+	case providerAntigravity:
+		return compactRouteTarget{Provider: providerAntigravity, Model: defaultAntigravityCompactModel}
+	default:
+		return compactRouteTarget{}
+	}
+}
+
+func targetEmpty(target compactRouteTarget) bool {
+	return target.Provider == "" && target.Model == "" && target.ReasoningEffort == ""
 }
 
 func compactDetectionFromMetadata(metadata map[string]any) compactDetection {

@@ -32,9 +32,9 @@ type requestContextInfo struct {
 }
 
 func enrichRequestMetadata(ctx context.Context, req pluginapi.RequestMetadataEnrichRequest, hostCallbackID string) pluginapi.RequestMetadataEnrichResponse {
-	if !isCodexOpenAIRequest(req.SourceFormat, "", req.Model) {
+	if !shouldProcessPromptCacheContext(req.SourceFormat, "", req.Model, req.Headers, req.Body, req.Metadata) {
 		logPluginDebug(hostCallbackID, "request metadata skipped", map[string]any{
-			"reason":        "not_codex_openai_request",
+			"reason":        "not_prompt_cache_context_request",
 			"source_format": req.SourceFormat,
 			"model":         req.Model,
 		})
@@ -208,6 +208,24 @@ func isCodexOpenAIRequest(sourceFormat, toFormat, model string) bool {
 		return false
 	}
 	return strings.Contains(joined, "codex") || strings.Contains(joined, "openai") || strings.Contains(joined, "responses")
+}
+
+func shouldProcessPromptCacheContext(sourceFormat, toFormat, model string, headers http.Header, body []byte, metadata map[string]any) bool {
+	if isCodexOpenAIRequest(sourceFormat, toFormat, model) {
+		return true
+	}
+	joined := strings.ToLower(strings.TrimSpace(sourceFormat) + " " + strings.TrimSpace(toFormat) + " " + strings.TrimSpace(model))
+	if strings.Contains(joined, "antigravity") {
+		return false
+	}
+	return firstNonEmpty(
+		stringFromMetadata(metadata, metadataProjectID),
+		stringFromMetadata(metadata, metadataCPAProjectID),
+		stringFromMetadata(metadata, metadataPromptCacheKey),
+		stringFromMetadata(metadata, metadataCPAPromptCacheKey),
+		extractProjectID(headers, body),
+		extractPromptCacheKey(headers, body),
+	) != ""
 }
 
 func extractProjectID(headers http.Header, body []byte) string {

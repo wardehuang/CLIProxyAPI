@@ -102,6 +102,53 @@ func TestRewriteClaudeMessagesSummarizationTagToCodexModel(t *testing.T) {
 	}
 }
 
+func TestRewriteCompactRouteUsesDefaultTarget(t *testing.T) {
+	configurePlugin([]byte("compact-provider: antigravity\ncompact-model: gemini-unified-compact\ncompact-reasoning-effort: low\n"))
+
+	body := []byte(`{"model":"gpt-5.5","context_management":{"type":"compaction"}}`)
+	routeResp := rewriteCompactRoute(context.Background(), pluginapi.RouteRewriteRequest{
+		SourceFormat:    "openai-response",
+		RequestedModel:  "gpt-5.5",
+		NormalizedModel: "gpt-5.5",
+		Providers:       []string{"codex"},
+		Body:            body,
+	}, "")
+	if routeResp.RequestedModel != "gemini-unified-compact" || routeResp.NormalizedModel != "gemini-unified-compact" {
+		t.Fatalf("route models = %q/%q, want gemini-unified-compact", routeResp.RequestedModel, routeResp.NormalizedModel)
+	}
+	if len(routeResp.Providers) != 1 || routeResp.Providers[0] != providerAntigravity {
+		t.Fatalf("providers = %v, want [%s]", routeResp.Providers, providerAntigravity)
+	}
+	if routeResp.Metadata[metadataCompactProvider] != providerAntigravity {
+		t.Fatalf("provider metadata = %v, want %s", routeResp.Metadata[metadataCompactProvider], providerAntigravity)
+	}
+	if routeResp.Metadata["reasoning_effort"] != "low" {
+		t.Fatalf("reasoning_effort metadata = %v, want low", routeResp.Metadata["reasoning_effort"])
+	}
+}
+
+func TestRewriteCompactRouteSourceOverrideWins(t *testing.T) {
+	configurePlugin([]byte("compact-provider: antigravity\ncompact-model: gemini-unified-compact\ncompact-reasoning-effort: low\ncodex-compact-provider: codex\ncodex-compact-model: gpt-codex-compact\ncodex-compact-reasoning-effort: high\n"))
+
+	body := []byte(`{"model":"gpt-5.5","context_management":{"type":"compaction"}}`)
+	routeResp := rewriteCompactRoute(context.Background(), pluginapi.RouteRewriteRequest{
+		SourceFormat:    "openai-response",
+		RequestedModel:  "gpt-5.5",
+		NormalizedModel: "gpt-5.5",
+		Providers:       []string{"codex"},
+		Body:            body,
+	}, "")
+	if routeResp.RequestedModel != "gpt-codex-compact" || routeResp.NormalizedModel != "gpt-codex-compact" {
+		t.Fatalf("route models = %q/%q, want gpt-codex-compact", routeResp.RequestedModel, routeResp.NormalizedModel)
+	}
+	if len(routeResp.Providers) != 1 || routeResp.Providers[0] != providerCodex {
+		t.Fatalf("providers = %v, want [%s]", routeResp.Providers, providerCodex)
+	}
+	if routeResp.Metadata["reasoning_effort"] != "high" {
+		t.Fatalf("reasoning_effort metadata = %v, want high", routeResp.Metadata["reasoning_effort"])
+	}
+}
+
 func TestCursorNormalRequestWithHistoricalSummarizationTagDoesNotRewriteRoute(t *testing.T) {
 	configurePlugin(nil)
 

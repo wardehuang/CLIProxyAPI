@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -21,11 +22,13 @@ const (
 	metadataPromptCacheKey         = "prompt_cache_key"
 	metadataUpstreamPromptCacheKey = "upstream_prompt_cache_key"
 	metadataPromptCachedID         = "prompt_cached_id"
+	metadataUpstreamURL            = "upstream_url"
 
 	metadataCPAProjectID              = "cpa.project_id"
 	metadataCPAPromptCacheKey         = "cpa.prompt_cache_key"
 	metadataCPAUpstreamPromptCacheKey = "cpa.upstream_prompt_cache_key"
 	metadataCPAPromptCachedID         = "cpa.prompt_cached_id"
+	metadataCPAUpstreamURL            = "cpa.upstream_url"
 )
 
 type usageContextInfo struct {
@@ -75,6 +78,7 @@ type projectUsageStats struct {
 
 func handleUsage(ctx context.Context, record pluginapi.UsageRecord) error {
 	_ = ctx
+	logPluginDebug("usage metadata received", usageMetadataDebugFields(record))
 	info, ok := usageContextInfoFromMetadata(record.Metadata)
 	if !ok {
 		logPluginDebug("usage aggregation skipped", map[string]any{
@@ -126,6 +130,35 @@ func handleUsage(ctx context.Context, record pluginapi.UsageRecord) error {
 		"usage":            projectStats,
 	})
 	return nil
+}
+
+func usageMetadataDebugFields(record pluginapi.UsageRecord) map[string]any {
+	metadata := record.Metadata
+	return map[string]any{
+		"model":                     record.Model,
+		"alias":                     record.Alias,
+		"source":                    record.Source,
+		"metadata_keys":             sortedMetadataKeys(metadata),
+		"project_id":                firstNonEmpty(stringFromMetadata(metadata, metadataCPAProjectID), stringFromMetadata(metadata, metadataProjectID)),
+		"prompt_cache_key":          firstNonEmpty(stringFromMetadata(metadata, metadataCPAPromptCacheKey), stringFromMetadata(metadata, metadataPromptCacheKey)),
+		"upstream_prompt_cache_key": firstNonEmpty(stringFromMetadata(metadata, metadataCPAUpstreamPromptCacheKey), stringFromMetadata(metadata, metadataUpstreamPromptCacheKey)),
+		"prompt_cached_id":          firstNonEmpty(stringFromMetadata(metadata, metadataCPAPromptCachedID), stringFromMetadata(metadata, metadataPromptCachedID)),
+		"upstream_url":              firstNonEmpty(stringFromMetadata(metadata, metadataCPAUpstreamURL), stringFromMetadata(metadata, metadataUpstreamURL)),
+		"request_path":              stringFromMetadata(metadata, "request_path"),
+		"requested_model":           stringFromMetadata(metadata, "requested_model"),
+	}
+}
+
+func sortedMetadataKeys(metadata map[string]any) []string {
+	if len(metadata) == 0 {
+		return nil
+	}
+	keys := make([]string, 0, len(metadata))
+	for key := range metadata {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	return keys
 }
 
 func usageContextInfoFromMetadata(metadata map[string]any) (usageContextInfo, bool) {

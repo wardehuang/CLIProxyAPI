@@ -81,6 +81,20 @@ func NewUsageReporter(ctx context.Context, provider, model string, auth *cliprox
 	return reporter
 }
 
+func WithUpstreamURLMetadata(ctx context.Context, upstreamURL string) context.Context {
+	upstreamURL = strings.TrimSpace(upstreamURL)
+	if upstreamURL == "" {
+		return ctx
+	}
+	metadata := usage.RequestMetadataFromContext(ctx)
+	if metadata == nil {
+		metadata = map[string]any{}
+	}
+	metadata["upstream_url"] = upstreamURL
+	metadata["cpa.upstream_url"] = upstreamURL
+	return usage.WithRequestMetadata(ctx, metadata)
+}
+
 func ExecutorTypeName(executor any) string {
 	if executor == nil {
 		return ""
@@ -458,12 +472,7 @@ func resolveUsageAuthType(auth *cliproxyauth.Auth) string {
 	if auth == nil {
 		return ""
 	}
-	kind, _ := auth.AccountInfo()
-	kind = strings.TrimSpace(kind)
-	if kind == "api_key" {
-		return "apikey"
-	}
-	return kind
+	return auth.AuthKind()
 }
 
 func ParseCodexUsage(data []byte) (usage.Detail, bool) {
