@@ -919,8 +919,8 @@ func TestManager_MarkResult_CloudflareChallenge_On403(t *testing.T) {
 		t.Fatalf("expected NextRetryAfter to be non-zero for cloudflare challenge")
 	}
 	diff := time.Until(state.NextRetryAfter)
-	if diff < 5*time.Second || diff > 25*time.Second {
-		t.Fatalf("expected NextRetryAfter to be ~10 seconds, got %v", diff)
+	if diff < 29*time.Minute+50*time.Second || diff > 30*time.Minute+10*time.Second {
+		t.Fatalf("expected NextRetryAfter to be ~30 minutes, got %v", diff)
 	}
 	if state.StatusMessage != "cloudflare challenge" {
 		t.Fatalf("expected StatusMessage to be 'cloudflare challenge', got %s", state.StatusMessage)

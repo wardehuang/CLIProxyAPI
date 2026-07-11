@@ -29,7 +29,7 @@ func quotaResult(authID, model string) Result {
 	}
 }
 
-func TestMarkResultQuotaBackoffEscalatesOncePerWindow(t *testing.T) {
+func TestMarkResultQuotaBackoffKeepsFixedWindow(t *testing.T) {
 	withQuotaCooldownEnabled(t)
 
 	manager := NewManager(nil, nil, nil)
@@ -48,22 +48,21 @@ func TestMarkResultQuotaBackoffEscalatesOncePerWindow(t *testing.T) {
 		t.Fatalf("expected model state after first failure")
 	}
 	firstState := first.ModelStates["gpt-5"]
-	if firstState.Quota.BackoffLevel != 1 {
-		t.Fatalf("expected BackoffLevel 1 after first failure, got %d", firstState.Quota.BackoffLevel)
+	if firstState.Quota.BackoffLevel != 0 {
+		t.Fatalf("expected fixed cooldown BackoffLevel 0 after first failure, got %d", firstState.Quota.BackoffLevel)
 	}
 	if !firstState.Quota.NextRecoverAt.After(time.Now()) {
 		t.Fatalf("expected open cooldown window after first failure, got %v", firstState.Quota.NextRecoverAt)
 	}
 
-	// A second in-flight failure lands while the first window is still open.
 	manager.MarkResult(context.Background(), quotaResult(auth.ID, "gpt-5"))
 	second, ok := manager.GetByID(auth.ID)
 	if !ok || second == nil || second.ModelStates["gpt-5"] == nil {
 		t.Fatalf("expected model state after second failure")
 	}
 	secondState := second.ModelStates["gpt-5"]
-	if secondState.Quota.BackoffLevel != 1 {
-		t.Fatalf("expected BackoffLevel to stay 1 for in-window failure, got %d", secondState.Quota.BackoffLevel)
+	if secondState.Quota.BackoffLevel != 0 {
+		t.Fatalf("expected fixed cooldown BackoffLevel to stay 0, got %d", secondState.Quota.BackoffLevel)
 	}
 	if !secondState.Quota.NextRecoverAt.Equal(firstState.Quota.NextRecoverAt) {
 		t.Fatalf("expected NextRecoverAt to stay %v for in-window failure, got %v", firstState.Quota.NextRecoverAt, secondState.Quota.NextRecoverAt)
@@ -73,7 +72,7 @@ func TestMarkResultQuotaBackoffEscalatesOncePerWindow(t *testing.T) {
 	}
 }
 
-func TestMarkResultQuotaBackoffEscalatesAfterWindowExpiry(t *testing.T) {
+func TestMarkResultQuotaBackoffKeepsLevelAfterWindowExpiry(t *testing.T) {
 	withQuotaCooldownEnabled(t)
 
 	expired := time.Now().Add(-time.Second)
@@ -101,54 +100,53 @@ func TestMarkResultQuotaBackoffEscalatesAfterWindowExpiry(t *testing.T) {
 		t.Fatalf("expected model state after failure")
 	}
 	state := updated.ModelStates["gpt-5"]
-	if state.Quota.BackoffLevel != 4 {
-		t.Fatalf("expected BackoffLevel 4 after post-window failure, got %d", state.Quota.BackoffLevel)
+	if state.Quota.BackoffLevel != 3 {
+		t.Fatalf("expected fixed cooldown BackoffLevel to stay 3, got %d", state.Quota.BackoffLevel)
 	}
 	if !state.Quota.NextRecoverAt.After(time.Now()) {
 		t.Fatalf("expected a fresh cooldown window, got %v", state.Quota.NextRecoverAt)
 	}
 }
 
-func TestApplyAuthFailureStateQuotaBackoffOncePerWindow(t *testing.T) {
+func TestApplyAuthFailureStateQuotaBackoffUsesFixedWindow(t *testing.T) {
 	now := time.Now()
 	quotaErr := &Error{Code: "rate_limit", Message: "quota", HTTPStatus: http.StatusTooManyRequests}
 	auth := &Auth{ID: "auth-level-quota"}
 
 	applyAuthFailureState(auth, quotaErr, nil, now, false)
-	if auth.Quota.BackoffLevel != 1 {
-		t.Fatalf("expected BackoffLevel 1 after first failure, got %d", auth.Quota.BackoffLevel)
+	if auth.Quota.BackoffLevel != 0 {
+		t.Fatalf("expected fixed cooldown BackoffLevel 0 after first failure, got %d", auth.Quota.BackoffLevel)
 	}
 	firstRecover := auth.Quota.NextRecoverAt
-	if !firstRecover.Equal(now.Add(time.Second)) {
-		t.Fatalf("expected first window to close at %v, got %v", now.Add(time.Second), firstRecover)
+	if !firstRecover.Equal(now.Add(30 * time.Minute)) {
+		t.Fatalf("expected first window to close at %v, got %v", now.Add(30*time.Minute), firstRecover)
 	}
 
-	// In-window failure keeps the current window and level.
 	applyAuthFailureState(auth, quotaErr, nil, now.Add(100*time.Millisecond), false)
-	if auth.Quota.BackoffLevel != 1 {
-		t.Fatalf("expected BackoffLevel to stay 1 for in-window failure, got %d", auth.Quota.BackoffLevel)
+	if auth.Quota.BackoffLevel != 0 {
+		t.Fatalf("expected fixed cooldown BackoffLevel to stay 0, got %d", auth.Quota.BackoffLevel)
 	}
 	if !auth.Quota.NextRecoverAt.Equal(firstRecover) {
 		t.Fatalf("expected NextRecoverAt to stay %v for in-window failure, got %v", firstRecover, auth.Quota.NextRecoverAt)
 	}
 
-	// A failure after the window expired escalates to the next level.
-	applyAuthFailureState(auth, quotaErr, nil, now.Add(2*time.Second), false)
-	if auth.Quota.BackoffLevel != 2 {
-		t.Fatalf("expected BackoffLevel 2 after post-window failure, got %d", auth.Quota.BackoffLevel)
+	postWindowFailureAt := now.Add(31 * time.Minute)
+	applyAuthFailureState(auth, quotaErr, nil, postWindowFailureAt, false)
+	if auth.Quota.BackoffLevel != 0 {
+		t.Fatalf("expected fixed cooldown BackoffLevel to stay 0 after window expiry, got %d", auth.Quota.BackoffLevel)
 	}
-	if !auth.Quota.NextRecoverAt.Equal(now.Add(4 * time.Second)) {
-		t.Fatalf("expected second window to close at %v, got %v", now.Add(4*time.Second), auth.Quota.NextRecoverAt)
+	if !auth.Quota.NextRecoverAt.Equal(postWindowFailureAt.Add(30 * time.Minute)) {
+		t.Fatalf("expected renewed window to close at %v, got %v", postWindowFailureAt.Add(30*time.Minute), auth.Quota.NextRecoverAt)
 	}
 
-	// A provider supplied retry hint always takes effect, even in-window.
 	retryAfter := 10 * time.Second
-	applyAuthFailureState(auth, quotaErr, &retryAfter, now.Add(3*time.Second), false)
-	if auth.Quota.BackoffLevel != 2 {
-		t.Fatalf("expected BackoffLevel to stay 2 with retry hint, got %d", auth.Quota.BackoffLevel)
+	retryHintAt := postWindowFailureAt.Add(time.Second)
+	applyAuthFailureState(auth, quotaErr, &retryAfter, retryHintAt, false)
+	if auth.Quota.BackoffLevel != 0 {
+		t.Fatalf("expected fixed cooldown BackoffLevel to stay 0 with retry hint, got %d", auth.Quota.BackoffLevel)
 	}
-	if !auth.Quota.NextRecoverAt.Equal(now.Add(13 * time.Second)) {
-		t.Fatalf("expected retry hint window to close at %v, got %v", now.Add(13*time.Second), auth.Quota.NextRecoverAt)
+	if !auth.Quota.NextRecoverAt.Equal(retryHintAt.Add(retryAfter)) {
+		t.Fatalf("expected retry hint window to close at %v, got %v", retryHintAt.Add(retryAfter), auth.Quota.NextRecoverAt)
 	}
 }
 
