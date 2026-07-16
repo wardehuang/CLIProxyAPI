@@ -123,7 +123,6 @@ func (r *UsageReporter) SetTranslatedReasoningEffort(payload []byte, format stri
 		return
 	}
 	r.reasoning = thinking.ExtractTranslatedReasoningEffort(payload, format)
-	r.serviceTier = extractServiceTierFromPayload(payload)
 }
 
 func (r *UsageReporter) TrackHTTPClient(client *http.Client) *http.Client {
@@ -287,7 +286,6 @@ func (r *UsageReporter) buildRecordForModel(model string, detail usage.Detail, f
 		AuthType:            r.authType,
 		ReasoningEffort:     r.reasoning,
 		ServiceTier:         r.serviceTier,
-		RequestServiceTier:  r.serviceTier,
 		ResponseServiceTier: strings.TrimSpace(detail.ResponseServiceTier),
 		RequestedAt:         r.requestedAt,
 		Latency:             r.latency(),
@@ -322,7 +320,6 @@ func extractServiceTierFromPayload(payload []byte) string {
 	}
 	return usage.DefaultServiceTier
 }
-
 func failFromErrors(errs ...error) usage.Failure {
 	for _, err := range errs {
 		if err == nil {
