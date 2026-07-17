@@ -22,6 +22,8 @@ const (
 	metadataCPAPromptCacheKey         = "cpa.prompt_cache_key"
 	metadataCPAUpstreamPromptCacheKey = "cpa.upstream_prompt_cache_key"
 	metadataCPAPromptCachedID         = "cpa.prompt_cached_id"
+
+	promptCacheSessionHeader = "Session_id"
 )
 
 type requestContextInfo struct {
@@ -109,9 +111,25 @@ func finalizeRequest(ctx context.Context, req pluginapi.RequestFinalizeRequest, 
 		return pluginapi.RequestFinalizeResponse{}
 	}
 	info, ok := buildRequestContext(ctx, req.Headers, req.Body, req.Metadata, req.Model, hostCallbackID)
-	if !ok || info.ProjectID == "" || info.UpstreamPromptCacheKey == "" {
+	if !ok || info.PromptCacheKey == "" {
 		logPluginDebug(hostCallbackID, "prompt cache finalizer skipped", map[string]any{
-			"reason":     "missing_project_prompt_cache_context",
+			"reason": "missing_prompt_cache_context",
+			"model":  req.Model,
+		})
+		return pluginapi.RequestFinalizeResponse{}
+	}
+	if info.ProjectID == "" {
+		logPluginDebug(hostCallbackID, "native prompt cache session finalized", map[string]any{
+			"prompt_cache_key": info.PromptCacheKey,
+			"headers_synced":   true,
+		})
+		return pluginapi.RequestFinalizeResponse{
+			Headers: http.Header{promptCacheSessionHeader: []string{info.PromptCacheKey}},
+		}
+	}
+	if info.UpstreamPromptCacheKey == "" {
+		logPluginDebug(hostCallbackID, "prompt cache finalizer skipped", map[string]any{
+			"reason":     "missing_upstream_prompt_cache_key",
 			"model":      req.Model,
 			"project_id": info.ProjectID,
 		})
@@ -128,7 +146,9 @@ func finalizeRequest(ctx context.Context, req pluginapi.RequestFinalizeRequest, 
 		})
 		return pluginapi.RequestFinalizeResponse{}
 	}
-	resp := pluginapi.RequestFinalizeResponse{}
+	resp := pluginapi.RequestFinalizeResponse{
+		Headers: http.Header{promptCacheSessionHeader: []string{info.UpstreamPromptCacheKey}},
+	}
 	if changed {
 		resp.Body = body
 	}
@@ -138,7 +158,7 @@ func finalizeRequest(ctx context.Context, req pluginapi.RequestFinalizeRequest, 
 		"upstream_prompt_cache_key": info.UpstreamPromptCacheKey,
 		"prompt_cached_id":          info.PromptCachedID,
 		"body_changed":              changed,
-		"headers_synced":            false,
+		"headers_synced":            true,
 	})
 	return resp
 }
@@ -274,21 +294,33 @@ func extractProjectIDFromBodyText(value any) string {
 }
 
 func projectIDFromTaggedText(text string) string {
+	for _, tagName := range []string{"project-id", "prompt-cache-id"} {
+		projectID := taggedTextValue(text, tagName)
+		if projectID != "" {
+			return projectID
+		}
+	}
+	return ""
+}
+
+func taggedTextValue(text, tagName string) string {
 	lowerText := strings.ToLower(text)
-	start := strings.Index(lowerText, "<project-id>")
+	openTag := "<" + tagName + ">"
+	closeTag := "</" + tagName + ">"
+	start := strings.Index(lowerText, openTag)
 	if start < 0 {
 		return ""
 	}
-	start += len("<project-id>")
-	end := strings.Index(lowerText[start:], "</project-id>")
+	start += len(openTag)
+	end := strings.Index(lowerText[start:], closeTag)
 	if end < 0 {
 		return ""
 	}
-	projectID := strings.TrimSpace(text[start : start+end])
-	if projectID == "" || len(projectID) > 256 || strings.Contains(projectID, "<") {
+	value := strings.TrimSpace(text[start : start+end])
+	if value == "" || len(value) > 256 || strings.Contains(value, "<") {
 		return ""
 	}
-	return projectID
+	return value
 }
 
 func extractPromptCacheKey(headers http.Header, body []byte) string {

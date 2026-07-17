@@ -22,10 +22,24 @@ func TestExtractProjectIDFromBodyTextTag(t *testing.T) {
 	}
 }
 
+func TestExtractProjectIDFromPromptCacheIDTag(t *testing.T) {
+	body := []byte(`{
+		"model":"gpt-5.5",
+		"input":[{
+			"role":"user",
+			"content":"<prompt-cache-id>cpa</prompt-cache-id>"
+		}]
+	}`)
+
+	if got := extractProjectID(nil, body); got != "cpa" {
+		t.Fatalf("project id = %q, want cpa", got)
+	}
+}
+
 func TestExtractProjectIDPrefersStructuredField(t *testing.T) {
 	body := []byte(`{
 		"project_id":"structured",
-		"input":[{"content":"<project-id>text-fallback</project-id>"}]
+		"input":[{"content":"<prompt-cache-id>text-fallback</prompt-cache-id>"}]
 	}`)
 
 	if got := extractProjectID(nil, body); got != "structured" {
@@ -94,12 +108,12 @@ func TestFinalizeRequestWithProjectIDRewritesBodyAndSyncsHeaders(t *testing.T) {
 	if topLevelPromptCacheKey(resp.Body) != info.UpstreamPromptCacheKey {
 		t.Fatalf("final body prompt_cache_key = %q, want %q", topLevelPromptCacheKey(resp.Body), info.UpstreamPromptCacheKey)
 	}
-	if len(resp.Headers) != 0 {
-		t.Fatalf("expected no header rewrite, got %#v", resp.Headers)
+	if got := resp.Headers.Get(promptCacheSessionHeader); got != info.UpstreamPromptCacheKey {
+		t.Fatalf("%s = %q, want %q", promptCacheSessionHeader, got, info.UpstreamPromptCacheKey)
 	}
 }
 
-func TestFinalizeRequestWithoutProjectIDNoops(t *testing.T) {
+func TestFinalizeRequestWithoutProjectIDSyncsNativeSessionID(t *testing.T) {
 	resp := finalizeRequest(context.Background(), pluginapi.RequestFinalizeRequest{
 		SourceFormat: "openai-responses",
 		ToFormat:     "codex",
@@ -110,7 +124,7 @@ func TestFinalizeRequestWithoutProjectIDNoops(t *testing.T) {
 	if len(resp.Body) != 0 {
 		t.Fatalf("expected no body rewrite, got %s", string(resp.Body))
 	}
-	if len(resp.Headers) != 0 {
-		t.Fatalf("expected no headers, got %#v", resp.Headers)
+	if got := resp.Headers.Get(promptCacheSessionHeader); got != "native-key" {
+		t.Fatalf("%s = %q, want native-key", promptCacheSessionHeader, got)
 	}
 }

@@ -36,6 +36,7 @@ func TestUsageQueuePluginPayloadIncludesStableFieldsAndSuccess(t *testing.T) {
 			ReasoningEffort:     "medium",
 			ServiceTier:         "auto",
 			ResponseServiceTier: "default",
+			Generate:            coreusage.GenerateFlag(true),
 			RequestedAt:         time.Date(2026, 4, 25, 0, 0, 0, 0, time.UTC),
 			Latency:             1500 * time.Millisecond,
 			Detail: coreusage.Detail{
@@ -64,6 +65,7 @@ func TestUsageQueuePluginPayloadIncludesStableFieldsAndSuccess(t *testing.T) {
 		requireHeaderField(t, payload, "response_headers", "X-Upstream-Request-Id", []string{"upstream-req-1"})
 		requireHeaderField(t, payload, "response_headers", "Retry-After", []string{"30"})
 		requireBoolField(t, payload, "failed", false)
+		requireBoolField(t, payload, "generate", true)
 		requireFailField(t, payload, http.StatusOK, "")
 	})
 }
@@ -101,6 +103,45 @@ func TestUsageQueuePluginPayloadIncludesMetadata(t *testing.T) {
 		requireMetadataField(t, payload, "cpa.prompt_cache_key", "project:gpt-5-codex:cpa")
 		requireMetadataBoolField(t, payload, "cpa.compact.detected", true)
 		requireMetadataBoolField(t, payload, "cpa.compact.route_rewritten", true)
+	})
+}
+
+func TestUsageQueuePluginPayloadIncludesGenerateFalse(t *testing.T) {
+	withEnabledQueue(t, func() {
+		ctx := internallogging.WithResponseStatusHolder(context.Background())
+		internallogging.SetResponseStatus(ctx, http.StatusOK)
+
+		(&usageQueuePlugin{}).HandleUsage(ctx, coreusage.Record{
+			Provider: "openai",
+			Model:    "gpt-5.4",
+			Generate: coreusage.GenerateFlag(false),
+			Detail: coreusage.Detail{
+				InputTokens: 1,
+				TotalTokens: 1,
+			},
+		})
+
+		payload := popSinglePayload(t)
+		requireBoolField(t, payload, "generate", false)
+	})
+}
+
+func TestUsageQueuePluginPayloadDefaultsGenerateTrueWhenOmitted(t *testing.T) {
+	withEnabledQueue(t, func() {
+		ctx := internallogging.WithResponseStatusHolder(context.Background())
+		internallogging.SetResponseStatus(ctx, http.StatusOK)
+
+		(&usageQueuePlugin{}).HandleUsage(ctx, coreusage.Record{
+			Provider: "openai",
+			Model:    "gpt-5.4",
+			Detail: coreusage.Detail{
+				InputTokens: 1,
+				TotalTokens: 1,
+			},
+		})
+
+		payload := popSinglePayload(t)
+		requireBoolField(t, payload, "generate", true)
 	})
 }
 
