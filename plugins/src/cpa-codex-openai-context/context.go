@@ -23,7 +23,8 @@ const (
 	metadataCPAUpstreamPromptCacheKey = "cpa.upstream_prompt_cache_key"
 	metadataCPAPromptCachedID         = "cpa.prompt_cached_id"
 
-	promptCacheSessionHeader = "Session_id"
+	promptCacheSessionHeader    = "Session_id"
+	xaiPromptCacheSessionHeader = "X-Grok-Conv-Id"
 )
 
 type requestContextInfo struct {
@@ -61,9 +62,9 @@ func enrichRequestMetadata(ctx context.Context, req pluginapi.RequestMetadataEnr
 }
 
 func interceptRequestAfterAuth(ctx context.Context, req pluginapi.RequestInterceptRequest, hostCallbackID string) pluginapi.RequestInterceptResponse {
-	if !isCodexOpenAIRequest(req.SourceFormat, req.ToFormat, req.Model) {
+	if !isPromptCacheRequest(req.SourceFormat, req.ToFormat, req.Model) {
 		logPluginDebug(hostCallbackID, "prompt cache rewrite skipped", map[string]any{
-			"reason":        "not_codex_openai_request",
+			"reason":        "not_prompt_cache_request",
 			"source_format": req.SourceFormat,
 			"to_format":     req.ToFormat,
 			"model":         req.Model,
@@ -101,16 +102,20 @@ func interceptRequestAfterAuth(ctx context.Context, req pluginapi.RequestInterce
 }
 
 func finalizeRequest(ctx context.Context, req pluginapi.RequestFinalizeRequest, hostCallbackID string) pluginapi.RequestFinalizeResponse {
-	if !isCodexOpenAIRequest(req.SourceFormat, req.ToFormat, req.Model) {
+	if !isPromptCacheRequest(req.SourceFormat, req.ToFormat, req.Model) {
 		logPluginDebug(hostCallbackID, "prompt cache finalizer skipped", map[string]any{
-			"reason":        "not_codex_openai_request",
+			"reason":        "not_prompt_cache_request",
 			"source_format": req.SourceFormat,
 			"to_format":     req.ToFormat,
 			"model":         req.Model,
 		})
 		return pluginapi.RequestFinalizeResponse{}
 	}
-	info, ok := buildRequestContext(ctx, req.Headers, req.Body, req.Metadata, req.Model, hostCallbackID)
+	info, ok := contextInfoFromMetadata(req.Metadata)
+	metadataContextIncomplete := !ok || info.PromptCacheKey == "" || (info.ProjectID != "" && info.UpstreamPromptCacheKey == "")
+	if metadataContextIncomplete {
+		info, ok = buildRequestContext(ctx, req.Headers, req.Body, req.Metadata, req.Model, hostCallbackID)
+	}
 	if !ok || info.PromptCacheKey == "" {
 		logPluginDebug(hostCallbackID, "prompt cache finalizer skipped", map[string]any{
 			"reason": "missing_prompt_cache_context",
@@ -119,12 +124,14 @@ func finalizeRequest(ctx context.Context, req pluginapi.RequestFinalizeRequest, 
 		return pluginapi.RequestFinalizeResponse{}
 	}
 	if info.ProjectID == "" {
+		sessionHeader := promptCacheSessionHeaderForRequest(req.SourceFormat, req.ToFormat, req.Model)
 		logPluginDebug(hostCallbackID, "native prompt cache session finalized", map[string]any{
 			"prompt_cache_key": info.PromptCacheKey,
+			"session_header":   sessionHeader,
 			"headers_synced":   true,
 		})
 		return pluginapi.RequestFinalizeResponse{
-			Headers: http.Header{promptCacheSessionHeader: []string{info.PromptCacheKey}},
+			Headers: http.Header{sessionHeader: []string{info.PromptCacheKey}},
 		}
 	}
 	if info.UpstreamPromptCacheKey == "" {
@@ -146,9 +153,8 @@ func finalizeRequest(ctx context.Context, req pluginapi.RequestFinalizeRequest, 
 		})
 		return pluginapi.RequestFinalizeResponse{}
 	}
-	resp := pluginapi.RequestFinalizeResponse{
-		Headers: http.Header{promptCacheSessionHeader: []string{info.UpstreamPromptCacheKey}},
-	}
+	sessionHeader := promptCacheSessionHeaderForRequest(req.SourceFormat, req.ToFormat, req.Model)
+	resp := pluginapi.RequestFinalizeResponse{Headers: http.Header{sessionHeader: []string{info.UpstreamPromptCacheKey}}}
 	if changed {
 		resp.Body = body
 	}
@@ -158,6 +164,7 @@ func finalizeRequest(ctx context.Context, req pluginapi.RequestFinalizeRequest, 
 		"upstream_prompt_cache_key": info.UpstreamPromptCacheKey,
 		"prompt_cached_id":          info.PromptCachedID,
 		"body_changed":              changed,
+		"session_header":            sessionHeader,
 		"headers_synced":            true,
 	})
 	return resp
@@ -230,8 +237,32 @@ func isCodexOpenAIRequest(sourceFormat, toFormat, model string) bool {
 	return strings.Contains(joined, "codex") || strings.Contains(joined, "openai") || strings.Contains(joined, "responses")
 }
 
+func isXAIRequest(sourceFormat, toFormat, model string) bool {
+	normalizedFormats := strings.ToLower(strings.TrimSpace(sourceFormat) + " " + strings.TrimSpace(toFormat))
+	if strings.Contains(normalizedFormats, "xai") {
+		return true
+	}
+	normalizedModel := strings.ToLower(strings.TrimSpace(model))
+	return strings.HasPrefix(normalizedModel, "grok") || strings.Contains(normalizedModel, "/grok")
+}
+
+func isPromptCacheRequest(sourceFormat, toFormat, model string) bool {
+	joined := strings.ToLower(strings.TrimSpace(sourceFormat) + " " + strings.TrimSpace(toFormat) + " " + strings.TrimSpace(model))
+	if strings.Contains(joined, "antigravity") {
+		return false
+	}
+	return isCodexOpenAIRequest(sourceFormat, toFormat, model) || isXAIRequest(sourceFormat, toFormat, model)
+}
+
+func promptCacheSessionHeaderForRequest(sourceFormat, toFormat, model string) string {
+	if isXAIRequest(sourceFormat, toFormat, model) {
+		return xaiPromptCacheSessionHeader
+	}
+	return promptCacheSessionHeader
+}
+
 func shouldProcessPromptCacheContext(sourceFormat, toFormat, model string, headers http.Header, body []byte, metadata map[string]any) bool {
-	if isCodexOpenAIRequest(sourceFormat, toFormat, model) {
+	if isPromptCacheRequest(sourceFormat, toFormat, model) {
 		return true
 	}
 	joined := strings.ToLower(strings.TrimSpace(sourceFormat) + " " + strings.TrimSpace(toFormat) + " " + strings.TrimSpace(model))

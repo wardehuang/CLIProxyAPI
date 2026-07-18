@@ -128,3 +128,27 @@ func TestFinalizeRequestWithoutProjectIDSyncsNativeSessionID(t *testing.T) {
 		t.Fatalf("%s = %q, want native-key", promptCacheSessionHeader, got)
 	}
 }
+
+func TestFinalizeXAIRequestRewritesBodyAndSyncsGrokConversationHeader(t *testing.T) {
+	info, ok := buildRequestContext(context.Background(), nil, []byte(`{"project_id":"cpa"}`), nil, "grok-4.3", "")
+	if !ok {
+		t.Fatal("expected request context")
+	}
+	resp := finalizeRequest(context.Background(), pluginapi.RequestFinalizeRequest{
+		SourceFormat: "claude",
+		ToFormat:     "codex",
+		Model:        "grok-4.3",
+		Body:         []byte(`{"model":"grok-4.3","input":"hello"}`),
+		Metadata:     metadataFromContextInfo(info),
+	}, "")
+
+	if got := topLevelPromptCacheKey(resp.Body); got != info.UpstreamPromptCacheKey {
+		t.Fatalf("final body prompt_cache_key = %q, want %q", got, info.UpstreamPromptCacheKey)
+	}
+	if got := resp.Headers.Get(xaiPromptCacheSessionHeader); got != info.UpstreamPromptCacheKey {
+		t.Fatalf("%s = %q, want %q", xaiPromptCacheSessionHeader, got, info.UpstreamPromptCacheKey)
+	}
+	if got := resp.Headers.Get(promptCacheSessionHeader); got != "" {
+		t.Fatalf("%s = %q, want empty", promptCacheSessionHeader, got)
+	}
+}
