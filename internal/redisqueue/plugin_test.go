@@ -106,6 +106,49 @@ func TestUsageQueuePluginPayloadIncludesMetadata(t *testing.T) {
 	})
 }
 
+func TestUsageQueuePluginDropsNonJSONMetadataAndStillEnqueues(t *testing.T) {
+	withEnabledQueue(t, func() {
+		ctx := internallogging.WithRequestID(context.Background(), "ctx-request-id")
+		ctx = internallogging.WithEndpoint(ctx, "POST /v1/chat/completions")
+		ctx = internallogging.WithResponseStatusHolder(ctx)
+		internallogging.SetResponseStatus(ctx, http.StatusOK)
+
+		callbackInvoked := false
+		metadata := map[string]any{
+			"cpa.project_id":                 "cpa",
+			"selected_auth_callback":         func(authID string) { callbackInvoked = true },
+			"selected_auth_index_callback":   func(authIndex string) {},
+			"nested":                         map[string]any{"ok": "value", "bad": func() {}},
+		}
+		(&usageQueuePlugin{}).HandleUsage(ctx, coreusage.Record{
+			Provider:    "antigravity",
+			Model:       "gemini-3.1-flash-lite",
+			Alias:       "gemini-3.1-flash-lite",
+			APIKey:      "test-key",
+			AuthIndex:   "0",
+			AuthType:    "oauth",
+			Source:      "user@example.com",
+			RequestedAt: time.Date(2026, 7, 18, 0, 0, 0, 0, time.UTC),
+			Detail:      coreusage.Detail{InputTokens: 3, TotalTokens: 3},
+			Metadata:    metadata,
+		})
+
+		payload := popSinglePayload(t)
+		requireStringField(t, payload, "provider", "antigravity")
+		requireStringField(t, payload, "model", "gemini-3.1-flash-lite")
+		requireMetadataField(t, payload, "cpa.project_id", "cpa")
+		queuedMetadata := metadataPayload(t, payload)
+		for _, key := range []string{"selected_auth_callback", "selected_auth_index_callback", "nested"} {
+			if _, exists := queuedMetadata[key]; exists {
+				t.Fatalf("metadata unexpectedly contains %q", key)
+			}
+		}
+		if callbackInvoked {
+			t.Fatalf("callback should not be invoked by usage queue marshaling")
+		}
+	})
+}
+
 func TestUsageQueuePluginPayloadIncludesGenerateFalse(t *testing.T) {
 	withEnabledQueue(t, func() {
 		ctx := internallogging.WithResponseStatusHolder(context.Background())

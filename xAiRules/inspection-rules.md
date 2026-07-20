@@ -2,7 +2,7 @@
 
 > 本文记录 `CPA-Manager-Plus` 当前 wXAi 巡检源码的真实行为。
 >
-> 最后核对日期：2026-07-18
+> 最后核对日期：2026-07-20
 >
 > 权威实现目录：`CPA-Manager-Plus/apps/manager-server/internal/service/wxaiinspection`
 
@@ -61,8 +61,9 @@ billing 和 credits 只更新账号类型与额度展示，不参与账号健康
 - URL：`https://cli-chat-proxy.grok.com/v1/responses`
 - Body：`{"model":"grok-4.5","input":"ping","stream":false}`
 - `X-XAI-Token-Auth`：`xai-grok-cli`
-- `x-grok-client-version`：`0.2.93`
-- `User-Agent`：`xai-grok-workspace/0.2.93`
+- `x-grok-client-version`：每轮从 CPA `GET /v0/management/xai-client-version` 读取核心 `xaiClientVersionValue`；当前值为 `0.2.93`。
+- `User-Agent`：`xai-grok-workspace/<xaiClientVersionValue>`；当前值为 `xai-grok-workspace/0.2.93`。
+- Manager 不保留巡检专用的版本常量，也不在读取失败时回退到硬编码版本。
 
 ### 4.2 明确结果
 
@@ -116,6 +117,13 @@ fallback 的明确结果按同一分类规则处理。fallback 仍为 404/5xx �
 4. 有有效恢复时间：冷却至恢复时间加 1 分钟。
 5. 没有有效恢复时间：冷却至当前时间加 24 小时再加 1 分钟。
 
+额度耗尽响应留痕：
+
+- 所有 xAI HTTP 响应将脱敏后的 response headers 保存到 `wxai_inspection_http_responses.response_headers_json`。
+- `Authorization`、`Proxy-Authorization`、`Set-Cookie`、`Set-Cookie2` 的值替换为 `[REDACTED]`，其他 header 原样保存。
+- 额度耗尽时写入 `wXAi 额度耗尽响应已记录` 日志，包含 `responseHeaders`、`recoverySource`、`upstreamRecoverAtMs` 和最终 `recoverAtMs`。
+- `recoverySource` 为 `header:Retry-After`、`header:X-RateLimit-Reset`、`header:X-Rate-Limit-Reset`、`response_body` 或 `default_24h`。
+
 冷却期间：
 
 - 存在尚未到期、目标 priority 为 `-1` 的额度 adjustment。priority patch 失败时回滚本次 adjustment，不形成假冷却。
@@ -125,12 +133,22 @@ fallback 的明确结果按同一分类规则处理。fallback 仍为 404/5xx �
 - 不下载 auth JSON，不调用 responses、chat completions、billing 或 credits。
 - priority 保持当前值。
 - 服务器新 run 复用上一轮状态和额度数据，并标记 `skipped`。
+- `/v0/management/wxai-inspection/latest` 为存在 adjustment 的账号返回 `recoverAtMs`；账号状态页面在额度耗尽账号名下显示该冷却截止时间。
 
 冷却到期后，服务器巡检和手动刷新可重新探测。若再次返回额度耗尽，更新新的 `recover_at_ms`。
 
 ## 7. 服务器巡检
 
 服务器巡检创建新 `wxai_inspection_runs`。
+
+定时触发规则：
+
+1. Worker 每 30 秒检查一次配置。
+2. `time_points` 模式按配置时区计算不晚于当前时刻的最近一个时间点，使用该时间点生成 `triggerKey`，格式为 `YYYY-MM-DD HH:mm`。
+3. 若到点时手动巡检或条件巡检占用全局巡检锁，本次 tick 跳过；锁释放后的后续 tick 仍会检查最近应执行时间点并补跑，不要求精确命中配置分钟。
+4. 若存在同一 `scheduled + triggerKey` 的 run，无论该 run 成功或失败，都不重复执行。
+5. 若跨过多个时间点，只补跑最近一个应执行时间点，不追溯创建完整积压队列。
+6. `interval` 模式保持原行为：按最近一次定时 run 的开始时间和 `intervalMinutes` 判断是否到期。
 
 候选规则：
 
@@ -140,12 +158,13 @@ fallback 的明确结果按同一分类规则处理。fallback 仍为 404/5xx �
 
 服务器巡检执行顺序：
 
-1. 从 CPA 下载 auth JSON。
-2. 读取 `access_token`。
-3. 执行 responses 主探测，必要时执行 chat completions fallback。
-4. 探测健康后，按持久化账号类型刷新 billing 元数据。
-5. 根据探测结果调整或恢复 priority。
-6. 保存结果、状态详情、原始 HTTP 响应和窗口花费。
+1. 读取 CPA `proxy-url` 和核心 `xaiClientVersionValue`，创建本轮共享的 xAI HTTP client。
+2. 从 CPA 下载 auth JSON。
+3. 读取 `access_token`。
+4. 执行 responses 主探测，必要时执行 chat completions fallback。
+5. 探测健康后，按持久化账号类型刷新 billing 元数据。
+6. 根据探测结果调整或恢复 priority。
+7. 保存结果、状态详情、原始 HTTP 响应和窗口花费。
 
 ## 8. 条件巡检
 
@@ -173,6 +192,14 @@ fallback 的明确结果按同一分类规则处理。fallback 仍为 404/5xx �
 
 每轮有实际 xAI 请求的巡检通过 CPA Management API 读取 `/v0/management/config` 中的 `proxy-url`。
 
+Management API 调用顺序：
+
+1. `GET /v0/management/config` 读取 `proxy-url`。
+2. `GET /v0/management/xai-client-version` 读取 CPA 核心 xAI chat executor 使用的 `xaiClientVersionValue`。
+3. 两项均读取成功后，创建 xAI HTTP client 并开始账号探测。
+
+`xai-client-version` endpoint 不属于可配置项，只暴露 CPA 核心当前编译值。endpoint 请求失败、返回非 2xx、响应无法解析或版本为空时，本轮实际请求巡检 fail-fast，不发送 responses、chat completions、billing 或 credits 请求。
+
 - `proxy-url` 非空：为 xAI HTTP client 设置该代理。
 - `socks5://` 和 `socks5h://` 使用 SOCKS5 Dialer，不通过 `http.Transport.Proxy`。
 - SOCKS5 同时兼容标准格式 `socks5://user:password@host:port` 和现网旧格式 `socks5://user:password:host:port`。
@@ -181,6 +208,7 @@ fallback 的明确结果按同一分类规则处理。fallback 仍为 404/5xx �
 - Management config 读取失败：巡检 fail-fast。
 - `proxy-url` 不是包含 scheme 和 host 的合法 URL：巡检 fail-fast。
 - CPA auth-files 下载和 priority patch 仍直接访问 CPA Management API，不经过该 xAI 代理 client。
+- 服务器巡检、手动刷新、条件巡检在实际发送 xAI 请求前写入 `wXAi 请求代理已配置` 日志，记录 `proxyConfigured`、`proxyMode`、脱敏后的 `proxyHost` 和本次账号数，不记录用户名或密码。
 
 ## 11. priority 恢复与原始响应
 

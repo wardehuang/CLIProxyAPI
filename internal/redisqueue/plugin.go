@@ -114,7 +114,7 @@ func (p *usageQueuePlugin) HandleUsage(ctx context.Context, record coreusage.Rec
 		ReasoningEffort:     reasoningEffort,
 		ServiceTier:         serviceTier,
 		ResponseServiceTier: responseServiceTier,
-		Metadata:            cloneMetadata(record.Metadata),
+		Metadata:            cloneJSONSafeMetadata(record.Metadata),
 	})
 	if err != nil {
 		return
@@ -194,17 +194,6 @@ func resolveSuccess(ctx context.Context) bool {
 
 func resolveEndpoint(ctx context.Context) string {
 	return strings.TrimSpace(internallogging.GetEndpoint(ctx))
-}
-
-func cloneMetadata(src map[string]any) map[string]any {
-	if len(src) == 0 {
-		return nil
-	}
-	dst := make(map[string]any, len(src))
-	for key, value := range src {
-		dst[key] = value
-	}
-	return dst
 }
 
 const httpStatusBadRequest = 400
