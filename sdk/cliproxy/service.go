@@ -472,6 +472,15 @@ func (s *Service) consumeAuthUpdates(ctx context.Context) {
 					break labelDrain
 				}
 			}
+			xaiUpdateCount := 0
+			for _, pendingUpdate := range updates {
+				if pendingUpdate.Auth != nil && strings.EqualFold(pendingUpdate.Auth.Provider, "xai") {
+					xaiUpdateCount++
+				}
+			}
+			if xaiUpdateCount > 0 {
+				log.Infof("XAI_COOLDOWN_TRACE phase=watcher_queue update_count=%d xai_update_count=%d skip_persist=true", len(updates), xaiUpdateCount)
+			}
 			s.handleAuthUpdates(ctx, updates)
 		}
 	}
@@ -507,6 +516,15 @@ func (s *Service) handleAuthUpdates(ctx context.Context, updates []watcher.AuthU
 		return
 	}
 	updates = coalesceAuthUpdates(updates)
+	xaiUpdateCount := 0
+	for _, update := range updates {
+		if update.Auth != nil && strings.EqualFold(update.Auth.Provider, "xai") {
+			xaiUpdateCount++
+		}
+	}
+	if xaiUpdateCount > 0 {
+		log.Infof("XAI_COOLDOWN_TRACE phase=watcher_updates update_count=%d xai_update_count=%d", len(updates), xaiUpdateCount)
+	}
 	s.cfgMu.RLock()
 	cfg := s.cfg
 	s.cfgMu.RUnlock()
@@ -693,19 +711,56 @@ func (s *Service) prepareCoreAuthForModelRegistration(ctx context.Context, auth 
 	// immediately for API calls, rather than waiting for model registration to complete.
 	op := "register"
 	var err error
+	isXAIAuth := strings.EqualFold(auth.Provider, "xai")
 	if existing, ok := s.coreManager.GetByID(auth.ID); ok {
+		isXAIAuth = isXAIAuth || strings.EqualFold(existing.Provider, "xai")
+		incomingModelStateCount := len(auth.ModelStates)
+		existingModelStateCount := len(existing.ModelStates)
+		preserveExistingModelStates := false
 		auth.CreatedAt = existing.CreatedAt
 		if !existing.Disabled && existing.Status != coreauth.StatusDisabled && !auth.Disabled && auth.Status != coreauth.StatusDisabled {
 			auth.LastRefreshedAt = existing.LastRefreshedAt
 			auth.NextRefreshAfter = existing.NextRefreshAfter
 			if len(auth.ModelStates) == 0 && len(existing.ModelStates) > 0 {
 				auth.ModelStates = existing.ModelStates
+				preserveExistingModelStates = true
 			}
+		}
+		if isXAIAuth {
+			log.Infof(
+				"XAI_COOLDOWN_TRACE phase=watcher_update_before auth_id=%s incoming_model_state_count=%d existing_model_state_count=%d preserve_existing_model_states=%t incoming_state=%s existing_state=%s",
+				auth.ID,
+				incomingModelStateCount,
+				existingModelStateCount,
+				preserveExistingModelStates,
+				xaiCooldownStateSummary(auth),
+				xaiCooldownStateSummary(existing),
+			)
 		}
 		op = "update"
 		_, err = s.coreManager.Update(ctx, auth)
 	} else {
 		_, err = s.coreManager.Register(ctx, auth)
+	}
+	if err == nil && isXAIAuth {
+		current, exists := s.coreManager.GetByID(auth.ID)
+		if exists && current != nil {
+			xaiCooldownModelCount := 0
+			now := time.Now()
+			for _, state := range current.ModelStates {
+				if state != nil && state.Unavailable && state.NextRetryAfter.After(now) {
+					xaiCooldownModelCount++
+				}
+			}
+			log.Infof(
+				"XAI_COOLDOWN_TRACE phase=watcher_update_after auth_id=%s operation=%s model_state_count=%d cooldown_model_state_count=%d state=%s",
+				auth.ID,
+				op,
+				len(current.ModelStates),
+				xaiCooldownModelCount,
+				xaiCooldownStateSummary(current),
+			)
+		}
 	}
 	if err != nil {
 		log.Errorf("failed to %s auth %s: %v", op, auth.ID, err)
@@ -774,6 +829,9 @@ func (s *Service) configureCooldownStateStore(cfg *config.Config) {
 		return
 	}
 	if cfg == nil || !cfg.SaveCooldownStatus || cfg.Home.Enabled {
+		if cfg != nil {
+			log.Infof("XAI_COOLDOWN_TRACE phase=cooldown_store_configuration configured=false save_cooldown_status=%t home_enabled=%t", cfg.SaveCooldownStatus, cfg.Home.Enabled)
+		}
 		s.coreManager.SetCooldownStateStore(nil)
 		return
 	}
@@ -787,6 +845,7 @@ func (s *Service) configureCooldownStateStore(cfg *config.Config) {
 		s.coreManager.SetCooldownStateStore(nil)
 		return
 	}
+	log.Infof("XAI_COOLDOWN_TRACE phase=cooldown_store_configuration configured=true save_cooldown_status=true home_enabled=false")
 	s.coreManager.SetCooldownStateStore(coreauth.NewFileCooldownStateStoreWithAuthDir(authDir, authDir))
 }
 

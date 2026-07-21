@@ -9,6 +9,7 @@ import (
 
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/registry"
 	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/executor"
+	log "github.com/sirupsen/logrus"
 )
 
 // schedulerStrategy identifies which built-in routing semantics the scheduler should apply.
@@ -235,10 +236,51 @@ func (s *authScheduler) pickSingleWithStrategy(ctx context.Context, provider, mo
 		}
 		return true
 	}
+	shard.promoteExpiredLocked(time.Now())
+	totalCandidates, cooldownCandidates, earliestRetryAfter := shard.availabilitySummaryLocked(predicate)
 	if picked := shard.pickReadyLocked(preferWebsocket, strategy, predicate); picked != nil {
+		if providerKey == "xai" {
+			logEntryWithRequestID(ctx).WithFields(log.Fields{
+				"provider":                  providerKey,
+				"model":                     modelKey,
+				"strategy":                  schedulerStrategyName(strategy),
+				"selected_auth_id":          picked.ID,
+				"selected_priority":         authPriority(picked),
+				"candidate_count":           totalCandidates,
+				"cooldown_candidate_count":  cooldownCandidates,
+				"earliest_next_retry_after": earliestRetryAfter,
+				"tried_auth_count":          len(tried),
+				"prefer_websocket":          preferWebsocket,
+			}).Info("xAI scheduler selected credential")
+		}
 		return picked, nil
 	}
+	if providerKey == "xai" {
+		logEntryWithRequestID(ctx).WithFields(log.Fields{
+			"provider":                  providerKey,
+			"model":                     modelKey,
+			"strategy":                  schedulerStrategyName(strategy),
+			"candidate_count":           totalCandidates,
+			"cooldown_candidate_count":  cooldownCandidates,
+			"earliest_next_retry_after": earliestRetryAfter,
+			"tried_auth_count":          len(tried),
+			"prefer_websocket":          preferWebsocket,
+		}).Warn("xAI scheduler found no ready credential")
+	}
 	return nil, shard.unavailableErrorLocked(provider, model, predicate)
+}
+
+func schedulerStrategyName(strategy schedulerStrategy) string {
+	switch strategy {
+	case schedulerStrategyFillFirst:
+		return "fill_first"
+	case schedulerStrategyRoundRobin:
+		return "round_robin"
+	case schedulerStrategyCustom:
+		return "custom"
+	default:
+		return "current"
+	}
 }
 
 func providerPrefersWebsocketTransport(providerKey string) bool {

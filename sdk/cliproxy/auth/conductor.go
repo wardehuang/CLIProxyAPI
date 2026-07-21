@@ -577,8 +577,14 @@ func (m *Manager) RestoreCooldownStates(ctx context.Context) error {
 		return errLoad
 	}
 	if len(records) == 0 {
+		logEntryWithRequestID(ctx).Debug("cooldown state restore found no records")
 		return nil
 	}
+	xaiRecordCount := countCooldownStateRecordsForProvider(records, "xai")
+	logEntryWithRequestID(ctx).WithFields(log.Fields{
+		"record_count":     len(records),
+		"xai_record_count": xaiRecordCount,
+	}).Info("loaded persisted cooldown state records")
 
 	now := time.Now()
 	authLevelRecords := make([]CooldownStateRecord, 0)
@@ -610,6 +616,16 @@ func (m *Manager) RestoreCooldownStates(ctx context.Context) error {
 			m.scheduler.upsertAuth(snapshot)
 		}
 	}
+	restoredXAICount := 0
+	for _, snapshot := range snapshotsByID {
+		if strings.EqualFold(snapshot.Provider, "xai") {
+			restoredXAICount++
+		}
+	}
+	logEntryWithRequestID(ctx).WithFields(log.Fields{
+		"restored_auth_count":     len(snapshotsByID),
+		"restored_xai_auth_count": restoredXAICount,
+	}).Info("applied persisted cooldown state records")
 	m.persistCooldownStates(ctx)
 	return nil
 }
@@ -813,11 +829,33 @@ func (m *Manager) persistCooldownStates(ctx context.Context) {
 	}
 	records, store := m.cooldownStateSnapshot()
 	if store == nil {
+		logEntryWithRequestID(ctx).Debug("cooldown state persistence skipped because no store is configured")
 		return
 	}
+	xaiRecordCount := countCooldownStateRecordsForProvider(records, "xai")
 	if errSave := store.Save(ctx, records); errSave != nil {
-		logEntryWithRequestID(ctx).Warnf("failed to persist cooldown state: %v", errSave)
+		logEntryWithRequestID(ctx).WithError(errSave).WithFields(log.Fields{
+			"record_count":     len(records),
+			"xai_record_count": xaiRecordCount,
+		}).Warn("failed to persist cooldown state")
+		return
 	}
+	if xaiRecordCount > 0 {
+		logEntryWithRequestID(ctx).WithFields(log.Fields{
+			"record_count":     len(records),
+			"xai_record_count": xaiRecordCount,
+		}).Info("persisted cooldown state records")
+	}
+}
+
+func countCooldownStateRecordsForProvider(records []CooldownStateRecord, provider string) int {
+	count := 0
+	for _, record := range records {
+		if strings.EqualFold(record.Provider, provider) {
+			count++
+		}
+	}
+	return count
 }
 
 func (m *Manager) cooldownStateSnapshot() ([]CooldownStateRecord, CooldownStateStore) {
@@ -1388,7 +1426,7 @@ func finishForceMappedStreamChunks(rewriter *StreamRewriter) []byte {
 	return rewriter.Finish()
 }
 
-func (m *Manager) availableAuthsForRouteModel(auths []*Auth, provider, routeModel string, now time.Time) ([]*Auth, error) {
+func (m *Manager) availableAuthsForRouteModel(ctx context.Context, auths []*Auth, provider, routeModel string, now time.Time) ([]*Auth, error) {
 	if len(auths) == 0 {
 		return nil, &Error{Code: "auth_not_found", Message: "no auth candidates"}
 	}
@@ -1399,6 +1437,7 @@ func (m *Manager) availableAuthsForRouteModel(auths []*Auth, provider, routeMode
 	for _, candidate := range auths {
 		checkModel := m.selectionModelForAuth(candidate, routeModel)
 		blocked, reason, next := isAuthBlockedForModel(candidate, checkModel, now)
+		logXAIAvailabilityDecision(ctx, "legacy_availability_filter", candidate, routeModel, checkModel, blocked, reason, next)
 		if !blocked {
 			priority := authPriority(candidate)
 			availableByPriority[priority] = append(availableByPriority[priority], candidate)
@@ -2317,6 +2356,20 @@ func (m *Manager) Load(ctx context.Context) error {
 		auth.EnsureIndex()
 		m.auths[auth.ID] = auth.Clone()
 	}
+	loadedXAIAuthCount := 0
+	loadedXAICooldownModelCount := 0
+	now := time.Now()
+	for _, auth := range m.auths {
+		if auth == nil || !strings.EqualFold(auth.Provider, "xai") {
+			continue
+		}
+		loadedXAIAuthCount++
+		for _, state := range auth.ModelStates {
+			if state != nil && state.Unavailable && state.NextRetryAfter.After(now) {
+				loadedXAICooldownModelCount++
+			}
+		}
+	}
 	cfg, _ := m.runtimeConfig.Load().(*internalconfig.Config)
 	if cfg == nil {
 		cfg = &internalconfig.Config{}
@@ -2324,6 +2377,11 @@ func (m *Manager) Load(ctx context.Context) error {
 	m.rebuildAPIKeyModelAliasLocked(cfg)
 	m.mu.Unlock()
 	m.syncScheduler()
+	logEntryWithRequestID(ctx).WithFields(log.Fields{
+		"loaded_auth_count":               len(items),
+		"loaded_xai_auth_count":           loadedXAIAuthCount,
+		"loaded_xai_cooldown_model_count": loadedXAICooldownModelCount,
+	}).Info("loaded authentication state from store")
 	return nil
 }
 
@@ -3725,12 +3783,16 @@ func (m *Manager) MarkResult(ctx context.Context, result Result) {
 	setModelQuota := false
 	var authSnapshot *Auth
 	cooldownStateChanged := false
+	var authPersistErr error
+	authPersistenceSkipped := shouldSkipPersist(ctx)
+	cooldownStoreConfigured := false
 
 	m.mu.Lock()
 	if auth, ok := m.auths[result.AuthID]; ok && auth != nil {
 		now := time.Now()
 		var cooldownRecordsBefore []CooldownStateRecord
 		trackCooldownState := m.cooldownStore != nil
+		cooldownStoreConfigured = trackCooldownState
 		if trackCooldownState {
 			cooldownRecordsBefore = m.cooldownStateRecordsForAuthLocked(auth, now)
 		}
@@ -3871,7 +3933,7 @@ func (m *Manager) MarkResult(ctx context.Context, result Result) {
 			}
 		}
 
-		_ = m.persist(ctx, auth)
+		authPersistErr = m.persist(ctx, auth)
 		authSnapshot = auth.Clone()
 		if trackCooldownState {
 			cooldownRecordsAfter := m.cooldownStateRecordsForAuthLocked(auth, now)
@@ -3884,6 +3946,40 @@ func (m *Manager) MarkResult(ctx context.Context, result Result) {
 	}
 	if authSnapshot != nil && cooldownStateChanged {
 		m.persistCooldownStates(context.Background())
+	}
+	if authPersistErr != nil {
+		logEntryWithRequestID(ctx).WithError(authPersistErr).WithFields(log.Fields{
+			"auth_id":  result.AuthID,
+			"provider": result.Provider,
+			"model":    result.Model,
+		}).Warn("failed to persist authentication state after execution result")
+	}
+	if isXAIQuotaResult(result, authSnapshot) {
+		state := authSnapshot.ModelStates[result.Model]
+		cooldownUntil := authSnapshot.NextRetryAfter
+		quota := authSnapshot.Quota
+		if state != nil {
+			cooldownUntil = state.NextRetryAfter
+			quota = state.Quota
+		}
+		cooldownSeconds := int64(0)
+		if cooldownUntil.After(time.Now()) {
+			cooldownSeconds = int64(time.Until(cooldownUntil).Seconds())
+		}
+		logEntryWithRequestID(ctx).Warnf(
+			"XAI_COOLDOWN_TRACE phase=mark_result_429 auth_id=%s model=%s retry_after_seconds=%d next_retry_after=%s cooldown_seconds_remaining=%d quota_exceeded=%t quota_backoff_level=%d cooldown_state_changed=%t cooldown_store_configured=%t auth_persistence_skip_requested=%t auth_persistence_failed=%t",
+			result.AuthID,
+			result.Model,
+			durationSecondsFromResult(result.RetryAfter),
+			diagnosticTime(cooldownUntil),
+			cooldownSeconds,
+			quota.Exceeded,
+			quota.BackoffLevel,
+			cooldownStateChanged,
+			cooldownStoreConfigured,
+			authPersistenceSkipped,
+			authPersistErr != nil,
+		)
 	}
 
 	if clearModelQuota && result.Model != "" {
@@ -3900,6 +3996,23 @@ func (m *Manager) MarkResult(ctx context.Context, result Result) {
 
 	m.hook.OnResult(ctx, result)
 	m.publishErrorEvent(result, authSnapshot)
+}
+
+func isXAIQuotaResult(result Result, auth *Auth) bool {
+	if result.Success || statusCodeFromResult(result.Error) != http.StatusTooManyRequests {
+		return false
+	}
+	if auth != nil && strings.EqualFold(auth.Provider, "xai") {
+		return true
+	}
+	return strings.EqualFold(result.Provider, "xai")
+}
+
+func durationSecondsFromResult(duration *time.Duration) int64 {
+	if duration == nil {
+		return 0
+	}
+	return int64(duration.Seconds())
 }
 
 func (m *Manager) recordAvailabilityNeutralResult(ctx context.Context, result Result) {
@@ -4869,7 +4982,7 @@ func (m *Manager) pickNextLegacy(ctx context.Context, provider, model string, op
 		m.mu.RUnlock()
 		return nil, nil, &Error{Code: "auth_not_found", Message: "no auth available"}
 	}
-	available, errAvailable := m.availableAuthsForRouteModel(candidates, provider, model, time.Now())
+	available, errAvailable := m.availableAuthsForRouteModel(ctx, candidates, provider, model, time.Now())
 	if errAvailable != nil {
 		m.mu.RUnlock()
 		return nil, nil, errAvailable
@@ -4887,6 +5000,7 @@ func (m *Manager) pickNextLegacy(ctx context.Context, provider, model string, op
 			return nil, nil, errPick
 		}
 	}
+	logXAISelectionDecision(ctx, "legacy_selection", selected, model, len(candidates), len(available), handled)
 	if selected == nil {
 		return nil, nil, &Error{Code: "auth_not_found", Message: "selector returned no auth"}
 	}
@@ -5079,7 +5193,7 @@ func (m *Manager) pickNextMixedLegacy(ctx context.Context, providers []string, m
 		m.mu.RUnlock()
 		return nil, nil, "", &Error{Code: "auth_not_found", Message: "no auth available"}
 	}
-	available, errAvailable := m.availableAuthsForRouteModel(candidates, "mixed", model, time.Now())
+	available, errAvailable := m.availableAuthsForRouteModel(ctx, candidates, "mixed", model, time.Now())
 	if errAvailable != nil {
 		m.mu.RUnlock()
 		return nil, nil, "", errAvailable
@@ -5097,6 +5211,7 @@ func (m *Manager) pickNextMixedLegacy(ctx context.Context, providers []string, m
 			return nil, nil, "", errPick
 		}
 	}
+	logXAISelectionDecision(ctx, "legacy_mixed_selection", selected, model, len(candidates), len(available), handled)
 	if selected == nil {
 		return nil, nil, "", &Error{Code: "auth_not_found", Message: "selector returned no auth"}
 	}

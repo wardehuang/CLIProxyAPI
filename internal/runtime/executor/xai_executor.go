@@ -2802,11 +2802,28 @@ func xaiStatusErr(code int, body []byte) statusErr {
 	if msg == "" {
 		msg = strings.ToLower(string(body))
 	}
+	classification := "generic_429"
 	if strings.Contains(codeStr, "free-usage-exhausted") ||
 		strings.Contains(msg, "free-usage-exhausted") ||
 		strings.Contains(msg, "included free usage") {
 		d := xaiFreeUsageExhaustedCooldown
 		err.retryAfter = &d
+		classification = "free_usage_exhausted"
 	}
+	log.WithFields(log.Fields{
+		"provider":            "xai",
+		"status_code":         code,
+		"classification":      classification,
+		"upstream_error_code": codeStr,
+		"retry_after_seconds": durationSeconds(err.retryAfter),
+		"response_body_size":  len(body),
+	}).Warn("xAI 429 classified for credential cooldown")
 	return err
+}
+
+func durationSeconds(duration *time.Duration) int64 {
+	if duration == nil {
+		return 0
+	}
+	return int64(duration.Seconds())
 }
