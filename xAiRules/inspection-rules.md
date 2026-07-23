@@ -2,7 +2,7 @@
 
 > 本文记录 `CPA-Manager-Plus` 当前 wXAi 巡检源码的真实行为。
 >
-> 最后核对日期：2026-07-20
+> 最后核对日期：2026-07-22
 >
 > 权威实现目录：`CPA-Manager-Plus/apps/manager-server/internal/service/wxaiinspection`
 
@@ -15,6 +15,7 @@
 - HTTP 状态、额度状态与 priority 的映射。
 - FREE/SUPER 类型识别与持久化。
 - timeout、重试、CPA `proxy-url`、结果落库和 priority 恢复。
+- xAI 业务请求 HTTP 429 的条件巡检即时触发、并发和 run 复用规则。
 
 若本文与源码冲突，以源码为准，并立即修正文档。
 
@@ -78,6 +79,14 @@ billing 和 credits 只更新账号类型与额度展示，不参与账号健康
 
 仅 `free-usage-exhausted` 类错误可判定额度耗尽。billing 百分比、credits 百分比和普通 HTTP 429 均不能判定额度耗尽。
 
+CPA 的实际 xAI 业务请求失败并产生 HTTP 429 usage event 后分流处理：
+
+1. 当 `fail_body`、`raw_json` 或 `fail_summary` 中可明确识别 `free-usage-exhausted`、`used all the included free usage` 或 `included free usage has been exhausted` 时，直接进入请求额度落盘快速路径。
+2. 快速路径不查询最近 10 分钟条件候选，不下载 auth JSON，不读取 xAI client version，不创建 xAI HTTP client，也不发送 responses、chat completions、billing 或 credits 请求。
+3. wXAi 巡检配置启用时，快速路径通过 CPA Management API 读取 xAI auth file 列表，按 `fileName + authIndex`、唯一 `fileName`、唯一 `authIndex` 匹配当次请求账号；匹配后直接将 priority 调整为 `-1`，写入 `wxai_priority_adjustments`，账号类型未知时写为 `FREE`；存在可复用 run 时再写巡检结果、状态详情和日志。
+4. 明确额度事件不触发条件巡检。账号无法安全匹配或 priority patch 失败时记录错误，也不退回到再次发送 xAI 探测请求。
+5. 无法明确判定额度耗尽的普通 HTTP 429 才立即触发条件巡检，并由条件巡检重新探测后决定 priority `-2` 或 `-1`。
+
 ### 4.3 含糊结果与 fallback
 
 以下主探测结果视为含糊：
@@ -117,12 +126,17 @@ fallback 的明确结果按同一分类规则处理。fallback 仍为 404/5xx �
 4. 有有效恢复时间：冷却至恢复时间加 1 分钟。
 5. 没有有效恢复时间：冷却至当前时间加 24 小时再加 1 分钟。
 
+请求额度落盘快速路径复用同一恢复规则：优先使用 usage event 从响应 header 派生的 `header_quota_recover_at_ms`，其次解析当次失败响应 body；均无有效恢复时间时使用默认 24 小时加 1 分钟。
+
+若自动化设置中的 `quotaCooldownEnabled` 同时开启，同一明确额度 usage event 还会独立进入既有 `quota-auto-disable` 流程：该流程按 auth file 保存 CPAMP 所有权并临时设置 `disabled=true`，24 小时后仅恢复由 CPAMP 本次自动停用的文件。该流程与 wXAi priority `-1` adjustment 独立，不替代请求额度落盘快速路径。
+
 额度耗尽响应留痕：
 
 - 所有 xAI HTTP 响应将脱敏后的 response headers 保存到 `wxai_inspection_http_responses.response_headers_json`。
 - `Authorization`、`Proxy-Authorization`、`Set-Cookie`、`Set-Cookie2` 的值替换为 `[REDACTED]`，其他 header 原样保存。
 - 额度耗尽时写入 `wXAi 额度耗尽响应已记录` 日志，包含 `responseHeaders`、`recoverySource`、`upstreamRecoverAtMs` 和最终 `recoverAtMs`。
 - `recoverySource` 为 `header:Retry-After`、`header:X-RateLimit-Reset`、`header:X-Rate-Limit-Reset`、`response_body` 或 `default_24h`。
+- 请求额度落盘快速路径复用业务 usage event，不把业务响应伪装成巡检 HTTP 响应，因此不新增 `wxai_inspection_http_responses` 记录。
 
 冷却期间：
 
@@ -140,6 +154,8 @@ fallback 的明确结果按同一分类规则处理。fallback 仍为 404/5xx �
 ## 7. 服务器巡检
 
 服务器巡检创建新 `wxai_inspection_runs`。
+
+xAI 业务请求 HTTP 429 不启动服务器巡检，也不创建新的服务器巡检 run。明确额度耗尽时直接落盘；普通 429 才触发条件巡检。
 
 定时触发规则：
 
@@ -168,6 +184,13 @@ fallback 的明确结果按同一分类规则处理。fallback 仍为 404/5xx �
 
 ## 8. 条件巡检
 
+触发来源：
+
+1. 条件巡检 worker 启动后立即检查一次，之后每 30 秒检查一次。
+2. collector 新收到的 usage event 中，存在 `failed=true`、`fail_status_code=429`，且 `provider`（为空时使用 `auth_provider_snapshot`）归一化为 `xai`，但当次响应不能明确判定额度耗尽时，立即触发一次。
+
+同一批 usage events 即使包含多个普通 429，也只触发一次。即时触发和 30 秒 worker 共用同一个条件巡检 worker 本地运行锁，以及 wXAi 巡检服务的全局运行锁；已有条件、服务器或手动巡检运行时，本次普通 429 触发跳过，不排队、不重试。
+
 条件候选算法保持不变：
 
 - 查询最近 10 分钟 `usage_events`。
@@ -178,7 +201,11 @@ fallback 的明确结果按同一分类规则处理。fallback 仍为 404/5xx �
 - 其他 priority 可进入。
 - 同一账号去重，候选原因仍为 `active_recent`。
 
-候选生成后，再统一过滤仍处于额度冷却期的账号。条件巡检复用最近一次服务器 run，不创建新 run。
+候选生成后，再统一过滤仍处于额度冷却期的账号。条件巡检复用最近一次巡检 run，不创建新 run；最近 run 不存在、ID 无效或状态为 `running` 时跳过。普通 429 即时触发不按报错账号单独巡检，仍按上述规则重新查询最近 10 分钟 usage events 并筛选全部候选账号。
+
+明确额度耗尽事件不进入上述条件候选算法。快速路径收到事件后立即排队处理；同一 worker 内的快速路径串行执行，并复用 wXAi 巡检服务全局运行锁。若已有服务器、手动或条件巡检运行，快速路径每 250ms 等待锁释放后执行，不等待 30 秒定时 tick。一个批次同时存在明确额度事件和普通 429 时，先完成明确额度落盘，再触发一次普通条件巡检，使已进入 `-1` 冷却的账号被候选过滤。
+
+快速路径不创建 run。最近 run 存在且非 `running` 时，结果、状态详情和 `【wXAi 请求额度落盘】` 日志复用该 run；无可复用 run 时仍修改 CPA priority，并持久化 `wxai_priority_adjustments` 和 `wxai_account_profiles`，但不伪造巡检结果或日志 run。
 
 ## 9. 手动刷新
 
@@ -187,6 +214,8 @@ fallback 的明确结果按同一分类规则处理。fallback 仍为 404/5xx �
 - 停用账号保持停用，不执行 xAI 请求。
 - 冷却账号保持额度耗尽状态，不执行 xAI 请求。
 - 其他账号执行与服务器巡检相同的 responses、fallback、billing 元数据刷新和 priority 处理。
+
+普通 429 即时触发和明确额度快速路径均不是手动刷新：不接受页面传入的指定账号参数，也不创建手动 run。明确额度快速路径使用 usage event 的 auth file 快照定位账号，不执行手动刷新探测。
 
 ## 10. CPA proxy-url
 
@@ -209,6 +238,7 @@ Management API 调用顺序：
 - `proxy-url` 不是包含 scheme 和 host 的合法 URL：巡检 fail-fast。
 - CPA auth-files 下载和 priority patch 仍直接访问 CPA Management API，不经过该 xAI 代理 client。
 - 服务器巡检、手动刷新、条件巡检在实际发送 xAI 请求前写入 `wXAi 请求代理已配置` 日志，记录 `proxyConfigured`、`proxyMode`、脱敏后的 `proxyHost` 和本次账号数，不记录用户名或密码。
+- 请求额度落盘快速路径不创建 xAI HTTP client，不读取 `proxy-url` 或 `xai-client-version`，只通过 CPA Management API 读取 auth file 列表并 patch priority。
 
 ## 11. priority 恢复与原始响应
 
@@ -216,3 +246,6 @@ Management API 调用顺序：
 - priority adjustment 保存原 priority，避免异常类型变化时丢失初始值。
 - responses、chat completions、billing、credits 的 HTTP 响应均追加保存到 `wxai_inspection_http_responses`。
 - timeout 没有 HTTP 响应，不写原始响应记录；重试成功后保存成功尝试的响应。
+- 明确额度耗尽的业务请求 HTTP 429 直接生成 `isQuota=true`、`errorKind=quota_exhausted`、HTTP 429 的结果，priority 调整为 `-1`；账号类型未知时落盘为 `FREE`。
+- 请求额度快速路径复用 `lowerWxaiPriority`：先保存或更新 adjustment，再 patch CPA priority；patch 失败时回滚本次 adjustment，避免形成假冷却。
+- 普通业务请求 HTTP 429 只作为条件巡检即时触发信号，不能直接修改 priority。
