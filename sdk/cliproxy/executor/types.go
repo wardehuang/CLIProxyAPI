@@ -147,6 +147,8 @@ type Options struct {
 	RequestAfterAuthInterceptor RequestAfterAuthInterceptor
 	// RequestFinalizer runs after provider payload construction and immediately before upstream send.
 	RequestFinalizer RequestFinalizer
+	// ExecutionLifecycle owns Home-dispatched execution resources. Executors must not add it to request metadata.
+	ExecutionLifecycle ExecutionLifecycle
 }
 
 // ResponseFormatOrSource returns the response target format for an execution.
