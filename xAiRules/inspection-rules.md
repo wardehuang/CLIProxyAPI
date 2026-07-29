@@ -2,7 +2,7 @@
 
 > 本文记录 `CPA-Manager-Plus` 当前 wXAi 巡检源码的真实行为。
 >
-> 最后核对日期：2026-07-22
+> 最后核对日期：2026-07-28
 >
 > 权威实现目录：`CPA-Manager-Plus/apps/manager-server/internal/service/wxaiinspection`
 
@@ -23,11 +23,11 @@
 
 | priority | 含义 | 巡检处理 |
 |---:|---|---|
-| `-1` | `free-usage-exhausted` | 冷却结束前所有巡检跳过 |
-| `-2` | 普通账号异常或请求异常 | 服务器巡检继续检查；条件巡检可检查 |
-| `-3` | 旧版托管异常值 | 服务器巡检继续检查；条件巡检可检查 |
-| `-4` | HTTP 401 | 服务器巡检继续检查；条件巡检可检查 |
-| `-5` | 停用 | 所有巡检跳过 xAI 网络请求 |
+| `-1` | `free-usage-exhausted` | 冷却结束前服务器/条件巡检跳过；手动刷新仍探测 |
+| `-2` | 普通账号异常或请求异常 | 服务器巡检继续检查；条件巡检可检查；手动刷新可检查 |
+| `-3` | 旧版托管异常值 | 服务器巡检继续检查；条件巡检可检查；手动刷新可检查 |
+| `-4` | HTTP 401 | 服务器巡检继续检查；条件巡检可检查；手动刷新可检查 |
+| `-5` | 停用 | 服务器/条件巡检跳过 xAI 网络请求；手动刷新仍探测（成功不恢复 `-5`） |
 | 其他值或空值 | 正常账号 | 按候选规则检查 |
 
 托管 priority 为 `-1/-2/-3/-4`。托管账号探测恢复健康后，priority 恢复为 `1`。
@@ -143,13 +143,11 @@ fallback 的明确结果按同一分类规则处理。fallback 仍为 404/5xx �
 - 存在尚未到期、目标 priority 为 `-1` 的额度 adjustment。priority patch 失败时回滚本次 adjustment，不形成假冷却。
 - 服务器巡检跳过。
 - 条件巡检在原候选算法完成后过滤。
-- 手动刷新跳过。
-- 不下载 auth JSON，不调用 responses、chat completions、billing 或 credits。
-- priority 保持当前值。
-- 服务器新 run 复用上一轮状态和额度数据，并标记 `skipped`。
+- 手动刷新**不跳过**：仍执行 billing + responses 探测；成功可恢复 priority，失败可更新冷却。
+- 服务器/条件巡检冷却跳过时：不下载 auth JSON，不调用 responses、chat completions、billing 或 credits；priority 保持当前值；服务器新 run 复用上一轮状态和额度数据，并标记 `skipped`。
 - `/v0/management/wxai-inspection/latest` 为存在 adjustment 的账号返回 `recoverAtMs`；账号状态页面在额度耗尽账号名下显示该冷却截止时间。
 
-冷却到期后，服务器巡检和手动刷新可重新探测。若再次返回额度耗尽，更新新的 `recover_at_ms`。
+冷却到期后，服务器巡检可重新探测。手动刷新在冷却期内也可强制探测。若再次返回额度耗尽，更新新的 `recover_at_ms`。
 
 ## 7. 服务器巡检
 
@@ -172,6 +170,17 @@ xAI 业务请求 HTTP 429 不启动服务器巡检，也不创建新的服务器
 2. 额度冷却未结束：冷却集合，不执行 xAI 请求。
 3. 其余所有 xAI 账号：全部参与巡检，不再按普通或托管 priority 区分。
 
+探测并发（`workers`）：
+
+1. 同时运行的探测 worker 数上限为 `settings.Workers`（≤0 时按 1；不超过本轮候选账号数）。
+2. worker **错峰启动**：第 1 个立即启动，之后每间隔 **10 秒**（`wxaiProbeWorkerStartStagger`）再启动 1 个，直到达到上限。
+3. **取账号**也全局错峰：任意 worker 开始探测一个账号前，与上一账号开始时刻至少间隔 **10 秒**（`wxaiProbeAccountTakeStagger`）。第 1 个账号立即开始；第 5、6… 个同样受此间隔约束，不是 worker 空闲就立刻开探。
+4. 账号经 channel 投递；已启动的 worker 取到账号后先过取账号门闩，再执行 `inspectSingleAccount`。不是一次性为全部账号开线程。
+5. 因此同时 in-flight 探测数 ≤ `workers`，但新账号启动节奏约为每 10 秒一个（探测耗时 > 10 秒时才会叠满并发）。
+6. 上下文取消时停止再启动后续 worker，并中断取账号等待；已启动 worker 在 jobs channel 关闭后退出。
+7. 条件巡检复用同一 `inspectAccounts` 错峰逻辑。
+8. `deleteWorkers`（处置并发）对 wXAi 无效：不自动 disable/delete，priority 调整在探测 worker 内同步完成。
+
 服务器巡检执行顺序：
 
 1. 读取 CPA `proxy-url` 和核心 `xaiClientVersionValue`，创建本轮共享的 xAI HTTP client。
@@ -189,7 +198,7 @@ xAI 业务请求 HTTP 429 不启动服务器巡检，也不创建新的服务器
 1. 条件巡检 worker 启动后立即检查一次，之后每 30 秒检查一次。
 2. collector 新收到的 usage event 中，存在 `failed=true`、`fail_status_code=429`，且 `provider`（为空时使用 `auth_provider_snapshot`）归一化为 `xai`，但当次响应不能明确判定额度耗尽时，立即触发一次。
 
-同一批 usage events 即使包含多个普通 429，也只触发一次。即时触发和 30 秒 worker 共用同一个条件巡检 worker 本地运行锁，以及 wXAi 巡检服务的全局运行锁；已有条件、服务器或手动巡检运行时，本次普通 429 触发跳过，不排队、不重试。
+同一批 usage events 即使包含多个普通 429，也只触发一次。即时触发和 30 秒 worker 共用同一个条件巡检 worker 本地运行锁，以及 wXAi 巡检服务的全局运行锁；已有条件或服务器巡检运行时，本次普通 429 触发跳过，不排队、不重试。单账号手动刷新不占用全局运行锁，不阻塞也不被阻塞。
 
 条件候选算法保持不变：
 
@@ -203,19 +212,40 @@ xAI 业务请求 HTTP 429 不启动服务器巡检，也不创建新的服务器
 
 候选生成后，再统一过滤仍处于额度冷却期的账号。条件巡检复用最近一次巡检 run，不创建新 run；最近 run 不存在、ID 无效或状态为 `running` 时跳过。普通 429 即时触发不按报错账号单独巡检，仍按上述规则重新查询最近 10 分钟 usage events 并筛选全部候选账号。
 
-明确额度耗尽事件不进入上述条件候选算法。快速路径收到事件后立即排队处理；同一 worker 内的快速路径串行执行，并复用 wXAi 巡检服务全局运行锁。若已有服务器、手动或条件巡检运行，快速路径每 250ms 等待锁释放后执行，不等待 30 秒定时 tick。一个批次同时存在明确额度事件和普通 429 时，先完成明确额度落盘，再触发一次普通条件巡检，使已进入 `-1` 冷却的账号被候选过滤。
+明确额度耗尽事件不进入上述条件候选算法。快速路径收到事件后立即排队处理；同一 worker 内的快速路径串行执行，并复用 wXAi 巡检服务全局运行锁。若已有服务器或条件巡检运行，快速路径每 250ms 等待锁释放后执行，不等待 30 秒定时 tick。单账号手动刷新不占用该锁。一个批次同时存在明确额度事件和普通 429 时，先完成明确额度落盘，再触发一次普通条件巡检，使已进入 `-1` 冷却的账号被候选过滤。
 
 快速路径不创建 run。最近 run 存在且非 `running` 时，结果、状态详情和 `【wXAi 请求额度落盘】` 日志复用该 run；无可复用 run 时仍修改 CPA priority，并持久化 `wxai_priority_adjustments` 和 `wxai_account_profiles`，但不伪造巡检结果或日志 run。
 
 ## 9. 手动刷新
 
-手动刷新只针对指定账号：
+实现文件：`manual_refresh.go`。入口：`POST /v0/management/wxai-inspection/manual-refresh`。
 
-- 停用账号保持停用，不执行 xAI 请求。
-- 冷却账号保持额度耗尽状态，不执行 xAI 请求。
-- 其他账号执行与服务器巡检相同的 responses、fallback、billing 元数据刷新和 priority 处理。
+独立流程规则：
 
-普通 429 即时触发和明确额度快速路径均不是手动刷新：不接受页面传入的指定账号参数，也不创建手动 run。明确额度快速路径使用 usage event 的 auth file 快照定位账号，不执行手动刷新探测。
+1. **不占用** wXAi 巡检服务全局运行锁（`acquireRun`）。服务器巡检、条件巡检、请求额度落盘进行中时，手动刷新仍可执行。
+2. 不创建新的全量巡检 run：必须复用最近一次 run 写结果/状态/日志。若尚无任何 run，直接返回错误 `至少有过一次服务器巡检`（HTTP 400），不探测、不落库。
+3. 只针对请求指定的单个账号；不跳过停用（`-5`）或额度冷却（`-1`）。
+4. 健康判定以 responses 为准；billing/credits 只提供元数据，须先成功才进入 responses。
+
+单账号执行顺序：
+
+1. 读取 CPA `proxy-url` 与 `xai-client-version`，创建 xAI HTTP client（`proxy-url` 为 socks5/socks5h 时走 SOCKS5 Dialer）。
+2. 下载 auth JSON，读取 `access_token`。
+3. 解码 JWT：`bot_flag_source` 非空则设 `priority=-6` 并结束。
+4. 账号类型未知：调用 `GET /v1/billing` 判定 `FREE/SUPER` 并落盘；失败则按探测失败处理，不调用 responses。
+5. 按类型刷新 billing 元数据（须成功）：
+   - `SUPER`：`GET /v1/billing?format=credits`（若本轮已做过月度 billing 则只调 credits；否则月度与 credits 并发）。
+   - `FREE` 或其他：`GET /v1/billing?format=credits`。
+   - billing/credits 失败：按探测失败调整 priority，**不**调用 responses。
+6. billing 成功后，**无论 FREE/SUPER**，一律经上述 xAI HTTP client（CPA 代理，含 socks5）调用：
+   - `POST https://cli-chat-proxy.grok.com/v1/responses`
+   - Body：`{"model":"grok-4.5","input":"ping","stream":false}`
+7. 以 responses 结果判定健康：
+   - 成功：恢复托管异常 priority（`-1/-2/-3/-4` → 正常值）；`-5` 不在托管集合，成功后保持停用。
+   - 失败：按既有规则映射 `quota_exhausted` → `-1`，401 → `-4`，其他 → `-2`。
+8. 写入巡检结果、账号状态详情、窗口花费；日志前缀 `【wXAi 手动刷新】`。
+
+普通 429 即时触发和明确额度快速路径均不是手动刷新：不接受页面传入的指定账号参数。明确额度快速路径使用 usage event 的 auth file 快照定位账号，不执行手动刷新探测。
 
 ## 10. CPA proxy-url
 
@@ -238,6 +268,7 @@ Management API 调用顺序：
 - `proxy-url` 不是包含 scheme 和 host 的合法 URL：巡检 fail-fast。
 - CPA auth-files 下载和 priority patch 仍直接访问 CPA Management API，不经过该 xAI 代理 client。
 - 服务器巡检、手动刷新、条件巡检在实际发送 xAI 请求前写入 `wXAi 请求代理已配置` 日志，记录 `proxyConfigured`、`proxyMode`、脱敏后的 `proxyHost` 和本次账号数，不记录用户名或密码。
+- 手动刷新的 `POST /v1/responses` 必须走该 xAI HTTP client（即 CPA `proxy-url`，含 socks5）；billing/credits 仍经 CPA Management `api-call`，不经该代理 client。
 - 请求额度落盘快速路径不创建 xAI HTTP client，不读取 `proxy-url` 或 `xai-client-version`，只通过 CPA Management API 读取 auth file 列表并 patch priority。
 
 ## 11. priority 恢复与原始响应

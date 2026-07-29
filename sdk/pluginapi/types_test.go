@@ -27,6 +27,7 @@ var _ RequestMetadataEnricher = (*compileTimePlugin)(nil)
 var _ RouteRewriter = (*compileTimePlugin)(nil)
 var _ RequestInterceptor = (*compileTimePlugin)(nil)
 var _ RequestFinalizer = (*compileTimePlugin)(nil)
+var _ RequestLifecyclePlugin = (*compileTimePlugin)(nil)
 var _ ResponseInterceptor = (*compileTimePlugin)(nil)
 var _ StreamChunkInterceptor = (*compileTimePlugin)(nil)
 var _ ThinkingApplier = (*compileTimePlugin)(nil)
@@ -532,6 +533,8 @@ func (compileTimePlugin) EnrichRequestMetadata(context.Context, RequestMetadataE
 func (compileTimePlugin) RewriteRoute(context.Context, RouteRewriteRequest) (RouteRewriteResponse, error) {
 	return RouteRewriteResponse{}, nil
 }
+
+func (compileTimePlugin) HandleRequestComplete(context.Context, RequestCompletion) error { return nil }
 
 func (compileTimePlugin) InterceptResponse(context.Context, ResponseInterceptRequest) (ResponseInterceptResponse, error) {
 	return ResponseInterceptResponse{}, nil

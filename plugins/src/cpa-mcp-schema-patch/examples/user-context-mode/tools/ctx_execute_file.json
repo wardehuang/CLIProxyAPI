@@ -1,0 +1,49 @@
+{
+  "name": "ctx_execute_file",
+  "description": "Read a file into a sandboxed FILE_CONTENT variable and run code over it. Only what you console.log() enters your conversation — the file bytes stay in the sandbox.\n\nThink-in-Code applied to file-level analysis: Reading the whole file means every byte enters your conversation memory and costs reasoning capacity for the rest of the session. Running code over it here lets you keep the raw bytes out and only the derived answer in. Same principle as ctx_execute, scoped to one named file via the FILE_CONTENT variable.\n\nWHEN:\n  - You want to KNOW SOMETHING ABOUT a file (line count, matches of a pattern, parsed structure, statistical aggregate) without needing to SEE all of it\n  - The file is structured (CSV, JSON, log, code) and a code-level derivation is cheaper than reading verbatim\n  - The file is large enough that reading the full content would burn meaningful conversation memory you need for the actual work\n  - The derivation may itself produce a large output you want recall-by-topic on later — pass an `intent` string; outputs over ~5KB are auto-indexed and only matching sections come back, retrievable via ctx_search\n\nWHEN NOT:\n  - You intend to EDIT the file — use Read so the subsequent Edit can match the exact text\n  - You only need one specific line and you know its offset — Read with offset/limit is the simplest path\n  - The file is small AND you will consume all of it for understanding/editing — Read directly\n\nRETURNS:\n  Only what your code prints. The FILE_CONTENT variable holds the raw bytes inside the sandbox; nothing else leaves. When `intent` is set and output exceeds the auto-index threshold, the response carries searchable section titles + previews instead of the raw stdout.\n\nEXAMPLE: ctx_execute_file(path: \"huge.log\", language: \"javascript\", code: \"const errs = FILE_CONTENT.split('\\\\n').filter(l => /ERROR|FATAL/.test(l)); console.log(`${errs.length} error lines`); console.log(errs.slice(-5).join('\\\\n'))\")\nEXAMPLE: ctx_execute_file(path: \"data.csv\", language: \"javascript\", code: \"const rows = FILE_CONTENT.split('\\\\n'); console.log(`rows: ${rows.length - 1}, header: ${rows[0]}`)\")",
+  "arguments": {
+    "type": "object",
+    "properties": {
+      "path": {
+        "type": "string",
+        "description": "Absolute file path or relative to project root"
+      },
+      "language": {
+        "type": "string",
+        "enum": [
+          "javascript",
+          "typescript",
+          "python",
+          "shell",
+          "ruby",
+          "go",
+          "rust",
+          "php",
+          "perl",
+          "r",
+          "elixir",
+          "csharp"
+        ],
+        "description": "Runtime language"
+      },
+      "code": {
+        "type": "string",
+        "description": "Code to process FILE_CONTENT (file_content in Elixir). Print summary via console.log/print/echo/IO.puts/Console.WriteLine."
+      },
+      "timeout": {
+        "type": "number",
+        "description": "Max execution time in ms. When omitted, no server-side timer fires — the MCP host's RPC timeout governs."
+      },
+      "intent": {
+        "type": "string",
+        "description": "What you're looking for in the output. When provided and output is large (>5KB), returns only matching sections via BM25 search instead of truncated output."
+      }
+    },
+    "required": [
+      "path",
+      "language",
+      "code"
+    ],
+    "$schema": "http://json-schema.org/draft-07/schema#"
+  }
+}

@@ -860,6 +860,7 @@ func validPlugin(plugin pluginapi.Plugin) bool {
 		caps.RequestMetadataEnricher != nil ||
 		caps.RouteRewriter != nil ||
 		caps.RequestInterceptor != nil ||
+		caps.RequestLifecyclePlugin != nil ||
 		caps.ResponseTranslator != nil ||
 		caps.ResponseBeforeTranslator != nil ||
 		caps.ResponseAfterTranslator != nil ||

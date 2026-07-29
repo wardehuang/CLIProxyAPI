@@ -116,6 +116,9 @@ func registerRPCPlugin(ctx context.Context, host *Host, id string, client plugin
 	if resp.Capabilities.RequestFinalizer {
 		plugin.Capabilities.RequestFinalizer = adapter
 	}
+	if resp.Capabilities.RequestLifecyclePlugin {
+		plugin.Capabilities.RequestLifecyclePlugin = adapter
+	}
 	if resp.Capabilities.ResponseTranslator {
 		plugin.Capabilities.ResponseTranslator = adapter
 	}
@@ -209,6 +212,9 @@ func sanitizePluginRequest(request any) any {
 	case pluginapi.RouteRewriteRequest:
 		req.Metadata = sanitizePluginMetadata(req.Metadata)
 		return req
+	case pluginapi.RequestCompletion:
+		req.Metadata = sanitizePluginMetadata(req.Metadata)
+		return req
 	case pluginapi.ResponseInterceptRequest:
 		req.Metadata = sanitizePluginMetadata(req.Metadata)
 		return req
@@ -228,6 +234,9 @@ func sanitizePluginRequest(request any) any {
 		req.Metadata = sanitizePluginMetadata(req.Metadata)
 		return req
 	case rpcModelRouteRequest:
+		req.Metadata = sanitizePluginMetadata(req.Metadata)
+		return req
+	case rpcRequestCompletion:
 		req.Metadata = sanitizePluginMetadata(req.Metadata)
 		return req
 	case rpcResponseInterceptRequest:
@@ -528,6 +537,16 @@ func (a *rpcPluginAdapter) FinalizeRequest(ctx context.Context, req pluginapi.Re
 		RequestFinalizeRequest: req,
 		HostCallbackID:         callbackID,
 	})
+}
+
+func (a *rpcPluginAdapter) HandleRequestComplete(ctx context.Context, completion pluginapi.RequestCompletion) error {
+	callbackID, closeCallback := a.openHostCallbackContext(ctx)
+	defer closeCallback()
+	_, errCall := callPlugin[rpcEmptyResponse](ctx, a.client, pluginabi.MethodRequestComplete, rpcRequestCompletion{
+		RequestCompletion: completion,
+		HostCallbackID:    callbackID,
+	})
+	return errCall
 }
 
 func (a *rpcPluginAdapter) TranslateResponse(ctx context.Context, req pluginapi.ResponseTransformRequest) (pluginapi.PayloadResponse, error) {
