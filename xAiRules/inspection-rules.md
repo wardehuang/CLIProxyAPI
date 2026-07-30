@@ -170,16 +170,17 @@ xAI 业务请求 HTTP 429 不启动服务器巡检，也不创建新的服务器
 2. 额度冷却未结束：冷却集合，不执行 xAI 请求。
 3. 其余所有 xAI 账号：全部参与巡检，不再按普通或托管 priority 区分。
 
-探测并发（`workers`）：
+探测并发（`workers`）与错峰（可配置）：
 
 1. 同时运行的探测 worker 数上限为 `settings.Workers`（≤0 时按 1；不超过本轮候选账号数）。
-2. worker **错峰启动**：第 1 个立即启动，之后每间隔 **10 秒**（`wxaiProbeWorkerStartStagger`）再启动 1 个，直到达到上限。
-3. **取账号**也全局错峰：任意 worker 开始探测一个账号前，与上一账号开始时刻至少间隔 **10 秒**（`wxaiProbeAccountTakeStagger`）。第 1 个账号立即开始；第 5、6… 个同样受此间隔约束，不是 worker 空闲就立刻开探。
+2. worker **错峰启动**：第 1 个立即启动，之后每间隔 `settings.workerStartStaggerMs` 毫秒再启动 1 个，直到达到上限。默认 **10000**；`0` 表示不交错（可同时启动至并发上限）。字段缺失/非法时回落默认 10000。
+3. **取账号**也全局错峰：任意 worker 开始探测一个账号前，与上一账号开始时刻至少间隔 `settings.accountTakeStaggerMs` 毫秒。默认 **10000**；`0` 表示不限流。第 1 个账号立即开始；第 5、6… 个同样受此间隔约束（当间隔 > 0 时），不是 worker 空闲就立刻开探。
 4. 账号经 channel 投递；已启动的 worker 取到账号后先过取账号门闩，再执行 `inspectSingleAccount`。不是一次性为全部账号开线程。
-5. 因此同时 in-flight 探测数 ≤ `workers`，但新账号启动节奏约为每 10 秒一个（探测耗时 > 10 秒时才会叠满并发）。
+5. 因此同时 in-flight 探测数 ≤ `workers`；当取账号间隔 > 0 且探测耗时大于该间隔时，才会叠满并发。
 6. 上下文取消时停止再启动后续 worker，并中断取账号等待；已启动 worker 在 jobs channel 关闭后退出。
-7. 条件巡检复用同一 `inspectAccounts` 错峰逻辑。
+7. 条件巡检复用同一 `inspectAccounts` 错峰逻辑与上述配置。
 8. `deleteWorkers`（处置并发）对 wXAi 无效：不自动 disable/delete，priority 调整在探测 worker 内同步完成。
+9. 配置入口：服务器巡检设置「探测错峰」；落库字段 `workerStartStaggerMs` / `accountTakeStaggerMs`（指针毫秒，Normalize 后始终有值）。旧字段 `*Seconds` 不再读取。
 
 服务器巡检执行顺序：
 
