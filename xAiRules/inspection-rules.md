@@ -2,7 +2,7 @@
 
 > 本文记录 `CPA-Manager-Plus` 当前 wXAi 巡检源码的真实行为。
 >
-> 最后核对日期：2026-07-28
+> 最后核对日期：2026-07-31
 >
 > 权威实现目录：`CPA-Manager-Plus/apps/manager-server/internal/service/wxaiinspection`
 
@@ -14,7 +14,7 @@
 - `/v1/responses`、`/v1/chat/completions`、billing、credits 的请求顺序和分类。
 - HTTP 状态、额度状态与 priority 的映射。
 - FREE/SUPER 类型识别与持久化。
-- timeout、重试、CPA `proxy-url`、结果落库和 priority 恢复。
+- timeout、重试、xAI HTTP 直连（不走 CPA `proxy-url`）、结果落库和 priority 恢复。
 - xAI 业务请求 HTTP 429 的条件巡检即时触发、并发和 run 复用规则。
 
 若本文与源码冲突，以源码为准，并立即修正文档。
@@ -49,6 +49,14 @@ billing 调用规则：
 4. 普通 billing 的 `monthlyLimit > 0` 判为 `SUPER`，否则判为 `FREE`，随后落盘。
 5. 新判为 `SUPER` 时，再调用 `GET /v1/billing?format=credits`。
 6. 对话探测返回 `free-usage-exhausted` 且类型未知时，直接落盘为 `FREE`。
+
+billing / credits 出站：
+
+1. 由 Manager **直连** `https://cli-chat-proxy.grok.com/v1/billing` 与 `...?format=credits`。
+2. **不**经 CPA `/v0/management/api-call`。
+3. 使用与 responses 同一套直连 HTTP client（`Transport.Proxy = nil`），不读 CPA `proxy-url`，不用环境代理。
+4. `Authorization: Bearer <access_token>` 使用已下载 auth JSON 中的 token；Header 含 `X-XAI-Token-Auth`、`x-grok-client-version`（billing 固定 `0.2.101`）、`User-Agent`（`grok-pager/0.2.101 ...`），有 userID 时带 `x-userid`。
+5. 日志：`wXAi billing 直连请求诊断` / `wXAi billing 直连响应诊断` / `wXAi billing 直连请求失败`，字段含 `transport=direct`、`viaCPAApiCall=false`、`endpoint`、`requestStage`。
 
 billing 和 credits 只更新账号类型与额度展示，不参与账号健康判定。billing/credits 失败不会降低 priority。
 
@@ -184,7 +192,7 @@ xAI 业务请求 HTTP 429 不启动服务器巡检，也不创建新的服务器
 
 服务器巡检执行顺序：
 
-1. 读取 CPA `proxy-url` 和核心 `xaiClientVersionValue`，创建本轮共享的 xAI HTTP client。
+1. 读取 CPA 核心 `xaiClientVersionValue`，创建本轮共享的 xAI HTTP client（始终直连，不读 CPA `proxy-url`，也不用进程环境代理）。
 2. 从 CPA 下载 auth JSON。
 3. 读取 `access_token`。
 4. 执行 responses 主探测，必要时执行 chat completions fallback。
@@ -230,15 +238,15 @@ xAI 业务请求 HTTP 429 不启动服务器巡检，也不创建新的服务器
 
 单账号执行顺序：
 
-1. 读取 CPA `proxy-url` 与 `xai-client-version`，创建 xAI HTTP client（`proxy-url` 为 socks5/socks5h 时走 SOCKS5 Dialer）。
+1. 读取 CPA `xai-client-version`，创建直连 xAI HTTP client（不读 CPA `proxy-url`；billing/credits/responses 共用）。
 2. 下载 auth JSON，读取 `access_token`。
 3. 解码 JWT：`bot_flag_source` 非空则设 `priority=-6` 并结束。
-4. 账号类型未知：调用 `GET /v1/billing` 判定 `FREE/SUPER` 并落盘；失败则按探测失败处理，不调用 responses。
-5. 按类型刷新 billing 元数据（须成功）：
+4. 账号类型未知：Manager 直连 `GET /v1/billing` 判定 `FREE/SUPER` 并落盘；失败则按探测失败处理，不调用 responses。
+5. 按类型刷新 billing 元数据（须成功，均 Manager 直连）：
    - `SUPER`：`GET /v1/billing?format=credits`（若本轮已做过月度 billing 则只调 credits；否则月度与 credits 并发）。
    - `FREE` 或其他：`GET /v1/billing?format=credits`。
    - billing/credits 失败：按探测失败调整 priority，**不**调用 responses。
-6. billing 成功后，**无论 FREE/SUPER**，一律经上述 xAI HTTP client（CPA 代理，含 socks5）调用：
+6. billing 成功后，**无论 FREE/SUPER**，一律经上述直连 xAI HTTP client 调用：
    - `POST https://cli-chat-proxy.grok.com/v1/responses`
    - Body：`{"model":"grok-4.5","input":"ping","stream":false}`
 7. 以 responses 结果判定健康：
@@ -248,29 +256,31 @@ xAI 业务请求 HTTP 429 不启动服务器巡检，也不创建新的服务器
 
 普通 429 即时触发和明确额度快速路径均不是手动刷新：不接受页面传入的指定账号参数。明确额度快速路径使用 usage event 的 auth file 快照定位账号，不执行手动刷新探测。
 
-## 10. CPA proxy-url
+## 10. xAI HTTP 直连（不走 CPA proxy-url）
 
-每轮有实际 xAI 请求的巡检通过 CPA Management API 读取 `/v0/management/config` 中的 `proxy-url`。
+服务器巡检、条件巡检、手动刷新在有实际 xAI 网络请求时，统一创建**直连** xAI HTTP client，覆盖：
 
-Management API 调用顺序：
+- `POST /v1/responses`（及 chat completions fallback，若启用）
+- `GET /v1/billing`
+- `GET /v1/billing?format=credits`
 
-1. `GET /v0/management/config` 读取 `proxy-url`。
-2. `GET /v0/management/xai-client-version` 读取 CPA 核心 xAI chat executor 使用的 `xaiClientVersionValue`。
-3. 两项均读取成功后，创建 xAI HTTP client 并开始账号探测。
+规则：
+
+1. **不**读取 CPA `/v0/management/config` 的 `proxy-url`。
+2. **不**使用进程环境 `HTTP_PROXY` / `HTTPS_PROXY` 等代理（`Transport.Proxy = nil`）。
+3. **不**经 CPA `/v0/management/api-call` 代发 xAI 请求。
+4. 仅 `GET /v0/management/xai-client-version` 读取 CPA 核心 `xaiClientVersionValue`（供 responses 的 client version header）。
+5. version 读取成功后创建直连 client，再开始账号探测。
+6. billing/credits 使用 auth JSON 中的 `access_token` 直连；token 来自 CPA auth-files 下载，不经 api-call 的 `$TOKEN$` 替换。
 
 `xai-client-version` endpoint 不属于可配置项，只暴露 CPA 核心当前编译值。endpoint 请求失败、返回非 2xx、响应无法解析或版本为空时，本轮实际请求巡检 fail-fast，不发送 responses、chat completions、billing 或 credits 请求。
 
-- `proxy-url` 非空：为 xAI HTTP client 设置该代理。
-- `socks5://` 和 `socks5h://` 使用 SOCKS5 Dialer，不通过 `http.Transport.Proxy`。
-- SOCKS5 同时兼容标准格式 `socks5://user:password@host:port` 和现网旧格式 `socks5://user:password:host:port`。
-- `http://` 和 `https://` 使用 `http.Transport.Proxy`。
-- `proxy-url` 为空：xAI HTTP client 直接连接，不读取进程环境代理。
-- Management config 读取失败：巡检 fail-fast。
-- `proxy-url` 不是包含 scheme 和 host 的合法 URL：巡检 fail-fast。
-- CPA auth-files 下载和 priority patch 仍直接访问 CPA Management API，不经过该 xAI 代理 client。
-- 服务器巡检、手动刷新、条件巡检在实际发送 xAI 请求前写入 `wXAi 请求代理已配置` 日志，记录 `proxyConfigured`、`proxyMode`、脱敏后的 `proxyHost` 和本次账号数，不记录用户名或密码。
-- 手动刷新的 `POST /v1/responses` 必须走该 xAI HTTP client（即 CPA `proxy-url`，含 socks5）；billing/credits 仍经 CPA Management `api-call`，不经该代理 client。
-- 请求额度落盘快速路径不创建 xAI HTTP client，不读取 `proxy-url` 或 `xai-client-version`，只通过 CPA Management API 读取 auth file 列表并 patch priority。
+- 服务器巡检、手动刷新、条件巡检在实际发送 xAI 请求前写入 `wXAi HTTP 客户端已创建（直连）` 日志，记录 `proxyConfigured=false`、`proxyMode=direct` 和本次账号数。
+- billing/credits 每次请求写 `wXAi billing 直连请求诊断` / `wXAi billing 直连响应诊断`（或失败时的 `wXAi billing 直连请求失败`），含 `transport=direct`、`viaCPAApiCall=false`。
+- 手动刷新的 billing/credits 与 `POST /v1/responses` 均走上述直连 client。
+- CPA auth-files 下载和 priority patch 仍直接访问 CPA Management API。
+- 请求额度落盘快速路径默认不创建 xAI HTTP client；仅 SUPER 且 usage 无有效冷却、需补 credits 恢复时间时，临时创建直连 client 调 credits（同样不经 api-call）。
+- CPA 后台配置的 `proxy-url` 仅影响 CLIProxyAPI 业务流量，**不影响** Manager 侧 wXAi 巡检探测（含 billing/credits）。
 
 ## 11. priority 恢复与原始响应
 

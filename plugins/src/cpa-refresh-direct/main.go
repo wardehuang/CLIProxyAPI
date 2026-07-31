@@ -76,35 +76,8 @@ type envelopeError struct {
 	Message string `json:"message"`
 }
 
-type registration struct {
-	SchemaVersion uint32                   `json:"schema_version"`
-	Metadata      pluginapi.Metadata       `json:"metadata"`
-	Capabilities  registrationCapabilities `json:"capabilities"`
-}
-
-type registrationCapabilities struct {
-	RequestInterceptor bool `json:"request_interceptor"`
-	RequestFinalizer   bool `json:"request_finalizer"`
-	ManagementAPI      bool `json:"management_api"`
-}
-
-type requestInterceptRequest struct {
-	pluginapi.RequestInterceptRequest
-	HostCallbackID string `json:"host_callback_id,omitempty"`
-}
-
-type requestFinalizeRequest struct {
-	pluginapi.RequestFinalizeRequest
-	HostCallbackID string `json:"host_callback_id,omitempty"`
-}
-
 type lifecycleRequest struct {
 	ConfigYAML []byte `json:"config_yaml"`
-}
-
-type managementRequestEnvelope struct {
-	pluginapi.ManagementRequest
-	HostCallbackID string `json:"host_callback_id,omitempty"`
 }
 
 func main() {}
@@ -167,32 +140,6 @@ func handleMethod(ctx context.Context, method string, request []byte) ([]byte, e
 		}
 		configurePlugin(req.ConfigYAML)
 		return okEnvelope(pluginRegistration())
-	case pluginabi.MethodRequestInterceptBefore:
-		var req requestInterceptRequest
-		if errUnmarshal := json.Unmarshal(request, &req); errUnmarshal != nil {
-			return nil, fmt.Errorf("decode request intercept request: %w", errUnmarshal)
-		}
-		return okEnvelope(interceptRequestBeforeAuth(ctx, req.RequestInterceptRequest, req.HostCallbackID))
-	case pluginabi.MethodRequestInterceptAfter:
-		var req requestInterceptRequest
-		if errUnmarshal := json.Unmarshal(request, &req); errUnmarshal != nil {
-			return nil, fmt.Errorf("decode request intercept request: %w", errUnmarshal)
-		}
-		return okEnvelope(interceptRequestAfterAuth(ctx, req.RequestInterceptRequest, req.HostCallbackID))
-	case pluginabi.MethodRequestFinalize:
-		var req requestFinalizeRequest
-		if errUnmarshal := json.Unmarshal(request, &req); errUnmarshal != nil {
-			return nil, fmt.Errorf("decode request finalize request: %w", errUnmarshal)
-		}
-		return okEnvelope(finalizeRequest(ctx, req.RequestFinalizeRequest, req.HostCallbackID))
-	case pluginabi.MethodManagementRegister:
-		return okEnvelope(managementRegistration())
-	case pluginabi.MethodManagementHandle:
-		var req managementRequestEnvelope
-		if errUnmarshal := json.Unmarshal(request, &req); errUnmarshal != nil {
-			return nil, fmt.Errorf("decode management request: %w", errUnmarshal)
-		}
-		return okEnvelope(handleManagement(req.ManagementRequest))
 	default:
 		return errorEnvelope("unknown_method", "unknown method: "+method), nil
 	}
@@ -206,49 +153,9 @@ func pluginRegistration() registration {
 			Version:          pluginVersion,
 			Author:           "wardehuang",
 			GitHubRepository: "https://github.com/wardehuang/CLIProxyAPI",
-			ConfigFields: []pluginapi.ConfigField{
-				{
-					Name:        "debug",
-					Type:        pluginapi.ConfigFieldTypeBoolean,
-					Description: "Write detailed MCP schema patch diagnostics to the host log.",
-				},
-				{
-					Name:        "schemas-dir",
-					Type:        pluginapi.ConfigFieldTypeString,
-					Description: "Directory of local MCP tool JSON descriptors (Cursor tools/*.json or name->schema map). Relative paths resolve from the CPA working directory. Default: mcp-schemas",
-				},
-				{
-					Name:        "logs-dir",
-					Type:        pluginapi.ConfigFieldTypeString,
-					Description: "Directory for before/after patch detail logs. Relative paths resolve from the CPA working directory. Default: logs",
-				},
-				{
-					Name:        "host-config-path",
-					Type:        pluginapi.ConfigFieldTypeString,
-					Description: "Optional path to host config.yaml used when detail-log=auto to read request-log and commercial-mode.",
-				},
-				{
-					Name:        "detail-log",
-					Type:        pluginapi.ConfigFieldTypeString,
-					Description: "Write before/after schema patch detail files. auto=only when host request-log=true and commercial-mode=false. Values: auto|true|false",
-				},
-				{
-					Name:        "only-empty",
-					Type:        pluginapi.ConfigFieldTypeBoolean,
-					Description: "Only replace empty input_schema/parameters. Default true so complete native tools are left untouched.",
-				},
-				{
-					Name:        "inject-missing",
-					Type:        pluginapi.ConfigFieldTypeBoolean,
-					Description: "Append registry MCP tools that are absent from request tools[]. Default true. Fixes Cursor sessions that omit MCP tools entirely.",
-				},
-			},
+			ConfigFields: []pluginapi.ConfigField{},
 		},
-		Capabilities: registrationCapabilities{
-			RequestInterceptor: true,
-			RequestFinalizer:   true,
-			ManagementAPI:      true,
-		},
+		Capabilities: registrationCapabilities{ForceRefreshDirect: true},
 	}
 }
 

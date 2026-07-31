@@ -222,6 +222,7 @@ func (h *Host) ApplyConfig(ctx context.Context, cfg *config.Config) {
 		h.rebuildActivePluginMapsLocked(nil)
 		h.snapshot.Store(emptySnapshot())
 		h.mu.Unlock()
+		syncForceRefreshDirectFromRecords(nil)
 		h.refreshThinkingProviders(nil)
 		return
 	}
@@ -236,6 +237,7 @@ func (h *Host) ApplyConfig(ctx context.Context, cfg *config.Config) {
 		h.rebuildActivePluginMapsLocked(nil)
 		h.snapshot.Store(emptySnapshot())
 		h.mu.Unlock()
+		syncForceRefreshDirectFromRecords(nil)
 		h.refreshThinkingProviders(nil)
 		return
 	}
@@ -362,6 +364,7 @@ func (h *Host) ApplyConfig(ctx context.Context, cfg *config.Config) {
 	h.rebuildActivePluginMapsLocked(records)
 	h.snapshot.Store(&Snapshot{enabled: true, records: records})
 	h.mu.Unlock()
+	syncForceRefreshDirectFromRecords(records)
 	h.refreshThinkingProviders(records)
 	for _, fields := range hotReloadLogs {
 		log.WithFields(fields).Info("pluginhost: plugin hot reloaded")
@@ -563,6 +566,7 @@ func (h *Host) UnloadPluginContext(ctx context.Context, id string) bool {
 	h.snapshot.Store(&Snapshot{enabled: enabled, records: records})
 	h.mu.Unlock()
 
+	syncForceRefreshDirectFromRecords(records)
 	h.refreshThinkingProviders(records)
 	h.RegisterFrontendAuthProviders()
 	for _, target := range targets {
@@ -638,6 +642,7 @@ func (h *Host) ShutdownAllContext(ctx context.Context) {
 	h.snapshot.Store(emptySnapshot())
 	h.mu.Unlock()
 
+	syncForceRefreshDirectFromRecords(nil)
 	h.refreshThinkingProviders(nil)
 	h.RegisterFrontendAuthProviders()
 	for id, request := range loading {

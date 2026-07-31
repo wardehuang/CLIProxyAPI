@@ -75,6 +75,7 @@ func registerRPCPlugin(ctx context.Context, host *Host, id string, client plugin
 			ExecutorModelScope:            resp.Capabilities.ExecutorModelScope,
 			ExecutorInputFormats:          append([]string(nil), resp.Capabilities.ExecutorInputFormats...),
 			ExecutorOutputFormats:         append([]string(nil), resp.Capabilities.ExecutorOutputFormats...),
+			ForceRefreshDirect:            resp.Capabilities.ForceRefreshDirect,
 		},
 	}
 	if resp.Capabilities.ModelRegistrar {

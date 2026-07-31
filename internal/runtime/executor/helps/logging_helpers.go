@@ -60,16 +60,52 @@ func requestLogCaptureEnabled(cfg *config.Config) bool {
 	return cfg != nil && cfg.RequestLog && !cfg.CommercialMode
 }
 
+// requestLogFullCaptureEnabled reports whether upstream API request/response details
+// should be written into the active request log for this request.
+//
+// Full capture is enabled when:
+//   - cfg.RequestLog is true and commercial-mode is off, or
+//   - the request-logging middleware already attached file-backed log sources on the
+//     Gin context (which only happens when the request logger is enabled).
+//
+// The second path covers RequestLog/logger desync windows (for example management
+// toggles that flip cfg.RequestLog before the logger SetEnabled reload finishes, or
+// executors holding a stale config snapshot).
+func requestLogFullCaptureEnabled(ctx context.Context, cfg *config.Config) bool {
+	if cfg != nil && cfg.CommercialMode {
+		return false
+	}
+	if requestLogCaptureEnabled(cfg) {
+		return true
+	}
+	ginCtx := ginContextFrom(ctx)
+	if ginCtx == nil {
+		return false
+	}
+	if _, ok := apiRequestSource(ginCtx); ok {
+		return true
+	}
+	return apiResponseSourceOrNil(ginCtx) != nil
+}
+
 // RecordAPIRequest stores the upstream request metadata in Gin context for request logging.
 func RecordAPIRequest(ctx context.Context, cfg *config.Config, info UpstreamRequestLog) {
-	if cfg == nil || cfg.CommercialMode {
+	if cfg != nil && cfg.CommercialMode {
 		return
 	}
 	ginCtx := ginContextFrom(ctx)
 	if ginCtx == nil {
+		log.WithFields(log.Fields{
+			"request_id":    logging.GetRequestID(ctx),
+			"upstream_url":  info.URL,
+			"upstream_method": info.Method,
+			"provider":      info.Provider,
+		}).Warn("request log: skip API REQUEST capture because gin context is missing from execution context")
 		return
 	}
-	if !cfg.RequestLog {
+	if !requestLogFullCaptureEnabled(ctx, cfg) {
+		// Error-only mode: keep a deferred builder so forced error logs can still
+		// materialize upstream request details later.
 		deferAPIRequest(ginCtx, info)
 		return
 	}
@@ -91,6 +127,8 @@ func RecordAPIRequest(ctx context.Context, cfg *config.Config, info UpstreamRequ
 			if errEnd := source.AppendBytes([]byte("\n\n")); errEnd != nil {
 				log.WithError(errEnd).Warn("failed to append api request log terminator")
 			}
+			// Body lives in the file-backed source only to avoid duplicating large payloads
+			// into gin memory and double-writing header sections at Finalize.
 		} else {
 			log.WithError(errWrite).Warn("failed to append api request log part")
 			if len(info.Body) > 0 {
@@ -189,11 +227,15 @@ func newAPIRequestLogBuilder(index int, info UpstreamRequestLog, timestamp time.
 // RecordAPIResponseMetadata captures upstream response status/header information for the latest attempt.
 func RecordAPIResponseMetadata(ctx context.Context, cfg *config.Config, status int, headers http.Header) {
 	logging.SetResponseHeaders(ctx, headers)
-	if !requestLogCaptureEnabled(cfg) {
+	if !requestLogFullCaptureEnabled(ctx, cfg) {
 		return
 	}
 	ginCtx := ginContextFrom(ctx)
 	if ginCtx == nil {
+		log.WithFields(log.Fields{
+			"request_id": logging.GetRequestID(ctx),
+			"status":     status,
+		}).Warn("request log: skip API RESPONSE metadata because gin context is missing from execution context")
 		return
 	}
 	attempts, attempt := ensureAttempt(ginCtx)
@@ -217,11 +259,14 @@ func RecordAPIResponseMetadata(ctx context.Context, cfg *config.Config, status i
 
 // RecordAPIResponseError adds an error entry for the latest attempt when no HTTP response is available.
 func RecordAPIResponseError(ctx context.Context, cfg *config.Config, err error) {
-	if !requestLogCaptureEnabled(cfg) || err == nil {
+	if !requestLogFullCaptureEnabled(ctx, cfg) || err == nil {
 		return
 	}
 	ginCtx := ginContextFrom(ctx)
 	if ginCtx == nil {
+		log.WithFields(log.Fields{
+			"request_id": logging.GetRequestID(ctx),
+		}).Warn("request log: skip API RESPONSE error because gin context is missing from execution context")
 		return
 	}
 	attempts, attempt := ensureAttempt(ginCtx)
@@ -242,7 +287,7 @@ func RecordAPIResponseError(ctx context.Context, cfg *config.Config, err error) 
 
 // AppendAPIResponseChunk appends an upstream response chunk to Gin context for request logging.
 func AppendAPIResponseChunk(ctx context.Context, cfg *config.Config, chunk []byte) {
-	if !requestLogCaptureEnabled(cfg) {
+	if !requestLogFullCaptureEnabled(ctx, cfg) {
 		return
 	}
 	data := bytes.TrimSpace(chunk)
@@ -286,7 +331,7 @@ func AppendAPIResponseChunk(ctx context.Context, cfg *config.Config, chunk []byt
 
 // RecordAPIWebsocketRequest stores an upstream websocket request event in Gin context.
 func RecordAPIWebsocketRequest(ctx context.Context, cfg *config.Config, info UpstreamRequestLog) {
-	if !requestLogCaptureEnabled(cfg) {
+	if !requestLogFullCaptureEnabled(ctx, cfg) {
 		return
 	}
 	ginCtx := ginContextFrom(ctx)
@@ -319,7 +364,7 @@ func RecordAPIWebsocketRequest(ctx context.Context, cfg *config.Config, info Ups
 // RecordAPIWebsocketHandshake stores the upstream websocket handshake response metadata.
 func RecordAPIWebsocketHandshake(ctx context.Context, cfg *config.Config, status int, headers http.Header) {
 	logging.SetResponseHeaders(ctx, headers)
-	if !requestLogCaptureEnabled(cfg) {
+	if !requestLogFullCaptureEnabled(ctx, cfg) {
 		return
 	}
 	ginCtx := ginContextFrom(ctx)
@@ -343,7 +388,7 @@ func RecordAPIWebsocketHandshake(ctx context.Context, cfg *config.Config, status
 // RecordAPIWebsocketUpgradeRejection stores a rejected websocket upgrade as an HTTP attempt.
 func RecordAPIWebsocketUpgradeRejection(ctx context.Context, cfg *config.Config, info UpstreamRequestLog, status int, headers http.Header, body []byte) {
 	logging.SetResponseHeaders(ctx, headers)
-	if !requestLogCaptureEnabled(cfg) {
+	if !requestLogFullCaptureEnabled(ctx, cfg) {
 		return
 	}
 	ginCtx := ginContextFrom(ctx)
@@ -377,7 +422,7 @@ func WebsocketUpgradeRequestURL(rawURL string) string {
 
 // AppendAPIWebsocketResponse stores an upstream websocket response frame in Gin context.
 func AppendAPIWebsocketResponse(ctx context.Context, cfg *config.Config, payload []byte) {
-	if !requestLogCaptureEnabled(cfg) {
+	if !requestLogFullCaptureEnabled(ctx, cfg) {
 		return
 	}
 	data := bytes.TrimSpace(payload)
@@ -401,7 +446,7 @@ func AppendAPIWebsocketResponse(ctx context.Context, cfg *config.Config, payload
 
 // RecordAPIWebsocketError stores an upstream websocket error event in Gin context.
 func RecordAPIWebsocketError(ctx context.Context, cfg *config.Config, stage string, err error) {
-	if !requestLogCaptureEnabled(cfg) || err == nil {
+	if !requestLogFullCaptureEnabled(ctx, cfg) || err == nil {
 		return
 	}
 	ginCtx := ginContextFrom(ctx)
@@ -422,7 +467,21 @@ func RecordAPIWebsocketError(ctx context.Context, cfg *config.Config, stage stri
 }
 
 func ginContextFrom(ctx context.Context) *gin.Context {
-	ginCtx, _ := ctx.Value("gin").(*gin.Context)
+	if ctx == nil {
+		return nil
+	}
+	value := ctx.Value("gin")
+	if value == nil {
+		return nil
+	}
+	ginCtx, ok := value.(*gin.Context)
+	if !ok {
+		log.WithFields(log.Fields{
+			"request_id": logging.GetRequestID(ctx),
+			"gin_type":   fmt.Sprintf("%T", value),
+		}).Warn("request log: context value \"gin\" has unexpected type")
+		return nil
+	}
 	return ginCtx
 }
 

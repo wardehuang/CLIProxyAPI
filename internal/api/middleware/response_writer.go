@@ -309,22 +309,31 @@ func (w *ResponseWriterWrapper) Finalize(c *gin.Context) error {
 
 		// Write API Request and Response to the streaming log before closing
 		apiRequest := w.extractAPIRequest(c)
+		if len(apiRequest) == 0 {
+			// Error-only deferred builders were previously only materialised for
+			// non-streaming force logs. When the request logger is enabled but
+			// upstream capture fell back to deferred mode (RequestLog desync),
+			// still surface them in the streaming request log.
+			apiRequest = w.extractDeferredAPIRequest(c)
+		}
 		apiResponse := w.extractAPIResponse(c)
+		apiRequestSourceHasPayload := apiRequestSource != nil && apiRequestSource.HasPayload()
+		apiResponseSourceHasPayload := apiResponseSource != nil && apiResponseSource.HasPayload()
 		if sourceWriter, ok := w.streamWriter.(interface {
 			WriteAPIRequestSource(*logging.FileBodySource) error
 			WriteAPIResponseSource(*logging.FileBodySource) error
 		}); ok {
-			if len(apiRequest) > 0 {
+			// Prefer file-backed sources when present to avoid double-writing the
+			// same upstream section from both memory and temp-file payloads.
+			if apiRequestSourceHasPayload {
+				_ = sourceWriter.WriteAPIRequestSource(apiRequestSource)
+			} else if len(apiRequest) > 0 {
 				_ = w.streamWriter.WriteAPIRequest(apiRequest)
 			}
-			if apiRequestSource != nil && apiRequestSource.HasPayload() {
-				_ = sourceWriter.WriteAPIRequestSource(apiRequestSource)
-			}
-			if len(apiResponse) > 0 {
-				_ = w.streamWriter.WriteAPIResponse(apiResponse)
-			}
-			if apiResponseSource != nil && apiResponseSource.HasPayload() {
+			if apiResponseSourceHasPayload {
 				_ = sourceWriter.WriteAPIResponseSource(apiResponseSource)
+			} else if len(apiResponse) > 0 {
+				_ = w.streamWriter.WriteAPIResponse(apiResponse)
 			}
 		} else {
 			var errMerge error
@@ -333,17 +342,30 @@ func (w *ResponseWriterWrapper) Finalize(c *gin.Context) error {
 				cleanupFileBodySources(websocketTimelineSource, apiResponseSource, apiWebsocketTimelineSource)
 				return errMerge
 			}
+			apiRequestSource = nil
 			apiResponse, errMerge = mergeFileBodySource(apiResponse, apiResponseSource)
 			if errMerge != nil {
 				cleanupFileBodySources(websocketTimelineSource, apiWebsocketTimelineSource)
 				return errMerge
 			}
+			apiResponseSource = nil
 			if len(apiRequest) > 0 {
 				_ = w.streamWriter.WriteAPIRequest(apiRequest)
 			}
 			if len(apiResponse) > 0 {
 				_ = w.streamWriter.WriteAPIResponse(apiResponse)
 			}
+		}
+		if len(apiRequest) == 0 && !apiRequestSourceHasPayload {
+			requestID := ""
+			if w.requestInfo != nil {
+				requestID = w.requestInfo.RequestID
+			}
+			log.WithFields(log.Fields{
+				"request_id": requestID,
+				"url":        w.requestInfoURL(),
+				"status":     finalStatusCode,
+			}).Warn("request log: streaming finalize has empty API REQUEST section (no memory payload, no file source, no deferred builder)")
 		}
 		apiWebsocketTimeline := w.extractAPIWebsocketTimeline(c)
 		var errMerge error
@@ -366,7 +388,10 @@ func (w *ResponseWriterWrapper) Finalize(c *gin.Context) error {
 	}
 
 	apiRequest := w.extractAPIRequest(c)
-	if forceLog && len(apiRequest) == 0 {
+	if len(apiRequest) == 0 {
+		// Materialise deferred upstream request details whenever the in-memory
+		// API_REQUEST key is empty. This covers both force error logs and the
+		// RequestLog/logger desync path where full capture fell back to deferred.
 		apiRequest = w.extractDeferredAPIRequest(c)
 	}
 	return w.logRequest(w.extractRequestBody(c), finalStatusCode, w.cloneHeaders(), w.extractResponseBody(c), w.extractWebsocketTimeline(c), websocketTimelineSource, apiRequest, apiRequestSource, w.extractAPIResponse(c), apiResponseSource, w.extractAPIWebsocketTimeline(c), apiWebsocketTimelineSource, w.extractAPIResponseTimestamp(c), slicesAPIResponseError, forceLog)
@@ -395,6 +420,13 @@ func (w *ResponseWriterWrapper) extractAPIRequest(c *gin.Context) []byte {
 		return nil
 	}
 	return data
+}
+
+func (w *ResponseWriterWrapper) requestInfoURL() string {
+	if w == nil || w.requestInfo == nil {
+		return ""
+	}
+	return w.requestInfo.URL
 }
 
 func (w *ResponseWriterWrapper) extractDeferredAPIRequest(c *gin.Context) []byte {
