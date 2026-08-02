@@ -19,6 +19,7 @@ const (
 	proxyMetadataModeKey               = "cpa.proxy.mode"
 	proxyMetadataSourceKey             = "cpa.proxy.source"
 	proxyMetadataSchemeKey             = "cpa.proxy.scheme"
+	proxyMetadataURLKey                = "cpa.proxy.url"
 	proxyMetadataEgressIPKey           = "cpa.proxy.egress_ip"
 	proxyMetadataEgressIPStatusKey     = "cpa.proxy.egress_ip_status"
 	proxyMetadataEgressIPObservedKey   = "cpa.proxy.egress_ip_observed_at_ms"
@@ -37,6 +38,7 @@ type networkObservation struct {
 	mode           string
 	source         string
 	scheme         string
+	proxyURL       string
 	identity       string
 	probeSupported bool
 	probeTransport http.RoundTripper
@@ -123,6 +125,7 @@ func observationFromProxyURL(proxyURL, source string) networkObservation {
 		observation.identity = source + "|direct"
 	case proxyutil.ModeProxy:
 		observation.mode = "proxy"
+		observation.proxyURL = proxyURL
 		observation.identity = source + "|" + proxyutil.Redact(proxyURL)
 		observation.scheme = strings.ToLower(setting.URL.Scheme)
 	default:
@@ -179,6 +182,7 @@ func resolveEnvironmentObservation(upstreamURL string) networkObservation {
 			mode:           "proxy",
 			source:         "environment",
 			scheme:         strings.ToLower(proxyURL.Scheme),
+			proxyURL:       proxyURL.String(),
 			identity:       "environment|" + proxyutil.Redact(proxyURL.String()),
 			probeSupported: false,
 		}
@@ -187,6 +191,7 @@ func resolveEnvironmentObservation(upstreamURL string) networkObservation {
 		mode:           "proxy",
 		source:         "environment",
 		scheme:         strings.ToLower(proxyURL.Scheme),
+		proxyURL:       proxyURL.String(),
 		identity:       "environment|" + proxyutil.Redact(proxyURL.String()),
 		probeSupported: true,
 		probeTransport: probeTransport,
@@ -247,6 +252,7 @@ func resolveNetworkObservation(roundTripper http.RoundTripper, req *http.Request
 		mode:           "proxy",
 		source:         "environment",
 		scheme:         strings.ToLower(proxyURL.Scheme),
+		proxyURL:       proxyURL.String(),
 		identity:       "environment|" + proxyutil.Redact(proxyURL.String()),
 		probeSupported: true,
 		probeTransport: transport,
@@ -330,6 +336,11 @@ func (r *UsageReporter) setNetworkObservation(observation networkObservation) {
 	r.metadata[proxyMetadataSourceKey] = observation.source
 	if observation.scheme != "" {
 		r.metadata[proxyMetadataSchemeKey] = observation.scheme
+	}
+	if observation.proxyURL != "" {
+		r.metadata[proxyMetadataURLKey] = observation.proxyURL
+	} else {
+		delete(r.metadata, proxyMetadataURLKey)
 	}
 	r.metadata[proxyMetadataObservationVersionKey] = 1
 	if !observation.probeSupported {
