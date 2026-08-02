@@ -3,7 +3,6 @@ package helps
 import (
 	"context"
 	"net/http"
-	"strings"
 	"time"
 
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/config"
@@ -31,22 +30,16 @@ func NewProxyAwareHTTPClient(ctx context.Context, cfg *config.Config, auth *clip
 		httpClient.Timeout = timeout
 	}
 
-	// Priority 1: Use auth.ProxyURL if configured
-	var proxyURL string
-	if auth != nil {
-		proxyURL = strings.TrimSpace(auth.ProxyURL)
-	}
-
-	// Priority 2: Use cfg.ProxyURL if auth proxy is not configured
-	if proxyURL == "" && cfg != nil {
-		proxyURL = strings.TrimSpace(cfg.ProxyURL)
-	}
+	proxyURL, proxySource := resolveConfiguredProxy(cfg, auth)
 
 	// If we have a proxy URL configured, set up the transport
 	if proxyURL != "" {
 		transport := buildProxyTransport(proxyURL)
 		if transport != nil {
-			httpClient.Transport = transport
+			httpClient.Transport = &proxyObservationRoundTripper{
+				base:        transport,
+				observation: observationFromProxyURL(proxyURL, proxySource),
+			}
 			return httpClient
 		}
 		// If proxy setup failed, log and fall through to context RoundTripper
@@ -54,8 +47,24 @@ func NewProxyAwareHTTPClient(ctx context.Context, cfg *config.Config, auth *clip
 	}
 
 	// Priority 3: Use RoundTripper from context (typically from RoundTripperFor)
-	if rt, ok := ctx.Value("cliproxy.roundtripper").(http.RoundTripper); ok && rt != nil {
-		httpClient.Transport = rt
+	if rt, ok := contextRoundTripper(ctx); ok {
+		httpClient.Transport = &proxyObservationRoundTripper{
+			base: rt,
+			observation: networkObservation{
+				mode:     "unknown",
+				source:   "context",
+				identity: "context",
+			},
+		}
+	} else if proxyURL != "" {
+		httpClient.Transport = &proxyObservationRoundTripper{
+			base: http.DefaultTransport,
+			observation: networkObservation{
+				mode:     "unknown",
+				source:   "fallback",
+				identity: "fallback",
+			},
+		}
 	}
 
 	return httpClient

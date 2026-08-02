@@ -75,6 +75,7 @@ func (e *CodexWebsocketsExecutor) Execute(ctx context.Context, auth *cliproxyaut
 	if err != nil {
 		return resp, err
 	}
+	reporter.SetProxyRoute(ctx, e.cfg, auth, wsURL)
 
 	body, wsHeaders, errPromptCache := applyCodexPromptCacheHeadersWithContext(ctx, from, req, body, opts.Headers)
 	if errPromptCache != nil {

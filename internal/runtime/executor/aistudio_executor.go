@@ -129,6 +129,7 @@ func (e *AIStudioExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth,
 	}
 	baseModel := thinking.ParseSuffix(req.Model).ModelName
 	reporter := helps.NewExecutorUsageReporter(ctx, e, baseModel, auth)
+	reporter.SetRelayRoute()
 	defer reporter.TrackFailure(ctx, &err)
 
 	translatedReq, body, err := e.translateRequest(ctx, req, opts, false)
@@ -198,6 +199,7 @@ func (e *AIStudioExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth
 	}
 	baseModel := thinking.ParseSuffix(req.Model).ModelName
 	reporter := helps.NewExecutorUsageReporter(ctx, e, baseModel, auth)
+	reporter.SetRelayRoute()
 	defer reporter.TrackFailure(ctx, &err)
 
 	translatedReq, body, err := e.translateRequest(ctx, req, opts, true)

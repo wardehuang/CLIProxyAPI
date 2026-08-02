@@ -46,7 +46,6 @@ type rpcCapabilities struct {
 	UsagePlugin                   bool                         `json:"usage_plugin"`
 	CommandLinePlugin             bool                         `json:"command_line_plugin"`
 	ManagementAPI                 bool                         `json:"management_api"`
-	ForceRefreshDirect            bool                         `json:"force_refresh_direct"`
 }
 
 type rpcIdentifierResponse struct {
@@ -176,7 +175,6 @@ func rpcCapabilitiesFromPlugin(plugin pluginapi.Plugin) rpcCapabilities {
 		UsagePlugin:                   caps.UsagePlugin != nil,
 		CommandLinePlugin:             caps.CommandLinePlugin != nil,
 		ManagementAPI:                 caps.ManagementAPI != nil,
-		ForceRefreshDirect:            caps.ForceRefreshDirect,
 	}
 }
 

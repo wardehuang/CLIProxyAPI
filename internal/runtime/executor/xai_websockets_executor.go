@@ -483,6 +483,7 @@ func (e *XAIWebsocketsExecutor) ExecuteStream(ctx context.Context, auth *cliprox
 	if err != nil {
 		return nil, err
 	}
+	reporter.SetProxyRoute(ctx, e.cfg, auth, wsURL)
 
 	var authID, authLabel, authType, authValue string
 	if auth != nil {

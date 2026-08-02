@@ -123,10 +123,6 @@ type Capabilities struct {
 	CommandLinePlugin CommandLinePlugin
 	// ManagementAPI declares plugin-owned diagnostic Management API and resource routes.
 	ManagementAPI ManagementAPI
-	// ForceRefreshDirect forces OAuth token refresh HTTP to bypass all proxy-url settings.
-	// This is a registration flag rather than a callable capability: when any active plugin
-	// sets it, the host enables direct-only refresh for built-in providers.
-	ForceRefreshDirect bool
 }
 
 // ExecutorModelScope declares which model-registration paths a plugin executor supports.

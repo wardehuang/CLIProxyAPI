@@ -2,7 +2,7 @@
 
 > 本文记录 `CPA-Manager-Plus` 当前 wXAi 巡检源码的真实行为。
 >
-> 最后核对日期：2026-07-31
+> 最后核对日期：2026-08-02
 >
 > 权威实现目录：`CPA-Manager-Plus/apps/manager-server/internal/service/wxaiinspection`
 
@@ -14,7 +14,8 @@
 - `/v1/responses`、`/v1/chat/completions`、billing、credits 的请求顺序和分类。
 - HTTP 状态、额度状态与 priority 的映射。
 - FREE/SUPER 类型识别与持久化。
-- timeout、重试、xAI HTTP 直连（不走 CPA `proxy-url`）、结果落库和 priority 恢复。
+- timeout、重试、xAI HTTP 直连（不走 CPA `proxy-url`，服务器巡检不再使用探测代理池）、结果落库和 priority 恢复。
+- 独立「降智检测」的流式请求、auth/global `ProxyURL` 优先级、指标、分类、响应展示和不落库规则。
 - xAI 业务请求 HTTP 429 的条件巡检即时触发、并发和 run 复用规则。
 
 若本文与源码冲突，以源码为准，并立即修正文档。
@@ -59,6 +60,8 @@ billing / credits 出站：
 5. 日志：`wXAi billing 直连请求诊断` / `wXAi billing 直连响应诊断` / `wXAi billing 直连请求失败`，字段含 `transport=direct`、`viaCPAApiCall=false`、`endpoint`、`requestStage`。
 
 billing 和 credits 只更新账号类型与额度展示，不参与账号健康判定。billing/credits 失败不会降低 priority。
+
+服务器巡检、条件巡检和手动刷新统一使用同一个直连 HTTP client：`Transport.Proxy = nil`，不读取 CPA `proxy-url`，不使用探测代理池，也不按 FREE/SUPER 选择代理。
 
 ## 4. 对话探测主链路
 
@@ -280,7 +283,7 @@ xAI 业务请求 HTTP 429 不启动服务器巡检，也不创建新的服务器
 - 手动刷新的 billing/credits 与 `POST /v1/responses` 均走上述直连 client。
 - CPA auth-files 下载和 priority patch 仍直接访问 CPA Management API。
 - 请求额度落盘快速路径默认不创建 xAI HTTP client；仅 SUPER 且 usage 无有效冷却、需补 credits 恢复时间时，临时创建直连 client 调 credits（同样不经 api-call）。
-- CPA 后台配置的 `proxy-url` 仅影响 CLIProxyAPI 业务流量，**不影响** Manager 侧 wXAi 巡检探测（含 billing/credits）。
+- CPA 后台配置的 `proxy-url` 仅影响 CLIProxyAPI 业务流量，**不影响** Manager 侧 wXAi 巡检探测（含 billing/credits）；独立降智检测按第 12 节的 auth/global 优先级处理。
 
 ## 11. priority 恢复与原始响应
 
@@ -291,3 +294,73 @@ xAI 业务请求 HTTP 429 不启动服务器巡检，也不创建新的服务器
 - 明确额度耗尽的业务请求 HTTP 429 直接生成 `isQuota=true`、`errorKind=quota_exhausted`、HTTP 429 的结果，priority 调整为 `-1`；账号类型未知时落盘为 `FREE`。
 - 请求额度快速路径复用 `lowerWxaiPriority`：先保存或更新 adjustment，再 patch CPA priority；patch 失败时回滚本次 adjustment，避免形成假冷却。
 - 普通业务请求 HTTP 429 只作为条件巡检即时触发信号，不能直接修改 priority。
+
+## 12. 独立降智检测
+
+wXAi 账号详情的「降智检测」不是服务器巡检、条件巡检或手动刷新，不修改 priority，不写入 `wxai_inspection_runs`、结果、状态详情、HTTP 原始响应或巡检数据库日志，也不复用巡检 run。入口：`POST /v0/management/wxai-inspection/tool-call-check`。
+
+账号选择与调用顺序：
+
+1. 读取 CPA auth file 列表，按 `accountKey`、`fileName + authIndex` 选择一个 xAI 账号。
+2. 下载该 auth JSON，读取 `access_token`。
+3. 读取 auth 根字段 `proxy_url`。非空时使用 auth 级代理；为空时读取 CPA `GET /v0/management/config` 的 `proxy-url` 作为全局代理；两者都为空时使用显式直连 transport。auth 级值优先，不因值非法而回退全局代理。
+4. 读取 CPA `GET /v0/management/xai-client-version`，使用返回版本组装 xAI CLI headers（`Accept: text/event-stream`）；不使用 Manager 内部固定 client version。
+5. 用该 token 对 `https://cli-chat-proxy.grok.com/v1/responses` 发起一次实际 `POST`，不经过 CPA `/v0/management/api-call`。
+6. 请求使用 `stream=true` 和 `max_output_tokens=384`，读取至 `response.completed`、`[DONE]` 或失败终止事件后返回检测结果；不执行模型返回的工具调用，不发送第二次请求。
+
+主动质量探测与实际账号能力是两个指标：目标 `quality_guard.py` 的主动规则只判断固定 Prompt 是否出现 `QUALITY_OK`、输出 token 数和生成阶段速度；它不判断模型是否具备工具调用、是否正确执行 function call，也不等同于实际业务请求的完整能力。
+
+`quality_guard_test.py` 只是 Python 单元测试文件，使用测试桩验证 `quality_guard.py` 的分类和连续命中逻辑，不是生产探测器，不能通过账号邮箱直接得到检测结果。生产检测入口是 `quality_guard.py` 调用管理 API 的 `quality-test`，当前 Manager 独立账号检测已复刻其 Prompt 和单次主动分类规则，但没有复刻其出口节点连续 strike、隔离和恢复流程。
+
+
+```json
+{
+  "model": "grok-4.5",
+  "input": "Write exactly 16 numbered lines about reliable distributed systems. Each line must be one complete English sentence, with no markdown heading. The final line must end with the exact marker QUALITY_OK.",
+  "stream": true,
+  "max_output_tokens": 384
+}
+```
+
+主动探测固定要求 `QUALITY_OK` 出现在可见文本中。
+
+ProxyURL：
+
+- 支持 CPA 相同的 `http`、`https`、`socks5`、`socks5h`、`direct`、`none` 语义。
+- SOCKS5 标准格式为 `socks5://username:password@host:port`；为兼容现有 xAI auth JSON，也接受 `username:password:host:port` 与 `socks5://username:password:host:port`，Manager 在建立 SOCKS5 dialer 前统一转换为标准格式。该兼容格式要求恰好四段，不能表达未转义的冒号密码或 IPv6 主机；此类值必须改为标准 URI 并按 URL 规则转义。
+- 代理地址返回前脱敏，不返回代理认证信息；请求头中的 `Authorization`、`Proxy-Authorization` 和响应中的 cookie 类 header 脱敏。
+- auth 级、全局级和直连来源在结果中分别标记为 `auth`、`global`、`direct`。
+
+流式指标和主动判断：
+
+- `TTFB`：从请求开始到响应 body 首字节被读取，仅作为诊断指标，不参与质量判定。
+- 流读取：按 `grok2api` 相同的 `32 KiB` 原始响应 chunk 读取；跨 chunk 仅解析完整 `data:` SSE 行。每个 chunk 的顺序固定为：解析首生成候选 → 写入本次检测的原始 SSE 结果缓冲区 → 提交首生成时间。
+- `firstTokenMs`：从请求开始到首个已提交的 Responses 生成 delta 的毫秒数。候选必须为非空 `response.output_text.delta`、`response.reasoning_summary_text.delta`、`response.reasoning_text.delta`、`response.refusal.delta`、`response.function_call_arguments.delta` 或 `response.custom_tool_call_input.delta`；创建事件、output item 增删事件、空 delta、注释、usage 和 `[DONE]` 均不计入。
+- 本检测不向浏览器逐段转发 SSE；因此原始 SSE 结果缓冲区的成功写入是 `grok2api` 下游 `writer.Write` + `Flush` 的等价提交点。事件矩阵、chunk 边界和“先解析、后提交、再计时”顺序与 `grok2api` 一致。
+- 流终止：`response.completed` 或 `[DONE]` 为成功终止；`response.incomplete`、`response.failed`、`error` 为本次检测错误。EOF 前的未完成残留 SSE 行仍会解析；无成功终止的 2xx 流为 `unknown`。
+- `generationMs`：`totalMs - firstTokenMs`；存在首生成事件时最小按 1ms 计算。
+- `total`：从请求开始到完整 Responses SSE 流读取结束或终止事件的毫秒数；API 同时返回 `durationMs` 和 `totalMs`。
+- `outputTokens`：从 `response.completed.response.usage.output_tokens` 读取。xAI Responses 的 `total_tokens = input_tokens + output_tokens`，故此字段**已包含** `output_tokens_details.reasoning_tokens`；TPS 分子直接使用 `outputTokens`，绝不再加 reasoning tokens。
+- `reasoningTokens`：从 `response.completed.response.usage.output_tokens_details.reasoning_tokens` 读取，仅用于展示和计算可见输出。
+- `visibleTokens`：`outputTokens - reasoningTokens`；结果不为正但存在可见文本时，按 `(可见字符数 + 3) / 4` 估算。
+- `outputTokensPerSecond`：`outputTokens * 1000 / generationMs`，其中 `generationMs = totalMs - firstTokenMs`；`outputTokens` 已含 reasoning tokens。
+- `QUALITY_OK` 缺失：软异常，原因 `expected_marker_missing`。
+- 有效输出 tokens 少于 `32`：软异常，原因 `insufficient_output_tokens`。
+- `outputTokensPerSecond >= 1000`：硬异常，原因 `hard_tps`。
+- `outputTokensPerSecond >= 500` 且低于 `1000`：软异常，原因 `soft_tps`。
+- 以上条件按顺序判断；marker 缺失或输出不足优先于 TPS 阈值。
+- 未命中上述异常：正常，原因 `within_threshold`。
+- 软/硬异常均返回分类 `suspected_degradation`，另以 `qualityLevel=soft/hard` 区分等级。
+- `free-usage-exhausted` 类错误仍单独返回 `quota_exhausted`，不参与 soft/hard TPS 判断。
+- 其他 HTTP 错误、网络错误或流读取错误：`unknown`；错误码和原始错误仍展示。
+- `modelAnswer` 只拼接可见 `response.output_text.delta`，不拼接 reasoning、refusal 或工具参数文本；不执行工具、不发送第二次请求。
+
+结果、timeout 和日志：
+
+- 单次 timeout 复用 wXAi 巡检设置 `settings.Timeout`，不重试；Web 端「降智检测」请求等待上限为 10 分钟，其他巡检接口继续使用各自的常规等待上限。
+- 结果弹窗展示分类、质量等级、判定原因、HTTP 状态码、首字节 TTFB、首生成 token、generation、total、TPS、output tokens、reasoning tokens、visible tokens、`QUALITY_OK` 匹配状态、错误码、模型回答、代理来源、请求体、脱敏请求头、响应头和完整 SSE body（最大 4 MiB）。
+- 页面内只保留最后一次检测返回的降智检测结果：新检测完成后替换旧结果；关闭弹窗只隐藏结果，不删除结果；「上次检测结果」按钮重新打开该结果；首次检测前按钮禁用。结果保存在前端运行期共享内存，切换到其他界面再返回时仍可打开；刷新页面、关闭前端应用或组件热重载后清空，不写入后端、数据库或巡检 run。
+- 不创建、不删除临时文件；本流程只做流式回答检测。
+- 每次检测写入 Manager Server 运行日志 `wXAi 降智检测操作日志`，按 `started`、运行时解析、账号列表、auth 下载、全局 proxy 查询、proxy 解析、client version、上游请求开始/结束记录阶段和耗时；结束日志记录 `statusCode`、`ttfbMs`、`firstTokenMs`、`generationMs`、`totalMs`、`outputTokensPerSecond`、`outputTokens`、`reasoningTokens`、`visibleTokens`、`expectedMatched`、`qualityLevel`、`classificationReason`、`errorCode`、`classification` 和错误。
+- 操作日志不记录 access token、Authorization header 或代理认证信息。
+- HTTP 非 2xx、网络错误、响应读取错误都只作为本次检测结果返回，不触发 priority、额度冷却、billing、chat fallback 或巡检流程。

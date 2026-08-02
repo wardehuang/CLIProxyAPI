@@ -22,26 +22,30 @@ import (
 )
 
 type UsageReporter struct {
-	provider        string
-	executorType    string
-	model           string
-	alias           string
-	authID          string
-	authIndex       string
-	accessTokenHash string
-	authType        string
-	apiKey          string
-	source          string
-	reasoning       string
-	serviceTier     string
-	metadata        map[string]any
-	generate        bool
-	requestedAt     time.Time
-	ttftMu          sync.RWMutex
-	ttft            time.Duration
-	ttftStart       time.Time
-	ttftSet         bool
-	once            sync.Once
+	provider            string
+	executorType        string
+	model               string
+	alias               string
+	authID              string
+	authIndex           string
+	accessTokenHash     string
+	authType            string
+	apiKey              string
+	source              string
+	reasoning           string
+	serviceTier         string
+	metadata            map[string]any
+	metadataMu          sync.RWMutex
+	generate            bool
+	requestedAt         time.Time
+	ttftMu              sync.RWMutex
+	ttft                time.Duration
+	ttftStart           time.Time
+	ttftSet             bool
+	networkProbeMu      sync.Mutex
+	networkProbeDone    chan struct{}
+	networkProbeStarted bool
+	once                sync.Once
 }
 
 type usageExecutor interface {
@@ -294,7 +298,7 @@ func (r *UsageReporter) buildRecordForModel(model string, detail usage.Detail, f
 		Failed:              failed,
 		Fail:                fail,
 		Detail:              detail,
-		Metadata:            cloneUsageMetadata(r.metadata),
+		Metadata:            r.usageMetadataSnapshot(),
 	}
 }
 
@@ -382,6 +386,7 @@ type usageTTFTRoundTripper struct {
 }
 
 func (t usageTTFTRoundTripper) RoundTrip(req *http.Request) (*http.Response, error) {
+	t.reporter.observeNetworkRequest(req.Context(), t.base, req)
 	t.reporter.StartResponseTTFT()
 	resp, errRoundTrip := t.base.RoundTrip(req)
 	if errRoundTrip != nil {

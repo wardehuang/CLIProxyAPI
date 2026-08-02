@@ -152,34 +152,74 @@ func (f *fallbackRoundTripper) RoundTrip(req *http.Request) (*http.Response, err
 	return f.fallback.RoundTrip(req)
 }
 
+func (f *fallbackRoundTripper) NetworkObservation(req *http.Request) networkObservation {
+	if req != nil && req.URL != nil && req.URL.Scheme == "https" {
+		if _, ok := utlsProtectedHosts[strings.ToLower(req.URL.Hostname())]; ok {
+			return resolveNetworkObservation(f.utls, req)
+		}
+	}
+	return resolveNetworkObservation(f.fallback, req)
+}
+
 // NewUtlsHTTPClient creates an HTTP client using utls Chrome TLS fingerprint.
 // Use this for provider requests that need a Chrome-like TLS fingerprint.
 // Falls back to standard transport for non-HTTPS requests.
 func NewUtlsHTTPClient(ctx context.Context, cfg *config.Config, auth *cliproxyauth.Auth, timeout time.Duration) *http.Client {
-	var proxyURL string
-	if auth != nil {
-		proxyURL = strings.TrimSpace(auth.ProxyURL)
-	}
-	if proxyURL == "" && cfg != nil {
-		proxyURL = strings.TrimSpace(cfg.ProxyURL)
-	}
-
-	var ctxRoundTripper http.RoundTripper
-	if ctx != nil {
-		ctxRoundTripper, _ = ctx.Value("cliproxy.roundtripper").(http.RoundTripper)
-	}
+	proxyURL, proxySource := resolveConfiguredProxy(cfg, auth)
+	ctxRoundTripper, hasContextRoundTripper := contextRoundTripper(ctx)
 
 	var utlsRT http.RoundTripper = newUtlsRoundTripper(proxyURL)
 	var standardTransport http.RoundTripper = http.DefaultTransport
-	if proxyURL != "" {
-		if transport := buildProxyTransport(proxyURL); transport != nil {
-			standardTransport = transport
-		}
-	} else if ctxRoundTripper != nil {
-		utlsRT = ctxRoundTripper
-		standardTransport = ctxRoundTripper
-	}
 
+	switch {
+	case proxyURL != "":
+		configuredObservation := observationFromProxyURL(proxyURL, proxySource)
+		utlsRT = &proxyObservationRoundTripper{
+			base:        utlsRT,
+			observation: configuredObservation,
+		}
+		if transport := buildProxyTransport(proxyURL); transport != nil {
+			standardTransport = &proxyObservationRoundTripper{
+				base:        transport,
+				observation: configuredObservation,
+			}
+		} else {
+			fallbackObservation := configuredObservation
+			fallbackObservation.mode = "unknown"
+			fallbackObservation.source = "fallback"
+			fallbackObservation.identity = "fallback"
+			fallbackObservation.probeSupported = false
+			standardTransport = &proxyObservationRoundTripper{
+				base:        http.DefaultTransport,
+				observation: fallbackObservation,
+			}
+		}
+	case hasContextRoundTripper:
+		contextObservation := networkObservation{
+			mode:     "unknown",
+			source:   "context",
+			identity: "context",
+		}
+		utlsRT = &proxyObservationRoundTripper{
+			base:        ctxRoundTripper,
+			observation: contextObservation,
+		}
+		standardTransport = &proxyObservationRoundTripper{
+			base:        ctxRoundTripper,
+			observation: contextObservation,
+		}
+	default:
+		protectedObservation := networkObservation{
+			mode:           "direct",
+			source:         "default",
+			identity:       "direct",
+			probeSupported: true,
+		}
+		utlsRT = &proxyObservationRoundTripper{
+			base:        utlsRT,
+			observation: protectedObservation,
+		}
+	}
 	client := &http.Client{
 		Transport: &fallbackRoundTripper{
 			utls:     utlsRT,
