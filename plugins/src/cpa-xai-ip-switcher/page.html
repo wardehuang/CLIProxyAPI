@@ -1,0 +1,953 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="color-scheme" content="light dark">
+  <link rel="icon" href="data:,">
+  <title>xAi出口守护</title>
+  <style>
+/*__HALLMARK_TOKENS__*/
+    * { box-sizing: border-box; border-color: var(--border); }
+    html, body { margin: 0; min-width: 0; overflow-x: clip; background: var(--background); color: var(--foreground); }
+    body { font-family: var(--font-body); font-size: var(--text-md); line-height: 1.5; -webkit-font-smoothing: antialiased; }
+    button, input, textarea { font: inherit; }
+    button { white-space: nowrap; }
+    [hidden] { display: none !important; }
+    .shell { width: 100%; margin: 0; padding: var(--space-xs); }
+    .stack > * + * { margin-top: var(--space-md); }
+    .page-head, .section-head, .modal-head, .toolbar, .head-actions, .modal-actions { display: flex; align-items: center; gap: var(--space-xs); }
+    .page-head, .section-head, .modal-head { justify-content: space-between; }
+    .page-head { align-items: flex-start; gap: var(--space-sm); }
+    .page-head h1 { margin: 0; font-family: var(--font-display); font-size: clamp(1.35rem, 3vw, 1.75rem); font-weight: 700; line-height: 1.2; }
+    .page-head p { margin: var(--space-3xs) 0 0; color: var(--muted-foreground); font-size: var(--text-xs); }
+    .status-line { display: inline-flex; align-items: center; gap: var(--space-2xs); color: var(--muted-foreground); font-size: var(--text-xs); }
+    .status-dot { width: .55rem; height: .55rem; border-radius: 50%; background: var(--muted-foreground); }
+    .status-dot.good { background: var(--success); }
+    .status-dot.bad { background: var(--destructive); }
+    .head-actions { flex-wrap: wrap; justify-content: flex-end; }
+    .button { min-height: 2.3rem; display: inline-flex; align-items: center; justify-content: center; gap: var(--space-3xs); border: var(--rule-hairline) solid var(--border); border-radius: var(--radius-sm); padding: 0 var(--space-xs); background: var(--secondary); color: var(--secondary-foreground); font-size: var(--text-xs); font-weight: 650; cursor: pointer; transition: background var(--dur-short) var(--ease-out), color var(--dur-short) var(--ease-out), opacity var(--dur-short) var(--ease-out), transform var(--dur-fast) var(--ease-out); }
+    .button:hover { background: var(--accent); color: var(--accent-foreground); }
+    .button:active { transform: translateY(1px); }
+    .button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-visible { outline: 2px solid var(--ring); outline-offset: 2px; }
+    .button:disabled { opacity: .48; cursor: not-allowed; transform: none; }
+    .button.primary { background: var(--primary); color: var(--primary-foreground); border-color: var(--primary); }
+    .button.primary:hover { opacity: .9; }
+    .button.ghost { background: transparent; }
+    .button.icon { width: 2.3rem; padding: 0; font-size: var(--text-lg); font-weight: 400; }
+    .section { overflow: hidden; border: var(--rule-hairline) solid var(--border); border-radius: var(--radius-md); background: var(--card); box-shadow: var(--shadow); }
+    .section-head { align-items: flex-end; padding: var(--space-sm); border-bottom: var(--rule-hairline) solid var(--border); }
+    .section-head h2 { margin: 0; font-size: var(--text-lg); font-weight: 700; }
+    .section-head p { margin: var(--space-3xs) 0 0; color: var(--muted-foreground); font-size: var(--text-xs); }
+    .toolbar { flex-wrap: wrap; justify-content: flex-end; }
+    .batch-filter { display: inline-flex; align-items: center; gap: var(--space-2xs); color: var(--muted-foreground); font-size: var(--text-xs); white-space: nowrap; }
+    .batch-filter select { width: auto; min-width: 8rem; }
+    input, textarea, select { width: 100%; border: var(--rule-hairline) solid var(--input); border-radius: var(--radius-sm); padding: .6rem .7rem; background: var(--background); color: var(--foreground); }
+    input:hover, textarea:hover, select:hover { border-color: var(--ring); }
+    textarea { min-height: 10rem; resize: vertical; line-height: 1.6; font-family: var(--font-mono); font-size: var(--text-xs); }
+    .main-tabs, .status-tabs { display: flex; align-items: center; gap: var(--space-2xs); overflow-x: auto; }
+    .main-tabs { padding: var(--space-sm) var(--space-sm) var(--space-xs); }
+    .status-tabs { padding: var(--space-xs) var(--space-sm); border-bottom: var(--rule-hairline) solid var(--border); }
+    .tab { min-height: 2rem; border: var(--rule-hairline) solid transparent; border-radius: var(--radius-sm); padding: 0 var(--space-xs); background: transparent; color: var(--muted-foreground); font-size: var(--text-xs); font-weight: 650; cursor: pointer; transition: background var(--dur-short) var(--ease-out), border-color var(--dur-short) var(--ease-out), color var(--dur-short) var(--ease-out), transform var(--dur-fast) var(--ease-out); }
+    .tab:hover { border-color: var(--border); color: var(--foreground); }
+    .tab.active { border-color: #60a5fa !important; background: #2563eb !important; color: #ffffff !important; box-shadow: 0 1px 4px rgb(37 99 235 / 0.5) !important; }
+    .status-tabs .tab { min-height: 1.85rem; padding-inline: var(--space-2xs); }
+    .tab-count { display: inline-flex; min-width: 1.1rem; justify-content: center; margin-left: .2rem; border-radius: 999px; padding: 0 .25rem; background: var(--secondary); color: var(--muted-foreground); font-size: var(--text-2xs); line-height: 1.2; white-space: nowrap; }
+    .tab.active .tab-count { background: rgb(255 255 255 / 0.2) !important; color: #ffffff !important; }
+    .table-wrap { max-width: 100%; overflow: auto; }
+    table { width: 100%; border-collapse: collapse; }
+    th, td { padding: .85rem var(--space-sm); border-bottom: var(--rule-hairline) solid var(--border); text-align: left; vertical-align: middle; }
+    th { background: transparent; color: var(--muted-foreground); font-size: var(--text-xs); font-weight: 600; white-space: nowrap; }
+    .table-sort { appearance: none; -webkit-appearance: none; display: inline-flex; align-items: center; gap: var(--space-3xs); min-height: 0; border: 0 !important; border-radius: 0 !important; padding: 0 !important; background: none !important; box-shadow: none !important; color: inherit; font: inherit; cursor: pointer; }
+    .table-sort:hover, .table-sort:active, .table-sort:focus, .table-sort.active, .table-sort.active:hover { border: 0 !important; border-radius: 0 !important; background: none !important; box-shadow: none !important; color: var(--foreground); }
+    .table-sort-indicator { color: var(--primary); font-size: var(--text-2xs); }
+    td { font-size: var(--text-xs); }
+    tbody tr:last-child td { border-bottom: 0; }
+    tbody tr:hover td { background: color-mix(in oklch, var(--secondary) 55%, transparent); }
+    .node-name { min-width: 15rem; font-weight: 650; overflow-wrap: anywhere; }
+    .mono { font-family: var(--font-mono); font-variant-numeric: tabular-nums; }
+    .muted { color: var(--muted-foreground); }
+    .badge { display: inline-flex; align-items: center; min-height: 1.4rem; border-radius: 999px; padding: 0 .5rem; font-size: var(--text-2xs); font-weight: 700; white-space: nowrap; }
+    .log-level { white-space: nowrap; }
+    .log-level .badge { min-width: 2.4rem; justify-content: center; padding-inline: .35rem; font-size: .625rem; }
+    .badge.good { color: var(--success); background: var(--success-surface); }
+    .badge.info { color: var(--primary); background: var(--accent); }
+    .badge.warn { color: var(--warning); background: var(--warning-surface); }
+    .badge.bad { color: var(--destructive); background: var(--danger-surface); }
+    .log-search { width: min(22rem, 70vw); }
+    .log-event { min-width: 11rem; }
+    .log-node { min-width: 12rem; overflow-wrap: anywhere; }
+    .log-message { min-width: 16rem; overflow-wrap: anywhere; }
+    .log-detail { min-width: 24rem; max-width: 42rem; white-space: pre-wrap; overflow-wrap: anywhere; }
+    .empty, .loading, .error-state { padding: var(--space-xl) var(--space-sm); text-align: center; color: var(--muted-foreground); font-size: var(--text-xs); }
+    .error-state { color: var(--destructive); }
+    .error-groups { display: grid; gap: var(--space-2xs); padding: var(--space-xs) var(--space-sm); border-bottom: var(--rule-hairline) solid var(--border); }
+    .error-group { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: var(--space-sm); padding: var(--space-2xs) var(--space-xs); border: var(--rule-hairline) solid var(--border); border-radius: var(--radius-sm); background: var(--secondary); }
+    .error-group-info { min-width: 0; display: flex; align-items: center; gap: var(--space-xs); }
+    .error-group-reason { overflow-wrap: anywhere; }
+    .error-group-count { color: var(--muted-foreground); font-size: var(--text-2xs); white-space: nowrap; }
+    .error-group .button { min-height: 1.85rem; font-size: var(--text-2xs); }
+    .notice { min-height: 2.5rem; padding: var(--space-2xs) var(--space-sm); color: var(--muted-foreground); font-size: var(--text-xs); }
+    .notice.success { color: var(--success); }
+    .notice.error { color: var(--destructive); }
+    .modal-layer { position: fixed; inset: 0; z-index: 20; display: grid; place-items: center; padding: var(--space-sm); background: var(--overlay); }
+    .modal { width: min(40rem, 100%); max-height: calc(100svh - 2rem); overflow: auto; border: var(--rule-hairline) solid var(--border); border-radius: var(--radius-md); background: var(--popover); color: var(--popover-foreground); box-shadow: var(--shadow); }
+    .settings-modal { width: min(58rem, 100%); }
+    .modal-head { padding: var(--space-sm); border-bottom: var(--rule-hairline) solid var(--border); }
+    .modal-head h3 { margin: 0; font-size: var(--text-lg); }
+    .modal-head p { margin: var(--space-3xs) 0 0; color: var(--muted-foreground); font-size: var(--text-xs); }
+    .modal-body { padding: var(--space-sm); }
+    .modal-actions { justify-content: flex-end; margin-top: var(--space-sm); }
+    .settings-grid { display: grid; grid-template-columns: repeat(4, minmax(10rem, 1fr)); gap: var(--space-xs); margin-top: var(--space-sm); }
+    .settings-field { display: grid; gap: var(--space-3xs); color: var(--foreground); font-size: var(--text-xs); font-weight: 650; }
+    .settings-field input { width: 100%; }
+    .checkbox-field > span:first-child { display: flex; align-items: center; gap: var(--space-2xs); min-height: 1.5rem; }
+    .checkbox-field input[type="checkbox"] { flex: 0 0 auto; width: 1.25rem; height: 1.25rem; margin: 0; padding: 0; accent-color: var(--primary); }
+    .settings-help { margin: var(--space-2xs) 0 0; color: var(--muted-foreground); font-size: var(--text-2xs); line-height: 1.7; }
+    .settings-actions { display: flex; align-items: center; justify-content: flex-end; gap: var(--space-xs); margin-top: var(--space-sm); }
+    .settings-actions .help { margin: 0 auto 0 0; }
+    .modal-actions { justify-content: flex-end; margin-top: var(--space-sm); }
+    .modal-body #ip-input { min-height: 25rem; }
+    .modal-body #ip-input { resize: vertical; }
+    .help { margin: var(--space-xs) 0 0; color: var(--muted-foreground); font-size: var(--text-2xs); line-height: 1.7; }
+    .detail { max-height: 24rem; overflow: auto; margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; font-family: var(--font-mono); font-size: var(--text-xs); line-height: 1.6; }
+    @media (max-width: 760px) {
+      .shell { padding: var(--space-sm); }
+      .page-head, .section-head { display: block; }
+      .toolbar { justify-content: flex-start; margin-top: var(--space-sm); }
+      .settings-grid { grid-template-columns: 1fr; }
+      .settings-actions { display: block; }
+      .settings-actions .help { margin: 0 0 var(--space-xs); }
+      th, td { padding: .7rem .6rem; }
+      .node-name { min-width: 11rem; }
+    }
+  </style>
+</head>
+<body>
+  <main class="shell stack">
+    <header class="page-head">
+      <div>
+        <h1>xAi出口守护</h1>
+        <p>代理出口 IP 录入、美国出口识别和 xAI endpoint 连通性探测。</p>
+      </div>
+      <div class="head-actions">
+        <span class="status-line"><span id="service-dot" class="status-dot"></span><span id="service-text">正在连接</span></span>
+        <button id="refresh-button" class="button ghost" type="button" title="立即刷新当前页的 IP 或日志数据">刷新</button>
+      </div>
+    </header>
+
+    <section class="section">
+      <nav class="main-tabs" aria-label="主页签">
+        <button class="tab active" type="button" data-main-tab="nodes">IP列表</button>
+        <button class="tab" type="button" data-main-tab="batches">批次查看</button>
+        <button class="tab" type="button" data-main-tab="logs">日志</button>
+      </nav>
+      <div id="nodes-view">
+      <div class="section-head">
+        <div>
+          <h2>IP列表</h2>
+          <p>新录入节点先进入【未探测】；探测成功进入【已连通】。</p>
+        </div>
+        <div class="toolbar">
+          <button id="settings-button" class="button" type="button">运行配置</button>
+          <button id="add-ip-button" class="button primary" type="button">增加IP</button>
+        </div>
+      </div>
+      <nav id="status-tabs" class="status-tabs" aria-label="IP状态页签">
+        <button class="tab" type="button" data-status="healthy">健康 <span class="tab-count" data-count="healthy">0</span></button>
+        <button class="tab" type="button" data-status="healthy_candidate">健康备选 <span class="tab-count" data-count="healthy_candidate">0</span></button>
+        <button class="tab" type="button" data-status="healthy_fallback">健康保底 <span class="tab-count" data-count="healthy_fallback">0</span></button>
+        <button class="tab active" type="button" data-status="connected">已连通 <span class="tab-count" data-count="connected">0</span></button>
+        <button class="tab" type="button" data-status="cooldown">冷却中 <span class="tab-count" data-count="cooldown">0</span></button>
+        <button class="tab" type="button" data-status="probing">探测中 <span class="tab-count" data-count="probing">0</span></button>
+        <button class="tab" type="button" data-status="keepalive_probing">保活探测中 <span class="tab-count" data-count="keepalive_probing">0</span></button>
+        <button class="tab" type="button" data-status="revive_probing">复活探测中 <span class="tab-count" data-count="revive_probing">0</span></button>
+        <button class="tab" type="button" data-status="unprobed">未探测 <span class="tab-count" data-count="unprobed">0</span></button>
+        <button class="tab" type="button" data-status="error">异常 <span class="tab-count" data-count="error">0</span></button>
+      </nav>
+      <div id="notice" class="notice" role="status">初次探测成功进入【已连通】；保活成功保持原状态，失败进入【异常】。</div>
+      <div id="table-container" class="table-wrap"><div class="loading">正在加载 IP 列表…</div></div>
+      </div>
+      <div id="batches-view" hidden>
+        <div class="section-head">
+          <div>
+            <h2>批次查看</h2>
+            <p>每次录入生成一个批次；重复 IP 不进入该批次。批次内全部节点完成初次探测后，才进入保活候选。</p>
+          </div>
+          <div class="toolbar">
+            <label id="batch-status-filter-field" class="batch-filter" hidden>
+              状态筛选
+              <select id="batch-status-filter" aria-label="批次节点状态筛选">
+                <option value="all">全部状态</option>
+                <option value="healthy">健康</option>
+                <option value="healthy_candidate">健康备选</option>
+                <option value="healthy_fallback">健康保底</option>
+                <option value="connected">已连通</option>
+                <option value="cooldown">冷却中</option>
+                <option value="probing">探测中</option>
+                <option value="keepalive_probing">保活探测中</option>
+                <option value="revive_probing">复活探测中</option>
+                <option value="unprobed">未探测</option>
+                <option value="error">异常</option>
+              </select>
+            </label>
+            <button id="batch-back-button" class="button" type="button" hidden>返回批次列表</button>
+          </div>
+        </div>
+        <div id="batch-summary" class="notice" role="status">正在加载批次…</div>
+        <div id="batches-container" class="table-wrap"><div class="loading">正在加载批次…</div></div>
+      </div>
+      <div id="logs-view" hidden>
+        <div class="section-head">
+          <div>
+            <h2>日志</h2>
+            <p>日志按用途、批次和节点状态分组；日志视图每个节点只显示一条最终探测结果，轮次保留开始/完成摘要；通用日志最多保存 1000 条，探测日志保留最近 10 个批次。</p>
+          </div>
+          <div class="toolbar">
+            <input id="log-search" class="log-search" type="search" placeholder="搜索 ID、级别、事件、节点、消息或详情" aria-label="搜索日志">
+            <button id="search-logs-button" class="button" type="button">搜索</button>
+          </div>
+        </div>
+        <nav id="log-category-tabs" class="status-tabs" aria-label="日志分类页签">
+          <button class="tab active" type="button" data-log-category="general">通用</button>
+          <button class="tab" type="button" data-log-category="batch_probe">批次探测</button>
+          <button class="tab" type="button" data-log-category="keepalive_probe">保活探测</button>
+          <button class="tab" type="button" data-log-category="revive_probe">复活探测</button>
+        </nav>
+        <div id="log-group-panel" hidden>
+          <nav id="log-group-tabs" class="status-tabs" aria-label="探测批次页签"></nav>
+          <nav id="log-status-tabs" class="status-tabs" aria-label="日志状态页签">
+            <button class="tab active" type="button" data-log-status="connected">已连通</button>
+            <button class="tab" type="button" data-log-status="probing">探测中</button>
+            <button class="tab" type="button" data-log-status="error">账号异常</button>
+          </nav>
+        </div>
+        <div id="log-summary" class="notice" role="status">正在加载日志…</div>
+        <div id="logs-container" class="table-wrap"><div class="loading">正在加载日志…</div></div>
+      </div>
+    </section>
+  </main>
+
+  <div id="add-modal" class="modal-layer" hidden>
+    <section class="modal" role="dialog" aria-modal="true" aria-labelledby="add-modal-title">
+      <div class="modal-head">
+        <div>
+          <h3 id="add-modal-title">增加IP</h3>
+          <p>每一行录入一个代理节点。可选择丢弃非 US 出口。</p>
+        </div>
+        <button class="button icon ghost" type="button" data-close-modal="add-modal" aria-label="关闭">×</button>
+      </div>
+      <div class="modal-body">
+        <textarea id="ip-input" placeholder="http://username:pass@ip:port
+https://username:pass@ip:port
+socks5://username:pass@ip:port
+socks5h://username:pass@ip:port
+38.244.38.76:8888,38.244.38.76,8888,socks5"></textarea>
+        <p class="help">支持 http、https、socks5、socks5h URL；也支持 host:port,ip,port,protocol[,domain]。错误行不会写入数据库。</p>
+        <label class="settings-field checkbox-field" for="delete-non-us-input">
+          <span><input id="delete-non-us-input" type="checkbox"> 录入探测发现非 US 出口时删除节点</span>
+          <span class="settings-help">关闭时保留节点并标记为【异常】，后续复活探测仍会按规则处理。</span>
+        </label>
+        <div class="modal-actions">
+          <button class="button" type="button" data-close-modal="add-modal">取消</button>
+          <button id="submit-ip-button" class="button primary" type="button">录入并开始探测</button>
+        </div>
+      </div>
+    </section>
+  </div>
+
+  <div id="settings-modal" class="modal-layer" hidden>
+    <section class="modal settings-modal" role="dialog" aria-modal="true" aria-labelledby="settings-modal-title">
+      <div class="modal-head">
+        <div>
+          <h3 id="settings-modal-title">运行配置</h3>
+          <p>配置保存到插件 SQLite。只有配置实际变化时，探测线程、保活和复活调度才会重启；正在执行的探测会按原流程恢复。</p>
+        </div>
+        <button class="button icon ghost" type="button" data-close-modal="settings-modal" aria-label="关闭">×</button>
+      </div>
+      <div class="modal-body">
+        <div class="settings-grid">
+          <label class="settings-field" for="worker-count">
+            探测线程数
+            <input id="worker-count" type="number" min="1" max="64" step="1" value="4">
+            <span class="settings-help">处理【未探测】节点的并发线程数。范围 1–64。</span>
+          </label>
+          <label class="settings-field" for="refresh-interval">
+            页面刷新时间（秒）
+            <input id="refresh-interval" type="number" min="5" max="3600" step="5" value="30">
+            <span class="settings-help">只控制页面读取数据的周期，不会主动发起探测。范围 5–3600 秒。</span>
+          </label>
+          <label class="settings-field" for="keepalive-worker-count">
+            保活线程数
+            <input id="keepalive-worker-count" type="number" min="1" max="64" step="1" value="8">
+            <span class="settings-help">每轮并发复查【健康】【已连通】【冷却中】节点。范围 1–64。</span>
+          </label>
+          <label class="settings-field" for="keepalive-interval">
+            保活间隔时间（秒）
+            <input id="keepalive-interval" type="number" min="1" max="86400" step="1" value="1800">
+            <span class="settings-help">上一轮全部结束后，从该时刻开始计时。启动后立即执行第一轮。默认 1800 秒（30 分钟），范围 1–86400 秒。</span>
+          </label>
+          <label class="settings-field" for="revive-interval">
+            复活间隔时间（秒）
+            <input id="revive-interval" type="number" min="1" max="86400" step="1" value="1800">
+            <span class="settings-help">复查【异常】节点的间隔。启动后立即执行第一轮。默认 1800 秒（30 分钟），范围 1–86400 秒。</span>
+          </label>
+          <label class="settings-field" for="probe-retry-count">
+            探测总次数（含首次）
+            <input id="probe-retry-count" type="number" min="1" max="10" step="1" value="3">
+            <span class="settings-help">总探测次数，包含首次探测。默认 3 次；全部失败才归类为【异常】。范围 1–10。</span>
+          </label>
+        </div>
+        <div class="settings-actions">
+          <span class="help">保活不检查【异常】【探测中】【保活探测中】【未探测】节点。</span>
+          <button id="save-settings-button" class="button primary" type="button">保存运行配置</button>
+        </div>
+      </div>
+    </section>
+  </div>
+
+  <div id="detail-modal" class="modal-layer" hidden>
+    <section class="modal" role="dialog" aria-modal="true" aria-labelledby="detail-modal-title">
+      <div class="modal-head">
+        <div>
+          <h3 id="detail-modal-title">异常详情</h3>
+          <p id="detail-modal-name">节点</p>
+        </div>
+        <button class="button icon ghost" type="button" data-close-modal="detail-modal" aria-label="关闭">×</button>
+      </div>
+      <div class="modal-body">
+        <pre id="detail-content" class="detail"></pre>
+        <div class="modal-actions"><button class="button" type="button" data-close-modal="detail-modal">关闭</button></div>
+      </div>
+    </section>
+  </div>
+
+  <script>
+    (() => {
+      const apiPath = "/v0/management/cpa-xai-ip-switcher/api";
+      const defaultRefreshIntervalSeconds = 30;
+      const minimumRefreshIntervalSeconds = 5;
+      const maximumRefreshIntervalSeconds = 3600;
+      const state = { activeView: "nodes", activeStatus: "connected", nodes: [], batches: [], batchNodes: [], selectedBatchID: "", batchStatusFilter: "all", batchSortKey: "", batchSortDirection: "asc", nodeSortKey: "", nodeSortDirection: "asc", activeLogCategory: "general", activeLogStatus: "connected", selectedLogGroupIDs: { batch_probe: "", keepalive_probe: "", revive_probe: "" }, logGroups: { batch_probe: [], keepalive_probe: [], revive_probe: [] }, logs: [], logSearch: "", refreshingViews: { nodes: false, batches: false, logs: false }, refreshIntervalSeconds: defaultRefreshIntervalSeconds, timer: null, noticeTimer: null };
+      const statusLabels = { healthy: "健康", healthy_candidate: "健康备选", healthy_fallback: "健康保底", connected: "已连通", cooldown: "冷却中", probing: "探测中", keepalive_probing: "保活探测中", revive_probing: "复活探测中", unprobed: "未探测", error: "异常" };
+      const logCategoryLabels = { general: "通用", batch_probe: "批次探测", keepalive_probe: "保活探测", revive_probe: "复活探测" };
+      const logStatusLabels = { connected: "已连通", probing: "探测中", error: "账号异常" };
+      const logLevelLabels = { info: "信息", warn: "警告", error: "错误" };
+      const elements = {
+        deleteNonUSInput: document.getElementById("delete-non-us-input"),
+        serviceDot: document.getElementById("service-dot"),
+        serviceText: document.getElementById("service-text"),
+        refreshButton: document.getElementById("refresh-button"),
+        settingsButton: document.getElementById("settings-button"),
+        settingsModal: document.getElementById("settings-modal"),
+        nodesView: document.getElementById("nodes-view"),
+        batchesView: document.getElementById("batches-view"),
+        logsView: document.getElementById("logs-view"),
+        notice: document.getElementById("notice"),
+        table: document.getElementById("table-container"),
+        batches: document.getElementById("batches-container"),
+        batchSummary: document.getElementById("batch-summary"),
+        batchStatusFilterField: document.getElementById("batch-status-filter-field"),
+        batchStatusFilter: document.getElementById("batch-status-filter"),
+        batchBackButton: document.getElementById("batch-back-button"),
+        logs: document.getElementById("logs-container"),
+        logSummary: document.getElementById("log-summary"),
+        logSearch: document.getElementById("log-search"),
+        logCategoryTabs: document.getElementById("log-category-tabs"),
+        logGroupPanel: document.getElementById("log-group-panel"),
+        logGroupTabs: document.getElementById("log-group-tabs"),
+        logStatusTabs: document.getElementById("log-status-tabs"),
+        workerCount: document.getElementById("worker-count"),
+        refreshInterval: document.getElementById("refresh-interval"),
+        keepaliveWorkerCount: document.getElementById("keepalive-worker-count"),
+        keepaliveInterval: document.getElementById("keepalive-interval"),
+        reviveInterval: document.getElementById("revive-interval"),
+        probeRetryCount: document.getElementById("probe-retry-count"),
+        saveSettingsButton: document.getElementById("save-settings-button"),
+        addModal: document.getElementById("add-modal"),
+        detailModal: document.getElementById("detail-modal"),
+        ipInput: document.getElementById("ip-input"),
+        detailContent: document.getElementById("detail-content"),
+        detailName: document.getElementById("detail-modal-name")
+      };
+
+      function escapeHTML(value) {
+        return String(value).replace(/[&<>'"]/g, (character) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", "'": "&#39;", "\"": "&quot;" }[character]));
+      }
+
+      function formatTime(timestamp) {
+        if (!timestamp) return "-";
+        return new Date(timestamp).toLocaleString();
+      }
+
+      function setNotice(message, tone, durationMilliseconds = 0) {
+        window.clearTimeout(state.noticeTimer);
+        elements.notice.textContent = message;
+        elements.notice.className = "notice" + (tone ? " " + tone : "");
+        if (durationMilliseconds > 0) {
+          state.noticeTimer = window.setTimeout(() => {
+            elements.notice.textContent = "";
+            elements.notice.className = "notice";
+            state.noticeTimer = null;
+          }, durationMilliseconds);
+        }
+      }
+
+      function setServiceState(healthy, message) {
+        elements.serviceDot.className = "status-dot" + (healthy ? " good" : " bad");
+        elements.serviceText.textContent = message;
+      }
+
+      function managementKey() {
+        const decodeStoredValue = (storageKey) => {
+          let raw = localStorage.getItem(storageKey) || "";
+          if (!raw) return null;
+          if (raw.startsWith("enc::v1::")) {
+            const encoded = atob(raw.slice(9));
+            const value = Uint8Array.from(encoded, (character) => character.charCodeAt(0));
+            const key = new TextEncoder().encode("cli-proxy-api-webui::secure-storage|" + location.host + "|" + navigator.userAgent);
+            for (let index = 0; index < value.length; index += 1) value[index] ^= key[index % key.length];
+            raw = new TextDecoder().decode(value);
+          }
+          try { return JSON.parse(raw); } catch (_) { return raw; }
+        };
+        for (const storageKey of ["authToken", "managementKey", "cli-proxy-auth"]) {
+          const decoded = decodeStoredValue(storageKey);
+          if (typeof decoded === "string" && decoded) return decoded;
+          if (decoded && typeof decoded === "object") {
+            const key = decoded.state?.managementKey || decoded.managementKey || decoded.token;
+            if (typeof key === "string" && key) return key;
+          }
+        }
+        throw new Error("CPA 管理密钥未找到，请重新登录管理面板并勾选“记住密码”");
+      }
+
+      function updateRefreshButton() {
+        const refreshing = Object.values(state.refreshingViews).some(Boolean);
+        elements.refreshButton.disabled = refreshing;
+        elements.refreshButton.textContent = refreshing ? "刷新中…" : "刷新";
+      }
+
+      function resetRefreshTimer() {
+        window.clearInterval(state.timer);
+        state.timer = window.setInterval(() => refresh(state.activeView), state.refreshIntervalSeconds * 1000);
+      }
+
+      function applySettings(settings) {
+        elements.workerCount.value = String(settings.workerCount);
+        elements.refreshInterval.value = String(settings.refreshIntervalSeconds);
+        elements.keepaliveWorkerCount.value = String(settings.keepaliveWorkerCount);
+        elements.keepaliveInterval.value = String(settings.keepaliveIntervalSeconds);
+        elements.reviveInterval.value = String(settings.reviveIntervalSeconds);
+        elements.probeRetryCount.value = String(settings.probeRetryCount);
+        if (state.refreshIntervalSeconds !== settings.refreshIntervalSeconds) {
+          state.refreshIntervalSeconds = settings.refreshIntervalSeconds;
+          resetRefreshTimer();
+        }
+      }
+
+      async function callAPI(method, path, body) {
+        const request = { method, path };
+        if (body !== undefined) request.body = body;
+        const response = await fetch(apiPath, {
+          method: "POST",
+          credentials: "same-origin",
+          cache: "no-store",
+          headers: {
+            "Accept": "application/json",
+            "Content-Type": "application/json",
+            "Authorization": "Bearer " + managementKey(),
+            "X-CPA-XAI-IP-Switcher-UI": "1"
+          },
+          body: JSON.stringify(request)
+        });
+        const raw = await response.text();
+        let payload;
+        try {
+          payload = raw ? JSON.parse(raw) : {};
+        } catch (_) {
+          throw new Error("服务返回了无效数据");
+        }
+        if (!response.ok || payload.error) {
+          const message = payload.error?.message || payload.error || `管理接口请求失败（HTTP ${response.status}）`;
+          throw new Error(message);
+        }
+        return payload.data ?? payload;
+      }
+
+      function renderCounts(counts) {
+        ["healthy", "healthy_candidate", "healthy_fallback", "connected", "cooldown", "probing", "keepalive_probing", "revive_probing", "unprobed", "error"].forEach((status) => {
+          const count = document.querySelector(`[data-count="${status}"]`);
+          count.textContent = String(counts[status] || 0);
+        });
+      }
+
+      function formatNodeName(node) {
+        return `${node.protocol}://${node.name}`;
+      }
+
+      function nodeLatencySortIndicator() {
+        if (state.nodeSortKey !== "latencyMs") return "↕";
+        return state.nodeSortDirection === "asc" ? "↑" : "↓";
+      }
+
+      function renderNodeLatencySortHeader() {
+        const isActive = state.nodeSortKey === "latencyMs";
+        const activeClass = isActive ? " active" : "";
+        const directionLabel = isActive ? (state.nodeSortDirection === "asc" ? "升序" : "降序") : "未排序";
+        return `<button class="table-sort${activeClass}" type="button" data-node-sort="latencyMs" aria-label="按延迟排序，当前${directionLabel}">延迟<span class="table-sort-indicator" aria-hidden="true">${nodeLatencySortIndicator()}</span></button>`;
+      }
+
+      function getVisibleNodes(status) {
+        const rows = state.nodes.filter((node) => node.status === status);
+        if (state.nodeSortKey !== "latencyMs" || (status !== "healthy" && status !== "healthy_candidate" && status !== "healthy_fallback" && status !== "connected" && status !== "cooldown")) return rows;
+        const sortDirection = state.nodeSortDirection === "asc" ? 1 : -1;
+        return rows.sort((leftNode, rightNode) => {
+          const leftLatency = Number(leftNode.latencyMs) > 0 ? Number(leftNode.latencyMs) : null;
+          const rightLatency = Number(rightNode.latencyMs) > 0 ? Number(rightNode.latencyMs) : null;
+          if (leftLatency === null && rightLatency !== null) return 1;
+          if (leftLatency !== null && rightLatency === null) return -1;
+          if (leftLatency !== null && rightLatency !== null && leftLatency !== rightLatency) {
+            return (leftLatency - rightLatency) * sortDirection;
+          }
+          return Number(rightNode.id) - Number(leftNode.id);
+        });
+      }
+
+      function toggleNodeLatencySort() {
+        if (state.nodeSortKey === "latencyMs") {
+          state.nodeSortDirection = state.nodeSortDirection === "asc" ? "desc" : "asc";
+        } else {
+          state.nodeSortKey = "latencyMs";
+          state.nodeSortDirection = "asc";
+        }
+        renderTable();
+      }
+
+      function renderTable() {
+        const status = state.activeStatus;
+        const rows = getVisibleNodes(status);
+        if (rows.length === 0) {
+          elements.table.innerHTML = `<div class="empty">暂无【${statusLabels[status]}】节点。</div>`;
+          return;
+        }
+        if (status === "healthy" || status === "healthy_candidate" || status === "healthy_fallback" || status === "connected" || status === "cooldown") {
+          elements.table.innerHTML = `<table><thead><tr><th>节点名字</th><th>${renderNodeLatencySortHeader()}</th><th>探测时间</th></tr></thead><tbody>${rows.map((node) => `<tr><td class="node-name">${escapeHTML(formatNodeName(node))}</td><td class="mono">${node.latencyMs ? escapeHTML(node.latencyMs) + " ms" : "-"}</td><td>${escapeHTML(formatTime(node.probeTime))}</td></tr>`).join("")}</tbody></table>`;
+          return;
+        }
+        if (status === "probing" || status === "keepalive_probing" || status === "revive_probing") {
+          elements.table.innerHTML = `<table><thead><tr><th>节点名字</th><th>开始时间</th></tr></thead><tbody>${rows.map((node) => `<tr><td class="node-name">${escapeHTML(formatNodeName(node))}</td><td>${escapeHTML(formatTime(node.probeStartedAt))}</td></tr>`).join("")}</tbody></table>`;
+          return;
+        }
+        if (status === "unprobed") {
+          elements.table.innerHTML = `<table><thead><tr><th>节点名字</th><th>录入时间</th></tr></thead><tbody>${rows.map((node) => `<tr><td class="node-name">${escapeHTML(formatNodeName(node))}</td><td>${escapeHTML(formatTime(node.enteredAt))}</td></tr>`).join("")}</tbody></table>`;
+          return;
+        }
+        const errorGroups = new Map();
+        rows.forEach((node) => {
+          const errorReason = node.errorReason || "探测失败";
+          const group = errorGroups.get(errorReason) || { reason: errorReason, count: 0 };
+          group.count += 1;
+          errorGroups.set(errorReason, group);
+        });
+        const groupActions = Array.from(errorGroups.values()).map((group) => `<div class="error-group"><div class="error-group-info"><span class="badge bad error-group-reason">${escapeHTML(group.reason)}</span><span class="error-group-count">${group.count} 个节点</span></div><button class="button" type="button" data-delete-error-reason="${escapeHTML(group.reason)}" data-delete-error-count="${group.count}">删除该原因全部节点</button></div>`).join("");
+        elements.table.innerHTML = `<div class="error-groups">${groupActions}</div><table><thead><tr><th>节点名字</th><th>异常原因</th><th>异常详情</th></tr></thead><tbody>${rows.map((node) => `<tr><td class="node-name">${escapeHTML(formatNodeName(node))}</td><td><span class="badge bad">${escapeHTML(node.errorReason || "探测失败")}</span></td><td><button class="button" type="button" data-detail-id="${escapeHTML(node.id)}">查看详情</button></td></tr>`).join("")}</tbody></table>`;
+      }
+
+      function batchSortIndicator(sortKey) {
+        if (state.batchSortKey !== sortKey) return "↕";
+        return state.batchSortDirection === "asc" ? "↑" : "↓";
+      }
+
+      function renderBatchSortHeader(label, sortKey) {
+        const isActive = state.batchSortKey === sortKey;
+        const activeClass = isActive ? " active" : "";
+        const directionLabel = isActive ? (state.batchSortDirection === "asc" ? "升序" : "降序") : "未排序";
+        return `<button class="table-sort${activeClass}" type="button" data-batch-sort="${sortKey}" aria-label="按${label}排序，当前${directionLabel}">${label}<span class="table-sort-indicator" aria-hidden="true">${batchSortIndicator(sortKey)}</span></button>`;
+      }
+
+      function getBatchNodeSortValue(node, sortKey) {
+        if (sortKey === "status") return statusLabels[node.status] || node.status || "";
+        if (sortKey === "latencyMs") return node.latencyMs > 0 ? Number(node.latencyMs) : null;
+        if (sortKey === "probeTime") {
+          const timestamp = node.probeTime || node.probeStartedAt;
+          return timestamp ? Number(timestamp) : null;
+        }
+        return null;
+      }
+
+      function getVisibleBatchNodes() {
+        const visibleNodes = state.batchNodes.filter((node) => state.batchStatusFilter === "all" || node.status === state.batchStatusFilter);
+        if (!state.batchSortKey) return visibleNodes;
+        const sortDirection = state.batchSortDirection === "asc" ? 1 : -1;
+        return visibleNodes.sort((leftNode, rightNode) => {
+          const leftValue = getBatchNodeSortValue(leftNode, state.batchSortKey);
+          const rightValue = getBatchNodeSortValue(rightNode, state.batchSortKey);
+          if (leftValue === null && rightValue !== null) return 1;
+          if (leftValue !== null && rightValue === null) return -1;
+          if (leftValue !== null && rightValue !== null) {
+            const comparison = typeof leftValue === "string"
+              ? leftValue.localeCompare(rightValue, "zh-CN")
+              : leftValue - rightValue;
+            if (comparison !== 0) return comparison * sortDirection;
+          }
+          return Number(rightNode.id) - Number(leftNode.id);
+        });
+      }
+
+      function toggleBatchSort(sortKey) {
+        if (state.batchSortKey === sortKey) {
+          state.batchSortDirection = state.batchSortDirection === "asc" ? "desc" : "asc";
+        } else {
+          state.batchSortKey = sortKey;
+          state.batchSortDirection = "asc";
+        }
+        renderBatches();
+      }
+
+      function renderBatches() {
+        const hasSelectedBatch = Boolean(state.selectedBatchID);
+        elements.batchStatusFilterField.hidden = !hasSelectedBatch;
+        if (hasSelectedBatch) elements.batchStatusFilter.value = state.batchStatusFilter;
+
+        if (state.selectedBatchID) {
+          const batch = state.batches.find((item) => item.batchId === state.selectedBatchID);
+          const visibleNodes = getVisibleBatchNodes();
+          elements.batchBackButton.hidden = false;
+          elements.batchSummary.textContent = batch
+            ? `批次 ${batch.batchId}：新增 ${batch.totalCount} 个，重复 ${batch.duplicateCount} 个，已完成初次探测 ${batch.completedCount} 个，未完成 ${batch.pendingCount} 个；显示 ${visibleNodes.length}/${state.batchNodes.length} 个节点。`
+            : `批次 ${state.selectedBatchID}：显示 ${visibleNodes.length}/${state.batchNodes.length} 个节点。`;
+          if (visibleNodes.length === 0) {
+            elements.batches.innerHTML = state.batchNodes.length === 0
+              ? `<div class="empty">该批次没有新增节点。</div>`
+              : `<div class="empty">当前状态筛选下没有节点。</div>`;
+            return;
+          }
+          elements.batches.innerHTML = `<table><thead><tr><th>节点名字</th><th>${renderBatchSortHeader("状态", "status")}</th><th>${renderBatchSortHeader("延迟", "latencyMs")}</th><th>${renderBatchSortHeader("探测时间", "probeTime")}</th></tr></thead><tbody>${visibleNodes.map((node) => `<tr><td class="node-name">${escapeHTML(formatNodeName(node))}</td><td><span class="badge ${node.status === "error" ? "bad" : node.status === "connected" || node.status === "healthy" || node.status === "healthy_candidate" || node.status === "healthy_fallback" || node.status === "cooldown" ? "good" : "info"}">${escapeHTML(statusLabels[node.status] || node.status)}</span></td><td class="mono">${node.latencyMs ? escapeHTML(node.latencyMs) + " ms" : "-"}</td><td>${escapeHTML(formatTime(node.probeTime || node.probeStartedAt))}</td></tr>`).join("")}</tbody></table>`;
+          return;
+        }
+
+        elements.batchBackButton.hidden = true;
+        elements.batchSummary.textContent = state.batches.length ? `共 ${state.batches.length} 个批次；初次探测进度和初次已连通数量在初次结果写入后固定，只有实时已连通数量随节点状态变化。` : "暂无批次。";
+        if (state.batches.length === 0) {
+          elements.batches.innerHTML = `<div class="empty">暂无录入批次。</div>`;
+          return;
+        }
+        elements.batches.innerHTML = `<table><thead><tr><th>批次ID</th><th>录入时间</th><th>新增</th><th>重复</th><th>格式错误</th><th>初次已连通</th><th>实时已连通</th><th>操作</th></tr></thead><tbody>${state.batches.map((batch) => `<tr><td class="mono">${escapeHTML(batch.batchId)}</td><td>${escapeHTML(formatTime(batch.createdAt))}</td><td class="mono">${batch.totalCount}</td><td class="mono">${batch.duplicateCount}</td><td class="mono">${batch.inputErrorCount}</td><td class="mono">${batch.initialConnectedCount}</td><td class="mono">${batch.realtimeConnectedCount}</td><td><button class="button" type="button" data-batch-id="${escapeHTML(batch.batchId)}">查看节点</button></td></tr>`).join("")}</tbody></table>`;
+      }
+
+      function logBadgeClass(level) {
+        if (level === "error") return "bad";
+        if (level === "warn") return "warn";
+        return "info";
+      }
+
+      function renderLogNavigation() {
+        document.querySelectorAll("[data-log-category]").forEach((tab) => tab.classList.toggle("active", tab.dataset.logCategory === state.activeLogCategory));
+        const isGroupedCategory = state.activeLogCategory !== "general";
+        elements.logGroupPanel.hidden = !isGroupedCategory;
+        if (!isGroupedCategory) return;
+
+        const groups = state.logGroups[state.activeLogCategory];
+        const selectedGroupID = state.selectedLogGroupIDs[state.activeLogCategory];
+        elements.logGroupTabs.innerHTML = groups.length === 0
+          ? `<span class="muted">暂无探测批次。</span>`
+          : groups.map((group) => {
+            const statusLabel = group.status === "running" ? "运行中" : "已完成";
+            const activeClass = group.id === selectedGroupID ? " active" : "";
+            return `<button class="tab${activeClass}" type="button" data-log-group-id="${escapeHTML(group.id)}">#${escapeHTML(group.sequenceNumber)} ${statusLabel} <span class="tab-count">${escapeHTML(group.logCount)}</span></button>`;
+          }).join("");
+        elements.logStatusTabs.hidden = groups.length === 0;
+        elements.logStatusTabs.querySelectorAll("[data-log-status]").forEach((tab) => tab.classList.toggle("active", tab.dataset.logStatus === state.activeLogStatus));
+      }
+
+      function renderLogs() {
+        renderLogNavigation();
+        const visibleLogs = state.activeLogCategory === "general"
+          ? state.logs
+          : state.logs.filter((logEntry) => logEntry.status === state.activeLogStatus);
+        const selectedGroupID = state.selectedLogGroupIDs[state.activeLogCategory];
+        const activeLogGroups = state.activeLogCategory === "general" ? [] : state.logGroups[state.activeLogCategory];
+        const selectedGroup = activeLogGroups.find((group) => group.id === selectedGroupID);
+        if (visibleLogs.length === 0) {
+          if (state.activeLogCategory === "general") {
+            elements.logSummary.textContent = state.logSearch ? `没有匹配“${state.logSearch}”的通用日志。` : "暂无通用日志。";
+          } else {
+            const groupLabel = selectedGroup ? `#${selectedGroup.sequenceNumber}` : "当前探测批次";
+            elements.logSummary.textContent = state.logSearch ? `没有匹配“${state.logSearch}”的${groupLabel}日志。` : `暂无${groupLabel}的【${logStatusLabels[state.activeLogStatus]}】日志。`;
+          }
+          elements.logs.innerHTML = `<div class="empty">暂无匹配日志。</div>`;
+          return;
+        }
+        const searchSummary = state.logSearch ? `，搜索：${state.logSearch}` : "";
+        if (state.activeLogCategory === "general") {
+          elements.logSummary.textContent = `显示 ${visibleLogs.length} 条通用日志，最多保存 1000 条${searchSummary}。`;
+        } else {
+          const groupLabel = selectedGroup ? `#${selectedGroup.sequenceNumber}` : "当前探测批次";
+          elements.logSummary.textContent = `显示${groupLabel}【${logStatusLabels[state.activeLogStatus]}】${visibleLogs.length} 条日志，保留最近 10 个${logCategoryLabels[state.activeLogCategory]}批次${searchSummary}。`;
+        }
+        elements.logs.innerHTML = `<table><thead><tr><th>ID</th><th>时间</th><th>级别</th><th>事件</th><th>节点</th><th>消息</th><th>详情</th></tr></thead><tbody>${visibleLogs.map((logEntry) => {
+          const nodeLabel = logEntry.nodeId ? `#${logEntry.nodeId} ${logEntry.nodeName || "节点"}` : "插件";
+          const levelLabel = logLevelLabels[logEntry.level] || logEntry.level || "未知";
+          return `<tr><td class="mono">${escapeHTML(logEntry.id)}</td><td class="mono">${escapeHTML(formatTime(logEntry.createdAt))}</td><td class="log-level"><span class="badge ${logBadgeClass(logEntry.level)}">${escapeHTML(levelLabel)}</span></td><td class="mono log-event">${escapeHTML(logEntry.event)}</td><td class="log-node">${escapeHTML(nodeLabel)}</td><td class="log-message">${escapeHTML(logEntry.message)}</td><td class="log-detail">${escapeHTML(logEntry.detail || "-")}</td></tr>`;
+        }).join("")}</tbody></table>`;
+      }
+
+      function setActiveView(view) {
+        state.activeView = view;
+        document.querySelectorAll("[data-main-tab]").forEach((tab) => tab.classList.toggle("active", tab.dataset.mainTab === view));
+        elements.nodesView.hidden = view !== "nodes";
+        elements.batchesView.hidden = view !== "batches";
+        elements.logsView.hidden = view !== "logs";
+        if (view === "logs" || view === "batches") {
+          refresh(view);
+          return;
+        }
+        renderTable();
+      }
+
+      function setActiveStatus(status) {
+        state.activeStatus = status;
+        document.querySelectorAll("[data-status]").forEach((tab) => tab.classList.toggle("active", tab.dataset.status === status));
+        renderTable();
+      }
+
+      async function refreshLogs() {
+        state.logSearch = elements.logSearch.value.trim();
+        const searchParameters = new URLSearchParams();
+        searchParameters.set("category", state.activeLogCategory);
+        if (state.logSearch) searchParameters.set("search", state.logSearch);
+        if (state.activeLogCategory !== "general") {
+          const groupsData = await callAPI("GET", `/logs/groups?category=${encodeURIComponent(state.activeLogCategory)}`);
+          state.logGroups[state.activeLogCategory] = groupsData.items;
+          const groups = state.logGroups[state.activeLogCategory];
+          const selectedGroupID = state.selectedLogGroupIDs[state.activeLogCategory];
+          if (!groups.some((group) => group.id === selectedGroupID)) {
+            state.selectedLogGroupIDs[state.activeLogCategory] = groups.length ? groups[0].id : "";
+          }
+          if (state.selectedLogGroupIDs[state.activeLogCategory]) {
+            searchParameters.set("groupId", state.selectedLogGroupIDs[state.activeLogCategory]);
+          }
+        }
+        const logData = state.activeLogCategory === "general"
+          ? await callAPI("GET", `/logs?${searchParameters.toString()}`)
+          : state.selectedLogGroupIDs[state.activeLogCategory]
+            ? await callAPI("GET", `/logs?${searchParameters.toString()}`)
+            : { items: [] };
+        state.logs = logData.items;
+        renderLogs();
+      }
+
+      async function refreshBatches() {
+        const batchData = await callAPI("GET", "/batches");
+        state.batches = batchData.items;
+        if (state.selectedBatchID) {
+          const nodeData = await callAPI("GET", `/batches/${encodeURIComponent(state.selectedBatchID)}/nodes`);
+          state.batchNodes = nodeData.items;
+        } else {
+          state.batchNodes = [];
+        }
+        renderBatches();
+      }
+
+      async function refresh(view = state.activeView) {
+        if (state.refreshingViews[view]) return;
+        state.refreshingViews[view] = true;
+        updateRefreshButton();
+        try {
+          if (view === "logs") {
+            await refreshLogs();
+          } else if (view === "batches") {
+            await refreshBatches();
+          } else {
+            const [nodeData, summary, settings] = await Promise.all([callAPI("GET", "/nodes?status=all"), callAPI("GET", "/summary"), callAPI("GET", "/settings")]);
+            state.nodes = nodeData.items;
+            renderCounts(summary);
+            applySettings(settings);
+            renderTable();
+          }
+          if (state.activeView === view) setServiceState(true, "服务运行中");
+        } catch (error) {
+          if (state.activeView !== view) return;
+          const message = error instanceof Error ? error.message : String(error);
+          setServiceState(false, "服务异常");
+          if (view === "logs") {
+            elements.logSummary.textContent = `日志加载失败：${message}`;
+            elements.logs.innerHTML = `<div class="error-state">${escapeHTML(message)}</div>`;
+          } else if (view === "batches") {
+            elements.batchSummary.textContent = `批次加载失败：${message}`;
+            elements.batches.innerHTML = `<div class="error-state">${escapeHTML(message)}</div>`;
+          } else {
+            elements.table.innerHTML = `<div class="error-state">${escapeHTML(message)}</div>`;
+          }
+        } finally {
+          state.refreshingViews[view] = false;
+          updateRefreshButton();
+        }
+      }
+
+      function openModal(element) {
+        element.hidden = false;
+      }
+
+      function closeModal(element) {
+        element.hidden = true;
+      }
+
+      async function submitIPs() {
+        const text = elements.ipInput.value.trim();
+        if (!text) {
+          setNotice("请输入至少一行 IP。", "error");
+          return;
+        }
+        const button = document.getElementById("submit-ip-button");
+        button.disabled = true;
+        try {
+          const result = await callAPI("POST", "/nodes", { text, deleteNonUS: elements.deleteNonUSInput.checked });
+          const errors = result.errors || [];
+          const errorMessage = errors.length ? `，${errors.length} 行格式错误` : "";
+          setNotice(`已录入 ${result.added} 个节点，重复 ${result.duplicates} 个${errorMessage}。`, errors.length ? "error" : "success", 5000);
+          elements.ipInput.value = "";
+          closeModal(elements.addModal);
+          await refresh();
+        } catch (error) {
+          setNotice(error.message, "error");
+        } finally {
+          button.disabled = false;
+        }
+      }
+
+      async function saveSettings() {
+        const settings = {
+          workerCount: Number(elements.workerCount.value),
+          refreshIntervalSeconds: Number(elements.refreshInterval.value),
+          keepaliveWorkerCount: Number(elements.keepaliveWorkerCount.value),
+          keepaliveIntervalSeconds: Number(elements.keepaliveInterval.value),
+          reviveIntervalSeconds: Number(elements.reviveInterval.value),
+          probeRetryCount: Number(elements.probeRetryCount.value)
+        };
+        if (!Number.isInteger(settings.workerCount) || settings.workerCount < 1 || settings.workerCount > 64 || !Number.isInteger(settings.refreshIntervalSeconds) || settings.refreshIntervalSeconds < minimumRefreshIntervalSeconds || settings.refreshIntervalSeconds > maximumRefreshIntervalSeconds || !Number.isInteger(settings.keepaliveWorkerCount) || settings.keepaliveWorkerCount < 1 || settings.keepaliveWorkerCount > 64 || !Number.isInteger(settings.keepaliveIntervalSeconds) || settings.keepaliveIntervalSeconds < 1 || settings.keepaliveIntervalSeconds > 86400 || !Number.isInteger(settings.reviveIntervalSeconds) || settings.reviveIntervalSeconds < 1 || settings.reviveIntervalSeconds > 86400 || !Number.isInteger(settings.probeRetryCount) || settings.probeRetryCount < 1 || settings.probeRetryCount > 10) {
+          setNotice("配置范围无效：探测线程和保活线程为 1–64，页面刷新为 5–3600 秒，保活和复活间隔为 1–86400 秒，探测重试次数为 1–10。", "error");
+          return;
+        }
+        elements.saveSettingsButton.disabled = true;
+        try {
+          const savedSettings = await callAPI("PUT", "/settings", settings);
+          applySettings(savedSettings);
+          closeModal(elements.settingsModal);
+          setNotice("运行配置已保存；配置有变化时才会重启探测线程、保活和复活调度。", "success");
+        } catch (error) {
+          setNotice(error instanceof Error ? error.message : String(error), "error");
+        } finally {
+          elements.saveSettingsButton.disabled = false;
+        }
+      }
+
+      async function showErrorDetail(nodeID) {
+        const node = state.nodes.find((item) => String(item.id) === String(nodeID));
+        if (!node) return;
+        elements.detailName.textContent = formatNodeName(node);
+        elements.detailContent.textContent = node.errorDetail || "没有更多错误信息。";
+        openModal(elements.detailModal);
+      }
+
+      async function deleteErrorNodes(errorReason, nodeCount) {
+        const confirmed = window.confirm(`确定删除异常原因“${errorReason}”的全部 ${nodeCount} 个节点吗？删除后不可恢复。`);
+        if (!confirmed) return;
+        try {
+          const result = await callAPI("DELETE", `/nodes/errors?reason=${encodeURIComponent(errorReason)}`);
+          setNotice(`已删除异常原因“${result.reason}”的 ${result.deleted} 个节点。`, "success");
+          await refresh("nodes");
+        } catch (error) {
+          setNotice(error instanceof Error ? error.message : String(error), "error");
+        }
+      }
+
+      document.getElementById("add-ip-button").addEventListener("click", () => openModal(elements.addModal));
+      document.getElementById("submit-ip-button").addEventListener("click", submitIPs);
+      elements.settingsButton.addEventListener("click", () => openModal(elements.settingsModal));
+      elements.saveSettingsButton.addEventListener("click", saveSettings);
+      elements.refreshButton.addEventListener("click", () => refresh());
+      document.querySelector(".main-tabs").addEventListener("click", (event) => {
+        const tab = event.target.closest("[data-main-tab]");
+        if (tab) setActiveView(tab.dataset.mainTab);
+      });
+      elements.logCategoryTabs.addEventListener("click", (event) => {
+        const tab = event.target.closest("[data-log-category]");
+        if (!tab) return;
+        state.activeLogCategory = tab.dataset.logCategory;
+        state.activeLogStatus = "connected";
+        refresh("logs");
+      });
+      elements.logGroupTabs.addEventListener("click", (event) => {
+        const tab = event.target.closest("[data-log-group-id]");
+        if (!tab) return;
+        state.selectedLogGroupIDs[state.activeLogCategory] = tab.dataset.logGroupId;
+        refresh("logs");
+      });
+      elements.logStatusTabs.addEventListener("click", (event) => {
+        const tab = event.target.closest("[data-log-status]");
+        if (!tab) return;
+        state.activeLogStatus = tab.dataset.logStatus;
+        renderLogs();
+      });
+      elements.batchBackButton.addEventListener("click", () => {
+        state.selectedBatchID = "";
+        state.batchNodes = [];
+        state.batchStatusFilter = "all";
+        renderBatches();
+      });
+      elements.batchStatusFilter.addEventListener("change", () => {
+        state.batchStatusFilter = elements.batchStatusFilter.value;
+        renderBatches();
+      });
+      elements.batches.addEventListener("click", (event) => {
+        const sortButton = event.target.closest("[data-batch-sort]");
+        if (sortButton) {
+          toggleBatchSort(sortButton.dataset.batchSort);
+          return;
+        }
+        const batchButton = event.target.closest("[data-batch-id]");
+        if (!batchButton) return;
+        state.selectedBatchID = batchButton.dataset.batchId;
+        state.batchStatusFilter = "all";
+        refresh("batches");
+      });
+      document.getElementById("search-logs-button").addEventListener("click", () => {
+        if (state.activeView !== "logs") setActiveView("logs");
+        else refresh();
+      });
+      elements.logSearch.addEventListener("keydown", (event) => {
+        if (event.key === "Enter") refresh();
+      });
+      document.getElementById("status-tabs").addEventListener("click", (event) => {
+        const tab = event.target.closest("[data-status]");
+        if (tab) setActiveStatus(tab.dataset.status);
+      });
+      elements.table.addEventListener("click", (event) => {
+        const sortButton = event.target.closest("[data-node-sort]");
+        if (sortButton) {
+          toggleNodeLatencySort();
+          return;
+        }
+        const deleteButton = event.target.closest("[data-delete-error-reason]");
+        if (deleteButton) {
+          deleteErrorNodes(deleteButton.dataset.deleteErrorReason, deleteButton.dataset.deleteErrorCount);
+          return;
+        }
+        const detailButton = event.target.closest("[data-detail-id]");
+        if (detailButton) showErrorDetail(detailButton.dataset.detailId);
+      });
+      document.querySelectorAll("[data-close-modal]").forEach((button) => button.addEventListener("click", () => closeModal(document.getElementById(button.dataset.closeModal))));
+      document.querySelectorAll(".modal-layer").forEach((layer) => layer.addEventListener("click", (event) => { if (event.target === layer) closeModal(layer); }));
+
+      refresh();
+      resetRefreshTimer();
+      window.addEventListener("beforeunload", () => {
+        window.clearInterval(state.timer);
+        window.clearTimeout(state.noticeTimer);
+      });
+    })();
+  </script>
+</body>
+</html>

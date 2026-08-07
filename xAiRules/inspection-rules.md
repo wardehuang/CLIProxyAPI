@@ -2,7 +2,7 @@
 
 > 本文记录 `CPA-Manager-Plus` 当前 wXAi 巡检源码的真实行为。
 >
-> 最后核对日期：2026-08-02
+> 最后核对日期：2026-08-07
 >
 > 权威实现目录：`CPA-Manager-Plus/apps/manager-server/internal/service/wxaiinspection`
 
@@ -22,14 +22,17 @@
 
 ## 2. priority
 
-| priority | 含义 | 巡检处理 |
-|---:|---|---|
-| `-1` | `free-usage-exhausted` | 冷却结束前服务器/条件巡检跳过；手动刷新仍探测 |
-| `-2` | 普通账号异常或请求异常 | 服务器巡检继续检查；条件巡检可检查；手动刷新可检查 |
-| `-3` | 旧版托管异常值 | 服务器巡检继续检查；条件巡检可检查；手动刷新可检查 |
-| `-4` | HTTP 401 | 服务器巡检继续检查；条件巡检可检查；手动刷新可检查 |
-| `-5` | 停用 | 服务器/条件巡检跳过 xAI 网络请求；手动刷新仍探测（成功不恢复 `-5`） |
-| 其他值或空值 | 正常账号 | 按候选规则检查 |
+
+| priority | 含义                     | 巡检处理                                    |
+| -------- | ---------------------- | --------------------------------------- |
+| `-1`     | `free-usage-exhausted` | 冷却结束前服务器/条件巡检跳过；手动刷新仍探测                 |
+| `-2`     | 普通账号异常或请求异常            | 服务器巡检继续检查；条件巡检可检查；手动刷新可检查               |
+| `-3`     | 旧版托管异常值                | 服务器巡检继续检查；条件巡检可检查；手动刷新可检查               |
+| `-4`     | HTTP 401               | 服务器巡检继续检查；条件巡检可检查；手动刷新可检查               |
+| `-5`     | 停用                     | 服务器/条件巡检跳过 xAI 网络请求；手动刷新仍探测（成功不恢复 `-5`） |
+| `-6`     | JWT `bot_flag_source` 或 `bfs` 命中 | 服务器/条件巡检跳过 xAI 网络请求；手动刷新仍检查，命中后保持 `-6` |
+| 其他值或空值   | 正常账号                   | 按候选规则检查                                 |
+
 
 托管 priority 为 `-1/-2/-3/-4`。托管账号探测恢复健康后，priority 恢复为 `1`。
 
@@ -59,17 +62,23 @@ billing / credits 出站：
 4. `Authorization: Bearer <access_token>` 使用已下载 auth JSON 中的 token；Header 含 `X-XAI-Token-Auth`、`x-grok-client-version`（billing 固定 `0.2.101`）、`User-Agent`（`grok-pager/0.2.101 ...`），有 userID 时带 `x-userid`。
 5. 日志：`wXAi billing 直连请求诊断` / `wXAi billing 直连响应诊断` / `wXAi billing 直连请求失败`，字段含 `transport=direct`、`viaCPAApiCall=false`、`endpoint`、`requestStage`。
 
-billing 和 credits 只更新账号类型与额度展示，不参与账号健康判定。billing/credits 失败不会降低 priority。
+手动刷新中的 billing 和 credits 只更新账号类型与额度展示；服务器巡检、条件巡检的标准账号探测使用 billing/credits 请求结果判断探测成功与否。任一路径的 billing/credits 失败均按既有探测失败规则处理。
 
 服务器巡检、条件巡检和手动刷新统一使用同一个直连 HTTP client：`Transport.Proxy = nil`，不读取 CPA `proxy-url`，不使用探测代理池，也不按 FREE/SUPER 选择代理。
 
-## 4. 对话探测主链路
+## 4. JWT bot 标记与探测请求
 
-所有实际参与巡检的账号使用同一套对话探测，不再执行 access token JWT 解码或 `bot_flag_source` 判断。
+下载 auth JSON 后，服务器巡检、条件巡检、手动刷新在实际发送 xAI 请求前都先解码 `access_token` JWT，检查 `bot_flag_source` 与 `bfs`。任一字段存在且值不是 `null` 或空白字符串时，账号命中 JWT bot 标记：设置 priority `-6`、写入命中的 claim 与值、记录 `wXAi 账号命中 JWT bot 标记` 日志，并结束本轮账号处理，不再调用 billing、credits、responses 或 chat completions。
 
-### 4.1 主探测
+### 4.1 responses 探测
 
-- Method：`POST`
+`POST /v1/responses` 只由以下路径调用：
+
+- 手动刷新：billing/credits 成功后调用，结果作为健康判定。
+- 服务器巡检、条件巡检：仅 FREE 账号处于额度恢复探测时调用；结果用于判断是否恢复。
+
+请求参数：
+
 - URL：`https://cli-chat-proxy.grok.com/v1/responses`
 - Body：`{"model":"grok-4.5","input":"ping","stream":false}`
 - `X-XAI-Token-Auth`：`xai-grok-cli`
@@ -77,9 +86,7 @@ billing 和 credits 只更新账号类型与额度展示，不参与账号健康
 - `User-Agent`：`xai-grok-workspace/<xaiClientVersionValue>`；当前值为 `xai-grok-workspace/0.2.93`。
 - Manager 不保留巡检专用的版本常量，也不在读取失败时回退到硬编码版本。
 
-### 4.2 明确结果
-
-以下主探测结果直接使用，不调用 fallback：
+以下 responses 结果直接使用，不调用 fallback：
 
 - HTTP 2xx：健康。
 - HTTP 401：账号异常，priority `-4`。
@@ -98,21 +105,9 @@ CPA 的实际 xAI 业务请求失败并产生 HTTP 429 usage event 后分流处�
 4. 明确额度事件不触发条件巡检。账号无法安全匹配或 priority patch 失败时记录错误，也不退回到再次发送 xAI 探测请求。
 5. 无法明确判定额度耗尽的普通 HTTP 429 才立即触发条件巡检，并由条件巡检重新探测后决定 priority `-2` 或 `-1`。
 
-### 4.3 含糊结果与 fallback
+### 4.2 chat completions
 
-以下主探测结果视为含糊：
-
-- HTTP 404。
-- HTTP 5xx。
-- timeout 或其他请求错误。
-
-含糊时调用：
-
-- Method：`POST`
-- URL：`https://cli-chat-proxy.grok.com/v1/chat/completions`
-- Body：`{"model":"grok-4.5","messages":[{"role":"user","content":"ping"}],"stream":false}`
-
-fallback 的明确结果按同一分类规则处理。fallback 仍为 404/5xx 时，最终按账号异常 `-2` 处理；fallback 请求失败时按请求异常 `-2` 处理。
+当前源码不调用 `https://cli-chat-proxy.grok.com/v1/chat/completions`，没有 responses fallback。`wxaiChatCompletionsURL` 仅保留为常量，未接入巡检调用链。
 
 ## 5. timeout 重试
 
@@ -123,7 +118,7 @@ fallback 的明确结果按同一分类规则处理。fallback 仍为 404/5xx �
 3. 非 timeout 网络错误不重试。
 4. 上下文已取消时不重试。
 
-该规则同时应用于 responses、chat completions、billing 和 credits。
+该规则同时应用于 responses、billing 和 credits。
 
 ## 6. 额度冷却
 
@@ -178,8 +173,9 @@ xAI 业务请求 HTTP 429 不启动服务器巡检，也不创建新的服务器
 候选规则：
 
 1. `priority=-5`：停用集合，不执行 xAI 请求。
-2. 额度冷却未结束：冷却集合，不执行 xAI 请求。
-3. 其余所有 xAI 账号：全部参与巡检，不再按普通或托管 priority 区分。
+2. `priority=-6`：JWT bot 标记集合，不执行 xAI 请求。
+3. 额度冷却未结束：冷却集合，不执行 xAI 请求。
+4. 其余所有 xAI 账号：全部参与巡检，不再按普通或托管 priority 区分。
 
 探测并发（`workers`）与错峰（可配置）：
 
@@ -197,11 +193,14 @@ xAI 业务请求 HTTP 429 不启动服务器巡检，也不创建新的服务器
 
 1. 读取 CPA 核心 `xaiClientVersionValue`，创建本轮共享的 xAI HTTP client（始终直连，不读 CPA `proxy-url`，也不用进程环境代理）。
 2. 从 CPA 下载 auth JSON。
-3. 读取 `access_token`。
-4. 执行 responses 主探测，必要时执行 chat completions fallback。
-5. 探测健康后，按持久化账号类型刷新 billing 元数据。
-6. 根据探测结果调整或恢复 priority。
-7. 保存结果、状态详情、原始 HTTP 响应和窗口花费。
+3. 读取 `access_token`，解码 JWT 并检查 `bot_flag_source`、`bfs`；命中任一 bot 标记时设置 `-6`，写结果和日志后结束该账号。
+4. 账号类型未知时调用 `GET /v1/billing` 判定 `FREE/SUPER` 并落盘。
+5. 未知类型解析后的 `SUPER` 调用 credits；已知 `SUPER` 并发调用月度 billing 与 credits；`FREE` 调用 credits。billing/credits 结果作为服务器/条件巡检标准探测结果。
+6. 仅 FREE 额度恢复探测调用 `POST /v1/responses`；命中 bot 标记的账号不会调用任何 xAI endpoint。
+7. 根据探测结果调整或恢复 priority。
+8. 保存结果、状态详情、原始 HTTP 响应和窗口花费。
+
+
 
 ## 8. 条件巡检
 
@@ -218,7 +217,7 @@ xAI 业务请求 HTTP 429 不启动服务器巡检，也不创建新的服务器
 - `calls > 0`。
 - provider 归一化为 `xai`。
 - 匹配顺序：`accountKey`、`fileName + authIndex`、`provider + accountID`、唯一 `fileName`、唯一 `authIndex`。
-- 排除 `priority=-5` 和 `priority=-1`。
+- 排除 `priority=-5`、`priority=-6` 和 `priority=-1`。
 - 其他 priority 可进入。
 - 同一账号去重，候选原因仍为 `active_recent`。
 
@@ -243,18 +242,18 @@ xAI 业务请求 HTTP 429 不启动服务器巡检，也不创建新的服务器
 
 1. 读取 CPA `xai-client-version`，创建直连 xAI HTTP client（不读 CPA `proxy-url`；billing/credits/responses 共用）。
 2. 下载 auth JSON，读取 `access_token`。
-3. 解码 JWT：`bot_flag_source` 非空则设 `priority=-6` 并结束。
+3. 解码 JWT：`bot_flag_source` 或 `bfs` 任一存在且值不是 `null` 或空白字符串时，设 `priority=-6` 并结束。
 4. 账号类型未知：Manager 直连 `GET /v1/billing` 判定 `FREE/SUPER` 并落盘；失败则按探测失败处理，不调用 responses。
 5. 按类型刷新 billing 元数据（须成功，均 Manager 直连）：
-   - `SUPER`：`GET /v1/billing?format=credits`（若本轮已做过月度 billing 则只调 credits；否则月度与 credits 并发）。
-   - `FREE` 或其他：`GET /v1/billing?format=credits`。
-   - billing/credits 失败：按探测失败调整 priority，**不**调用 responses。
+  - `SUPER`：`GET /v1/billing?format=credits`（若本轮已做过月度 billing 则只调 credits；否则月度与 credits 并发）。
+  - `FREE` 或其他：`GET /v1/billing?format=credits`。
+  - billing/credits 失败：按探测失败调整 priority，**不**调用 responses。
 6. billing 成功后，**无论 FREE/SUPER**，一律经上述直连 xAI HTTP client 调用：
-   - `POST https://cli-chat-proxy.grok.com/v1/responses`
-   - Body：`{"model":"grok-4.5","input":"ping","stream":false}`
+  - `POST https://cli-chat-proxy.grok.com/v1/responses`
+  - Body：`{"model":"grok-4.5","input":"ping","stream":false}`
 7. 以 responses 结果判定健康：
-   - 成功：恢复托管异常 priority（`-1/-2/-3/-4` → 正常值）；`-5` 不在托管集合，成功后保持停用。
-   - 失败：按既有规则映射 `quota_exhausted` → `-1`，401 → `-4`，其他 → `-2`。
+  - 成功：恢复托管异常 priority（`-1/-2/-3/-4` → 正常值）；`-5` 不在托管集合，成功后保持停用。
+  - 失败：按既有规则映射 `quota_exhausted` → `-1`，401 → `-4`，其他 → `-2`。
 8. 写入巡检结果、账号状态详情、窗口花费；日志前缀 `【wXAi 手动刷新】`。
 
 普通 429 即时触发和明确额度快速路径均不是手动刷新：不接受页面传入的指定账号参数。明确额度快速路径使用 usage event 的 auth file 快照定位账号，不执行手动刷新探测。
@@ -263,7 +262,7 @@ xAI 业务请求 HTTP 429 不启动服务器巡检，也不创建新的服务器
 
 服务器巡检、条件巡检、手动刷新在有实际 xAI 网络请求时，统一创建**直连** xAI HTTP client，覆盖：
 
-- `POST /v1/responses`（及 chat completions fallback，若启用）
+- `POST /v1/responses`
 - `GET /v1/billing`
 - `GET /v1/billing?format=credits`
 
@@ -285,6 +284,8 @@ xAI 业务请求 HTTP 429 不启动服务器巡检，也不创建新的服务器
 - 请求额度落盘快速路径默认不创建 xAI HTTP client；仅 SUPER 且 usage 无有效冷却、需补 credits 恢复时间时，临时创建直连 client 调 credits（同样不经 api-call）。
 - CPA 后台配置的 `proxy-url` 仅影响 CLIProxyAPI 业务流量，**不影响** Manager 侧 wXAi 巡检探测（含 billing/credits）；独立降智检测按第 12 节的 auth/global 优先级处理。
 
+
+
 ## 11. priority 恢复与原始响应
 
 - 健康结果会恢复 `-1/-2/-3/-4` 到 `1`。
@@ -294,6 +295,8 @@ xAI 业务请求 HTTP 429 不启动服务器巡检，也不创建新的服务器
 - 明确额度耗尽的业务请求 HTTP 429 直接生成 `isQuota=true`、`errorKind=quota_exhausted`、HTTP 429 的结果，priority 调整为 `-1`；账号类型未知时落盘为 `FREE`。
 - 请求额度快速路径复用 `lowerWxaiPriority`：先保存或更新 adjustment，再 patch CPA priority；patch 失败时回滚本次 adjustment，避免形成假冷却。
 - 普通业务请求 HTTP 429 只作为条件巡检即时触发信号，不能直接修改 priority。
+
+
 
 ## 12. 独立降智检测
 
@@ -306,23 +309,37 @@ wXAi 账号详情的「降智检测」不是服务器巡检、条件巡检或手
 3. 读取 auth 根字段 `proxy_url`。非空时使用 auth 级代理；为空时读取 CPA `GET /v0/management/config` 的 `proxy-url` 作为全局代理；两者都为空时使用显式直连 transport。auth 级值优先，不因值非法而回退全局代理。
 4. 读取 CPA `GET /v0/management/xai-client-version`，使用返回版本组装 xAI CLI headers（`Accept: text/event-stream`）；不使用 Manager 内部固定 client version。
 5. 用该 token 对 `https://cli-chat-proxy.grok.com/v1/responses` 发起一次实际 `POST`，不经过 CPA `/v0/management/api-call`。
-6. 请求使用 `stream=true` 和 `max_output_tokens=384`，读取至 `response.completed`、`[DONE]` 或失败终止事件后返回检测结果；不执行模型返回的工具调用，不发送第二次请求。
+6. 请求使用 `stream=true`、`reasoning.effort=high`、`reasoning.summary=detailed`、`max_output_tokens=96`、`temperature=0`；不携带 `tools` 字段。读取至 `response.completed`、`[DONE]` 或失败终止事件后返回检测结果；不执行模型返回的工具调用，不发送第二次请求。
 
-主动质量探测与实际账号能力是两个指标：目标 `quality_guard.py` 的主动规则只判断固定 Prompt 是否出现 `QUALITY_OK`、输出 token 数和生成阶段速度；它不判断模型是否具备工具调用、是否正确执行 function call，也不等同于实际业务请求的完整能力。
+短 canary 只用于检测流式形态与答案回显。分类仍使用原有 TPS 规则，不把 `thinking_delta` 或答案字段直接作为降智分类条件。
 
-`quality_guard_test.py` 只是 Python 单元测试文件，使用测试桩验证 `quality_guard.py` 的分类和连续命中逻辑，不是生产探测器，不能通过账号邮箱直接得到检测结果。生产检测入口是 `quality_guard.py` 调用管理 API 的 `quality-test`，当前 Manager 独立账号检测已复刻其 Prompt 和单次主动分类规则，但没有复刻其出口节点连续 strike、隔离和恢复流程。
+短 canary 固定要求：
 
+- Prompt：`用中文回答：17 × 23 等于多少？只输出计算过程和答案。`
+- 期望答案：`391`。
+- `reasoning.effort`：`high`。
+- `reasoning.summary`：`detailed`。
+- `max_output_tokens`：`96`。
+- `temperature`：`0`。
+- 不携带 `tools`。
+
+本检测只读取流式响应，不执行任何模型工具调用。
 
 ```json
 {
   "model": "grok-4.5",
-  "input": "Write exactly 16 numbered lines about reliable distributed systems. Each line must be one complete English sentence, with no markdown heading. The final line must end with the exact marker QUALITY_OK.",
+  "input": "用中文回答：17 × 23 等于多少？只输出计算过程和答案。",
   "stream": true,
-  "max_output_tokens": 384
+  "reasoning": {
+    "effort": "high",
+    "summary": "detailed"
+  },
+  "max_output_tokens": 96,
+  "temperature": 0
 }
 ```
 
-主动探测固定要求 `QUALITY_OK` 出现在可见文本中。
+请求体不包含 `tools` 字段。答案期望包含 `391`。
 
 ProxyURL：
 
@@ -344,12 +361,11 @@ ProxyURL：
 - `reasoningTokens`：从 `response.completed.response.usage.output_tokens_details.reasoning_tokens` 读取，仅用于展示和计算可见输出。
 - `visibleTokens`：`outputTokens - reasoningTokens`；结果不为正但存在可见文本时，按 `(可见字符数 + 3) / 4` 估算。
 - `outputTokensPerSecond`：`outputTokens * 1000 / generationMs`，其中 `generationMs = totalMs - firstTokenMs`；`outputTokens` 已含 reasoning tokens。
-- `QUALITY_OK` 缺失：软异常，原因 `expected_marker_missing`。
-- 有效输出 tokens 少于 `32`：软异常，原因 `insufficient_output_tokens`。
+- `thinkingDelta`：Responses 的 `response.reasoning_summary_text.delta` 或 `response.reasoning_text.delta` 事件出现时为 `true`；同时兼容流中出现 `thinking_delta` 类型的 delta。该字段只展示，不参与分类。
+- `answerMatched`：`modelAnswer` 可见文本包含期望答案 `391` 时为 `true`；该字段只展示，不参与分类。
 - `outputTokensPerSecond >= 1000`：硬异常，原因 `hard_tps`。
 - `outputTokensPerSecond >= 500` 且低于 `1000`：软异常，原因 `soft_tps`。
-- 以上条件按顺序判断；marker 缺失或输出不足优先于 TPS 阈值。
-- 未命中上述异常：正常，原因 `within_threshold`。
+- 未命中上述 TPS 阈值：正常，原因 `within_threshold`。
 - 软/硬异常均返回分类 `suspected_degradation`，另以 `qualityLevel=soft/hard` 区分等级。
 - `free-usage-exhausted` 类错误仍单独返回 `quota_exhausted`，不参与 soft/hard TPS 判断。
 - 其他 HTTP 错误、网络错误或流读取错误：`unknown`；错误码和原始错误仍展示。
@@ -358,9 +374,59 @@ ProxyURL：
 结果、timeout 和日志：
 
 - 单次 timeout 复用 wXAi 巡检设置 `settings.Timeout`，不重试；Web 端「降智检测」请求等待上限为 10 分钟，其他巡检接口继续使用各自的常规等待上限。
-- 结果弹窗展示分类、质量等级、判定原因、HTTP 状态码、首字节 TTFB、首生成 token、generation、total、TPS、output tokens、reasoning tokens、visible tokens、`QUALITY_OK` 匹配状态、错误码、模型回答、代理来源、请求体、脱敏请求头、响应头和完整 SSE body（最大 4 MiB）。
+- 结果弹窗展示分类、质量等级、判定原因、HTTP 状态码、首字节 TTFB、首生成 token、generation、total、TPS、output tokens、reasoning tokens、visible tokens、是否有 `thinking_delta`、答案是否包含 `391`、答案文本、代理来源、请求体、脱敏请求头、响应头和完整 SSE body（最大 4 MiB）。
 - 页面内只保留最后一次检测返回的降智检测结果：新检测完成后替换旧结果；关闭弹窗只隐藏结果，不删除结果；「上次检测结果」按钮重新打开该结果；首次检测前按钮禁用。结果保存在前端运行期共享内存，切换到其他界面再返回时仍可打开；刷新页面、关闭前端应用或组件热重载后清空，不写入后端、数据库或巡检 run。
 - 不创建、不删除临时文件；本流程只做流式回答检测。
-- 每次检测写入 Manager Server 运行日志 `wXAi 降智检测操作日志`，按 `started`、运行时解析、账号列表、auth 下载、全局 proxy 查询、proxy 解析、client version、上游请求开始/结束记录阶段和耗时；结束日志记录 `statusCode`、`ttfbMs`、`firstTokenMs`、`generationMs`、`totalMs`、`outputTokensPerSecond`、`outputTokens`、`reasoningTokens`、`visibleTokens`、`expectedMatched`、`qualityLevel`、`classificationReason`、`errorCode`、`classification` 和错误。
+- 每次检测写入 Manager Server 运行日志 `wXAi 降智检测操作日志`，按 `started`、运行时解析、账号列表、auth 下载、全局 proxy 查询、proxy 解析、client version、上游请求开始/结束记录阶段和耗时；结束日志记录 `statusCode`、`ttfbMs`、`firstTokenMs`、`generationMs`、`totalMs`、`outputTokensPerSecond`、`outputTokens`、`reasoningTokens`、`visibleTokens`、`thinkingDelta`、`expectedAnswer`、`answerMatched`、`qualityLevel`、`classificationReason`、`errorCode`、`classification` 和错误。
 - 操作日志不记录 access token、Authorization header 或代理认证信息。
 - HTTP 非 2xx、网络错误、响应读取错误都只作为本次检测结果返回，不触发 priority、额度冷却、billing、chat fallback 或巡检流程。
+
+
+
+## 13. CPA xAI 出口节点插件（`cpa-xai-ip-switcher`）
+
+本节记录 CLIProxyAPI 插件的出口节点探测行为；该插件不属于 Manager wXAi 账号巡检，不读取账号 auth，不执行 FREE/SUPER 判断，不写入 priority，不使用 chat completions，也不复用 Manager 巡检 run。
+
+### 13.1 触发与候选
+
+- 初次探测：节点录入后进入 `unprobed`，由初次探测 worker 领取。
+- 保活探测：只检查 `initial_connected=1` 且状态为 `healthy`、`connected` 或 `cooldown` 的节点；同一批次存在初次探测候选时跳过该批次。
+- 复活探测：定时调度 `error` 节点，但只快照 `probe_kind=''`、`revive_failure_count < 3` 且 `exit_country` 为空或为 `US` 的节点。已持久化为非 US 的节点不再进入复活候选。
+- 复活探测不是账号 priority 冷却机制；插件只有 SQLite 复活间隔和失败次数规则。
+
+
+
+### 13.2 endpoint 与调用顺序
+
+1. 使用节点自身代理访问 `GET https://grok.com/`。
+2. 初次探测在 xAI endpoint 成功后调用同一代理的 `GET http://163.192.9.157:2261/trace`，获取出口 IP 和国家代码。
+3. 复活探测仅在节点 `exit_country` 为空、出口仍不确定且 xAI endpoint 成功后调用 `probeExitTrace`；已知 `US` 的节点不调用出口 trace。
+4. 初次或复活探测发现非 US 时，结果为 `非us出口`；初次批次的 `delete_non_us=1` 时删除节点，否则持久化出口 IP、国家代码和异常状态；复活路径始终保留节点，后续轮次也不再探测。
+5. 已知 `US` 的复活节点只调用 xAI endpoint；endpoint 成功后恢复为 `connected`，保留已知出口国家。
+
+
+
+### 13.3 状态、恢复与并发
+
+- 初次 endpoint 与出口检查成功：`connected`。
+- 初次出口非 US、出口 trace 失败或 endpoint 失败：`error`。
+- 保活成功：保持原状态；保活失败：`error`。
+- SQLite `ip_node_statuses` 表和 IP 列表 UI 已登记 `healthy_candidate`（健康备选）与 `healthy_fallback`（健康保底）；当前探测流程暂不将节点切换到这两个状态，仅提供状态存储、统计和筛选展示。
+- 复活成功：`connected`；普通复活失败累计 `revive_failure_count`，达到 3 次删除节点。
+- 复活确认非 US：保持 `error`，清零复活失败计数，不执行后续复活，不触发删除。
+- 不存在 FREE/SUPER 判断、chat 条件、priority 映射、priority 恢复和 Manager run 复用。
+- 初次探测线程、保活线程、复活线程分别受插件配置的 worker 数限制；复活和保活按各自间隔调度，启动后立即执行首轮。
+- xAI endpoint HTTP client 总超时 25 秒，拨号和 TLS 握手超时 15 秒；探测轮询间隔 750 毫秒；单节点按插件配置执行重试。
+
+
+
+### 13.4 落库与日志
+
+- `ip_nodes.exit_ip`、`ip_nodes.exit_country` 持久化出口结果；`error_reason` 与 `error_detail` 持久化异常原因。
+- `ip_batches.total_count` 在录入时固定保存原始新增数量；`initial_probe_completed_count` 和 `initial_connected_count` 只在初次探测结果落库时递增，初次探测完成后不受保活、复活、异常或节点删除影响。
+- 批次页面的「初次探测」读取固定的 `initial_probe_completed_count/total_count`，「初次已连通」读取固定的 `initial_connected_count`；只有「实时已连通」按当前 `healthy`、`connected`、`cooldown` 节点数量实时计算。
+- 旧数据库首次迁移时，从保留的 `batch_probe` 初次结果日志回填两个固定计数；已被日志保留策略清理的更早批次无法完整恢复历史删除细节。
+- `revive_rounds` 保存复活轮次、候选数、成功数、失败数和删除数；`revive_round_nodes` 保存轮次快照。
+- 批次日志使用 `batch_probe`，保活日志使用 `keepalive_probe`，复活日志使用 `revive_probe`。
+- 非 US 初次结果记录 `probe.failed`；导入选项要求删除时记录 `probe.deleted_non_us`；复活确认非 US 记录 `revive.non_us`。
+- 插件不创建或复用 Manager 巡检 run；仅保存自己的批次、保活轮次、复活轮次和 SQLite 日志。

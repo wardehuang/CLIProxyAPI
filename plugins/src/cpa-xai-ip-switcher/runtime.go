@@ -1,0 +1,170 @@
+package main
+
+import (
+	"context"
+	"fmt"
+	"sync"
+)
+
+var pluginRuntime = &runtimeController{}
+
+type runtimeController struct {
+	mutex        sync.RWMutex
+	store        *ipStore
+	workerCancel context.CancelFunc
+	workerGroup  sync.WaitGroup
+}
+
+func (controller *runtimeController) configure(config pluginConfig) error {
+	controller.mutex.Lock()
+	defer controller.mutex.Unlock()
+	return controller.configureLocked(config)
+}
+
+func (controller *runtimeController) configureLocked(config pluginConfig) error {
+	resolvedDatabasePath, err := resolveDatabasePath(config.DatabasePath)
+	if err != nil {
+		return err
+	}
+	if controller.store != nil {
+		currentSettings, err := controller.store.settings()
+		if err != nil {
+			return err
+		}
+		desiredSettings := currentSettings
+		if config.WorkerCount != 0 {
+			desiredSettings.WorkerCount = config.WorkerCount
+		}
+		if controller.store.path == resolvedDatabasePath && pluginSettingsEqual(currentSettings, desiredSettings) {
+			return nil
+		}
+	}
+
+	wasRunning := controller.store != nil
+	controller.stopWorkersLocked()
+	if controller.store != nil {
+		_ = controller.store.close()
+		controller.store = nil
+	}
+
+	store, err := openIPStore(config.DatabasePath)
+	if err != nil {
+		return err
+	}
+	settings, err := store.settings()
+	if err != nil {
+		_ = store.close()
+		return err
+	}
+	if config.WorkerCount != 0 {
+		settings.WorkerCount = config.WorkerCount
+		if err := store.setSettings(settings); err != nil {
+			_ = store.close()
+			return err
+		}
+	}
+
+	controller.store = store
+	if !wasRunning {
+		_ = store.appendLog(
+			logLevelInfo,
+			"plugin.configured",
+			0,
+			"",
+			"xAi出口守护插件已启动",
+			fmt.Sprintf("数据库 %s，探测线程数 %d，保活线程数 %d，保活间隔 %d 秒，复活间隔 %d 秒", store.path, settings.WorkerCount, settings.KeepaliveWorkerCount, settings.KeepaliveIntervalSeconds, settings.ReviveIntervalSeconds),
+		)
+	}
+	controller.startWorkersLocked(store, settings)
+	return nil
+}
+
+func pluginSettingsEqual(left, right pluginSettings) bool {
+	return left.WorkerCount == right.WorkerCount &&
+		left.RefreshIntervalSeconds == right.RefreshIntervalSeconds &&
+		left.KeepaliveWorkerCount == right.KeepaliveWorkerCount &&
+		left.KeepaliveIntervalSeconds == right.KeepaliveIntervalSeconds &&
+		left.ReviveIntervalSeconds == right.ReviveIntervalSeconds &&
+		left.ProbeRetryCount == right.ProbeRetryCount
+}
+
+func (controller *runtimeController) ensure() error {
+	controller.mutex.Lock()
+	defer controller.mutex.Unlock()
+	if controller.store != nil {
+		return nil
+	}
+	return controller.configureLocked(pluginConfig{DatabasePath: defaultDatabasePath})
+}
+
+func (controller *runtimeController) withStore(fn func(*ipStore) ([]byte, error)) ([]byte, error) {
+	controller.mutex.RLock()
+	defer controller.mutex.RUnlock()
+	if controller.store == nil {
+		return nil, fmt.Errorf("plugin store is not initialized")
+	}
+	return fn(controller.store)
+}
+
+func (controller *runtimeController) updateSettings(store *ipStore, settings pluginSettings) (bool, error) {
+	controller.mutex.Lock()
+	defer controller.mutex.Unlock()
+	if controller.store != store {
+		return false, fmt.Errorf("plugin store changed during settings update")
+	}
+	currentSettings, err := store.settings()
+	if err != nil {
+		return false, err
+	}
+	if pluginSettingsEqual(currentSettings, settings) {
+		return false, nil
+	}
+	if err := store.setSettings(settings); err != nil {
+		return false, err
+	}
+	controller.stopWorkersLocked()
+	controller.startWorkersLocked(store, settings)
+	return true, nil
+}
+
+func (controller *runtimeController) startWorkersLocked(store *ipStore, settings pluginSettings) {
+	workerContext, cancel := context.WithCancel(context.Background())
+	controller.workerCancel = cancel
+	for workerIndex := 0; workerIndex < settings.WorkerCount; workerIndex++ {
+		controller.workerGroup.Add(1)
+		go func() {
+			defer controller.workerGroup.Done()
+			runProbeWorker(workerContext, store, settings.ProbeRetryCount)
+		}()
+	}
+	controller.workerGroup.Add(1)
+	go func() {
+		defer controller.workerGroup.Done()
+		runKeepaliveScheduler(workerContext, store, settings.KeepaliveWorkerCount, settings.KeepaliveIntervalSeconds, settings.ProbeRetryCount)
+	}()
+	controller.workerGroup.Add(1)
+	go func() {
+		defer controller.workerGroup.Done()
+		runReviveScheduler(workerContext, store, settings.KeepaliveWorkerCount, settings.ReviveIntervalSeconds, settings.ProbeRetryCount)
+	}()
+}
+
+func (controller *runtimeController) stopWorkersLocked() {
+	if controller.workerCancel == nil {
+		return
+	}
+	controller.workerCancel()
+	controller.workerGroup.Wait()
+	controller.workerCancel = nil
+}
+
+func (controller *runtimeController) shutdown() {
+	controller.mutex.Lock()
+	defer controller.mutex.Unlock()
+	controller.stopWorkersLocked()
+	if controller.store != nil {
+		_ = controller.store.appendLog(logLevelInfo, "plugin.shutdown", 0, "", "xAi出口守护插件正在停止", "探测线程已停止")
+		_ = controller.store.close()
+		controller.store = nil
+	}
+}
