@@ -63,8 +63,15 @@ func (controller *runtimeController) configureLocked(config pluginConfig) error 
 			return err
 		}
 	}
+	if err := store.reconcileSlotLayout(pluginSettings{}, settings); err != nil {
+		_ = store.close()
+		return err
+	}
 
 	controller.store = store
+	if err := refreshHealthyAuthDistribution(store, settings.HealthySlotCount); err != nil {
+		_ = store.appendLog(logLevelError, "auth_distribution.startup_failed", 0, "", "插件启动时同步 xAI auth proxy_url 失败", err.Error())
+	}
 	if !wasRunning {
 		_ = store.appendLog(
 			logLevelInfo,
@@ -85,7 +92,13 @@ func pluginSettingsEqual(left, right pluginSettings) bool {
 		left.KeepaliveWorkerCount == right.KeepaliveWorkerCount &&
 		left.KeepaliveIntervalSeconds == right.KeepaliveIntervalSeconds &&
 		left.ReviveIntervalSeconds == right.ReviveIntervalSeconds &&
-		left.ProbeRetryCount == right.ProbeRetryCount
+		left.ProbeRetryCount == right.ProbeRetryCount &&
+		left.HealthySlotCount == right.HealthySlotCount &&
+		left.HealthyCandidateSlotCount == right.HealthyCandidateSlotCount &&
+		left.QualityWorkerCount == right.QualityWorkerCount &&
+		left.QualityProbeTimeoutSeconds == right.QualityProbeTimeoutSeconds &&
+		left.QualitySoftTPS == right.QualitySoftTPS &&
+		left.QualityHardTPS == right.QualityHardTPS
 }
 
 func (controller *runtimeController) ensure() error {
@@ -119,10 +132,22 @@ func (controller *runtimeController) updateSettings(store *ipStore, settings plu
 	if pluginSettingsEqual(currentSettings, settings) {
 		return false, nil
 	}
-	if err := store.setSettings(settings); err != nil {
+
+	controller.stopWorkersLocked()
+	if err := store.reconcileSlotLayout(currentSettings, settings); err != nil {
+		controller.startWorkersLocked(store, currentSettings)
 		return false, err
 	}
-	controller.stopWorkersLocked()
+	if err := store.setSettings(settings); err != nil {
+		if rollbackErr := store.reconcileSlotLayout(settings, currentSettings); rollbackErr != nil {
+			_ = store.appendLog(logLevelError, "settings.slot_rollback_failed", 0, "", "配置保存失败后恢复槽位布局失败", rollbackErr.Error())
+		}
+		controller.startWorkersLocked(store, currentSettings)
+		return false, err
+	}
+	if err := refreshHealthyAuthDistribution(store, settings.HealthySlotCount); err != nil {
+		_ = store.appendLog(logLevelError, "auth_distribution.settings_failed", 0, "", "运行配置变化后同步 xAI auth proxy_url 失败", err.Error())
+	}
 	controller.startWorkersLocked(store, settings)
 	return true, nil
 }

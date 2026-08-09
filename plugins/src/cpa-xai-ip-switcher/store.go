@@ -20,12 +20,20 @@ const (
 	defaultKeepaliveIntervalSeconds = 1800
 	defaultReviveIntervalSeconds    = 1800
 	defaultProbeRetryCount          = 3
+	defaultHealthySlotCount         = 50
+	defaultHealthyCandidateCount    = 20
+	defaultQualityWorkerCount       = 8
+	defaultQualityProbeTimeout      = 25
+	defaultQualitySoftTPS           = 500.0
+	defaultQualityHardTPS           = 1000.0
 	maxProbeWorkers                 = 64
 	maxRefreshIntervalSeconds       = 3600
 	maxKeepaliveIntervalSeconds     = 86400
 	maxProbeRetryCount              = 10
 	maxReviveFailureCount           = 3
-	settingsDefaultsVersion         = "2"
+	maxSlotCount                    = 1000
+	maxQualityProbeTimeoutSeconds   = 600
+	settingsDefaultsVersion         = "3"
 	maxPluginLogs                   = 1000
 	maxGroupedLogSets               = 10
 
@@ -51,6 +59,7 @@ const (
 	statusCooldown         = "cooldown"
 	statusProbing          = "probing"
 	statusKeepaliveProbing = "keepalive_probing"
+	statusQualityProbing   = "quality_probing"
 	statusReviveProbing    = "revive_probing"
 	statusUnprobed         = "unprobed"
 	statusError            = "error"
@@ -58,16 +67,24 @@ const (
 
 	probeKindInitial   = "initial"
 	probeKindKeepalive = "keepalive"
+	probeKindQuality   = "quality"
 	probeKindRevive    = "revive"
+	probeKindFallback  = "fallback"
 )
 
 type pluginSettings struct {
-	WorkerCount              int
-	RefreshIntervalSeconds   int
-	KeepaliveWorkerCount     int
-	KeepaliveIntervalSeconds int
-	ReviveIntervalSeconds    int
-	ProbeRetryCount          int
+	WorkerCount                int
+	RefreshIntervalSeconds     int
+	KeepaliveWorkerCount       int
+	KeepaliveIntervalSeconds   int
+	ReviveIntervalSeconds      int
+	ProbeRetryCount            int
+	HealthySlotCount           int
+	HealthyCandidateSlotCount  int
+	QualityWorkerCount         int
+	QualityProbeTimeoutSeconds int
+	QualitySoftTPS             float64
+	QualityHardTPS             float64
 }
 
 type proxyNode struct {
@@ -95,6 +112,9 @@ type proxyNode struct {
 	ExitCountry        string
 	ErrorReason        string
 	ErrorDetail        string
+	ReviveTargetStatus string
+	SlotID             int64
+	FallbackOrigin     bool
 }
 
 type ipBatch struct {
@@ -124,13 +144,22 @@ type keepaliveRound struct {
 }
 
 type logGroup struct {
-	ID             string
-	SequenceNumber int64
-	StartedAt      int64
-	CompletedAt    int64
-	Status         string
-	LogCount       int64
-	Category       string
+	ID                      string
+	SequenceNumber          int64
+	StartedAt               int64
+	CompletedAt             int64
+	Status                  string
+	LogCount                int64
+	Category                string
+	CandidateCount          int64
+	SuccessCount            int64
+	FailureCount            int64
+	ConnectivityCompletedAt int64
+	QualityStartedAt        int64
+	QualityCompletedAt      int64
+	QualityCandidateCount   int64
+	QualitySuccessCount     int64
+	QualityFailureCount     int64
 }
 
 type inputLineError struct {
@@ -241,6 +270,7 @@ INSERT OR IGNORE INTO ip_node_statuses(status, display_name, sort_order) VALUES
     ('cooldown', '冷却中', 50),
     ('probing', '探测中', 60),
     ('keepalive_probing', '保活探测中', 70),
+    ('quality_probing', '智商探测中', 75),
     ('revive_probing', '复活探测中', 80),
     ('unprobed', '未探测', 90),
     ('error', '异常', 100);
@@ -315,7 +345,13 @@ INSERT OR IGNORE INTO plugin_settings(setting_key, setting_value) VALUES
     ('keepalive_worker_count', '8'),
     ('keepalive_interval_seconds', '1800'),
     ('revive_interval_seconds', '1800'),
-    ('probe_retry_count', '3');
+    ('probe_retry_count', '3'),
+    ('healthy_slot_count', '50'),
+    ('healthy_candidate_slot_count', '20'),
+    ('quality_worker_count', '8'),
+    ('quality_probe_timeout_seconds', '25'),
+    ('quality_soft_tps', '500'),
+    ('quality_hard_tps', '1000');
 `)
 	if err != nil {
 		return fmt.Errorf("initialize sqlite database: %w", err)
@@ -344,13 +380,17 @@ INSERT OR IGNORE INTO plugin_settings(setting_key, setting_value) VALUES
 	if err := store.ensureReviveMetadata(); err != nil {
 		return err
 	}
+	if err := store.ensureSlotMetadata(); err != nil {
+		return err
+	}
 	if err := store.pruneStoredLogs(); err != nil {
 		return err
 	}
 	_, err = store.database.Exec(`
 UPDATE ip_nodes
 SET status = CASE
-        WHEN probe_kind = 'keepalive' AND probe_return_status IN ('healthy', 'connected', 'cooldown') THEN probe_return_status
+        WHEN probe_kind IN ('keepalive', 'quality', 'fallback') AND probe_return_status IN ('healthy', 'healthy_candidate', 'healthy_fallback', 'connected', 'cooldown') THEN probe_return_status
+        WHEN probe_kind = 'revive' AND revive_target_status IN ('cooldown', 'connected') THEN revive_target_status
         WHEN probe_kind = 'revive' THEN 'error'
         ELSE 'unprobed'
     END,
@@ -359,9 +399,15 @@ SET status = CASE
     probe_return_status = '',
     keepalive_round_id = 0,
     revive_round_id = 0
-WHERE status IN ('probing', 'keepalive_probing', 'revive_probing');`)
+WHERE status IN ('probing', 'keepalive_probing', 'quality_probing', 'revive_probing');`)
 	if err != nil {
 		return fmt.Errorf("reset interrupted sqlite probes: %w", err)
+	}
+	if _, err := store.database.Exec(`
+UPDATE ip_slots
+SET claim_node_id = 0, claim_token = '', claim_stage = '', claim_started_at = 0
+WHERE claim_token <> '' OR claim_node_id <> 0`); err != nil {
+		return fmt.Errorf("clear interrupted sqlite slot claims: %w", err)
 	}
 	if _, err := store.database.Exec(`DELETE FROM keepalive_round_nodes`); err != nil {
 		return fmt.Errorf("clear interrupted sqlite keepalive round: %w", err)
@@ -682,12 +728,22 @@ func (store *ipStore) listNodes(status string) ([]proxyNode, error) {
 	)
 	if status == statusAll {
 		rows, err = store.database.Query(`
-SELECT id, node_name, proxy_url, batch_id, protocol, status, initial_connected, latency_ms, entered_at, probe_started_at, probe_time, exit_ip, exit_country, revive_failure_count, error_reason, error_detail
-FROM ip_nodes ORDER BY id DESC`)
+SELECT nodes.id, nodes.node_name, nodes.proxy_url, nodes.batch_id, nodes.protocol, nodes.status, nodes.initial_connected,
+       nodes.latency_ms, nodes.entered_at, nodes.probe_started_at, nodes.probe_time, nodes.exit_ip, nodes.exit_country,
+       nodes.revive_failure_count, nodes.error_reason, nodes.error_detail,
+       COALESCE(slots.slot_id, 0), COALESCE(slots.fallback_origin, 0)
+FROM ip_nodes AS nodes
+LEFT JOIN ip_slots AS slots ON slots.node_id = nodes.id OR slots.claim_node_id = nodes.id
+ORDER BY nodes.id DESC`)
 	} else {
 		rows, err = store.database.Query(`
-SELECT id, node_name, proxy_url, batch_id, protocol, status, initial_connected, latency_ms, entered_at, probe_started_at, probe_time, exit_ip, exit_country, revive_failure_count, error_reason, error_detail
-FROM ip_nodes WHERE status = ? ORDER BY id DESC`, status)
+SELECT nodes.id, nodes.node_name, nodes.proxy_url, nodes.batch_id, nodes.protocol, nodes.status, nodes.initial_connected,
+       nodes.latency_ms, nodes.entered_at, nodes.probe_started_at, nodes.probe_time, nodes.exit_ip, nodes.exit_country,
+       nodes.revive_failure_count, nodes.error_reason, nodes.error_detail,
+       COALESCE(slots.slot_id, 0), COALESCE(slots.fallback_origin, 0)
+FROM ip_nodes AS nodes
+LEFT JOIN ip_slots AS slots ON slots.node_id = nodes.id OR slots.claim_node_id = nodes.id
+WHERE nodes.status = ? ORDER BY nodes.id DESC`, status)
 	}
 	if err != nil {
 		return nil, fmt.Errorf("list sqlite nodes: %w", err)
@@ -714,6 +770,8 @@ FROM ip_nodes WHERE status = ? ORDER BY id DESC`, status)
 			&node.ReviveFailureCount,
 			&node.ErrorReason,
 			&node.ErrorDetail,
+			&node.SlotID,
+			&node.FallbackOrigin,
 		); err != nil {
 			return nil, fmt.Errorf("scan sqlite node: %w", err)
 		}
@@ -742,7 +800,7 @@ SELECT
         ELSE 0
     END,
     COALESCE(SUM(CASE
-        WHEN nodes.status IN (?, ?, ?)
+        WHEN nodes.status IN (?, ?, ?, ?)
          AND NOT EXISTS (
              SELECT 1
              FROM ip_nodes AS batch_candidates
@@ -753,7 +811,7 @@ SELECT
     END), 0),
     batches.initial_connected_count,
     COALESCE(SUM(CASE
-        WHEN nodes.status IN (?, ?, ?) THEN 1
+        WHEN nodes.status IN (?, ?, ?, ?) THEN 1
         ELSE 0
     END), 0)
 FROM ip_batches AS batches
@@ -763,12 +821,14 @@ ORDER BY batches.sequence_number DESC, batches.created_at DESC, batches.batch_id
 		statusHealthy,
 		statusConnected,
 		statusCooldown,
+		statusHealthyCandidate,
 		statusUnprobed,
 		statusProbing,
 		probeKindInitial,
 		statusHealthy,
 		statusConnected,
 		statusCooldown,
+		statusHealthyCandidate,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("list sqlite batches: %w", err)
@@ -804,8 +864,13 @@ ORDER BY batches.sequence_number DESC, batches.created_at DESC, batches.batch_id
 
 func (store *ipStore) listNodesByBatch(batchID string) ([]proxyNode, error) {
 	rows, err := store.database.Query(`
-SELECT id, node_name, proxy_url, batch_id, protocol, status, initial_connected, latency_ms, entered_at, probe_started_at, probe_time, exit_ip, exit_country, revive_failure_count, error_reason, error_detail
-FROM ip_nodes WHERE batch_id = ? ORDER BY id DESC`, batchID)
+SELECT nodes.id, nodes.node_name, nodes.proxy_url, nodes.batch_id, nodes.protocol, nodes.status, nodes.initial_connected,
+       nodes.latency_ms, nodes.entered_at, nodes.probe_started_at, nodes.probe_time, nodes.exit_ip, nodes.exit_country,
+       nodes.revive_failure_count, nodes.error_reason, nodes.error_detail,
+       COALESCE(slots.slot_id, 0), COALESCE(slots.fallback_origin, 0)
+FROM ip_nodes AS nodes
+LEFT JOIN ip_slots AS slots ON slots.node_id = nodes.id OR slots.claim_node_id = nodes.id
+WHERE nodes.batch_id = ? ORDER BY nodes.id DESC`, batchID)
 	if err != nil {
 		return nil, fmt.Errorf("list sqlite batch nodes: %w", err)
 	}
@@ -831,6 +896,8 @@ FROM ip_nodes WHERE batch_id = ? ORDER BY id DESC`, batchID)
 			&node.ReviveFailureCount,
 			&node.ErrorReason,
 			&node.ErrorDetail,
+			&node.SlotID,
+			&node.FallbackOrigin,
 		); err != nil {
 			return nil, fmt.Errorf("scan sqlite batch node: %w", err)
 		}
@@ -870,8 +937,13 @@ func (store *ipStore) batchDeletesNonUS(batchID string) (bool, error) {
 func (store *ipStore) getNode(id int64) (proxyNode, bool, error) {
 	var node proxyNode
 	err := store.database.QueryRow(`
-SELECT id, node_name, proxy_url, batch_id, protocol, status, initial_connected, latency_ms, entered_at, probe_started_at, probe_time, exit_ip, exit_country, revive_failure_count, error_reason, error_detail
-FROM ip_nodes WHERE id = ?`, id).Scan(
+SELECT nodes.id, nodes.node_name, nodes.proxy_url, nodes.batch_id, nodes.protocol, nodes.status, nodes.initial_connected,
+       nodes.latency_ms, nodes.entered_at, nodes.probe_started_at, nodes.probe_time, nodes.exit_ip, nodes.exit_country,
+       nodes.revive_failure_count, nodes.error_reason, nodes.error_detail,
+       COALESCE(slots.slot_id, 0), COALESCE(slots.fallback_origin, 0)
+FROM ip_nodes AS nodes
+LEFT JOIN ip_slots AS slots ON slots.node_id = nodes.id OR slots.claim_node_id = nodes.id
+WHERE nodes.id = ?`, id).Scan(
 		&node.ID,
 		&node.Name,
 		&node.ProxyURL,
@@ -888,6 +960,8 @@ FROM ip_nodes WHERE id = ?`, id).Scan(
 		&node.ReviveFailureCount,
 		&node.ErrorReason,
 		&node.ErrorDetail,
+		&node.SlotID,
+		&node.FallbackOrigin,
 	)
 	if err == sql.ErrNoRows {
 		return proxyNode{}, false, nil
@@ -959,7 +1033,7 @@ func (store *ipStore) snapshotKeepaliveRound(roundID int64) (int64, error) {
 	}
 	defer transaction.Rollback()
 
-	if _, err := transaction.Exec(`DELETE FROM keepalive_round_nodes`); err != nil {
+	if _, err := transaction.Exec(`DELETE FROM keepalive_round_nodes WHERE round_id = ?`, roundID); err != nil {
 		return 0, fmt.Errorf("clear sqlite keepalive snapshot: %w", err)
 	}
 	result, err := transaction.Exec(`
@@ -967,13 +1041,13 @@ INSERT INTO keepalive_round_nodes(round_id, node_id)
 SELECT ?, candidates.id
 FROM ip_nodes AS candidates
 WHERE candidates.initial_connected = 1
-  AND candidates.status IN (?, ?, ?)
+  AND candidates.status IN (?, ?, ?, ?)
   AND NOT EXISTS (
       SELECT 1
       FROM ip_nodes AS batch_nodes
       WHERE batch_nodes.batch_id = candidates.batch_id
         AND (batch_nodes.status IN (?, ?) OR batch_nodes.probe_kind = ?)
-  )`, roundID, statusHealthy, statusConnected, statusCooldown, statusUnprobed, statusProbing, probeKindInitial)
+  )`, roundID, statusHealthy, statusHealthyCandidate, statusConnected, statusCooldown, statusUnprobed, statusProbing, probeKindInitial)
 	if err != nil {
 		return 0, fmt.Errorf("snapshot sqlite keepalive candidates: %w", err)
 	}
@@ -1001,9 +1075,9 @@ SELECT candidates.node_id, node_name, proxy_url, host, input_ip, port, protocol,
 FROM keepalive_round_nodes AS candidates
 JOIN ip_nodes ON ip_nodes.id = candidates.node_id
 WHERE candidates.round_id = ?
-  AND status IN (?, ?, ?)
+  AND status IN (?, ?, ?, ?)
   AND keepalive_round_id <> ?
-ORDER BY node_id ASC LIMIT 1`, roundID, statusHealthy, statusConnected, statusCooldown, roundID).Scan(
+ORDER BY node_id ASC LIMIT 1`, roundID, statusHealthy, statusHealthyCandidate, statusConnected, statusCooldown, roundID).Scan(
 		&node.ID,
 		&node.Name,
 		&node.ProxyURL,
@@ -1099,15 +1173,7 @@ WHERE id = ? AND status = ? AND probe_kind = ? AND keepalive_round_id = ?`, node
 			_ = store.appendProbeLog(logCategoryKeepaliveProbe, keepaliveGroupID(node.KeepaliveRoundID), logStatusConnected, logLevelInfo, "keepalive.completed", node.ID, node.Name, "节点保活探测成功，状态保持不变", formatProbeResultDetail(result))
 			return nil
 		}
-		_, err := store.database.Exec(`
-UPDATE ip_nodes SET status = ?, latency_ms = ?, probe_time = ?, probe_started_at = 0,
-    probe_kind = '', probe_return_status = '', exit_ip = CASE WHEN ? <> '' THEN ? ELSE exit_ip END, error_reason = ?, error_detail = ?
-WHERE id = ? AND status = ? AND probe_kind = ? AND keepalive_round_id = ?`, statusError, result.LatencyMs, probeTime, result.ExitIP, result.ExitIP, result.Reason, result.Detail, node.ID, statusKeepaliveProbing, probeKindKeepalive, node.KeepaliveRoundID)
-		if err != nil {
-			return fmt.Errorf("save keepalive failure: %w", err)
-		}
-		_ = store.appendProbeLog(logCategoryKeepaliveProbe, keepaliveGroupID(node.KeepaliveRoundID), logStatusError, logLevelWarn, "keepalive.failed", node.ID, node.Name, fmt.Sprintf("保活探测失败：%s，节点归类为异常", result.Reason), formatProbeResultDetail(result))
-		return nil
+		return store.completeKeepaliveFailure(node, result)
 	}
 	deleteNonUS, err := store.batchDeletesNonUS(node.BatchID)
 	if err != nil {
@@ -1209,12 +1275,12 @@ WHERE id = ? AND status = ? AND probe_kind = ?`, statusError, result.LatencyMs, 
 }
 
 func (store *ipStore) resetProbe(node proxyNode) error {
-	if node.ProbeKind == probeKindKeepalive {
+	if node.ProbeKind == probeKindKeepalive || node.ProbeKind == probeKindFallback {
 		_, err := store.database.Exec(`
-UPDATE ip_nodes SET status = ?, probe_started_at = 0, probe_kind = '', probe_return_status = ''
-WHERE id = ? AND status = ? AND probe_kind = ? AND keepalive_round_id = ?`, node.ProbeReturnStatus, node.ID, statusKeepaliveProbing, probeKindKeepalive, node.KeepaliveRoundID)
+UPDATE ip_nodes SET status = ?, probe_started_at = 0, probe_kind = '', probe_return_status = '', keepalive_round_id = 0
+WHERE id = ? AND status = ? AND probe_kind = ? AND keepalive_round_id = ?`, node.ProbeReturnStatus, node.ID, statusKeepaliveProbing, node.ProbeKind, node.KeepaliveRoundID)
 		if err != nil {
-			return fmt.Errorf("reset interrupted keepalive probe: %w", err)
+			return fmt.Errorf("reset interrupted %s probe: %w", node.ProbeKind, err)
 		}
 		return nil
 	}
@@ -1236,6 +1302,7 @@ func (store *ipStore) summary() (map[string]int64, error) {
 		statusCooldown:         0,
 		statusProbing:          0,
 		statusKeepaliveProbing: 0,
+		statusQualityProbing:   0,
 		statusReviveProbing:    0,
 		statusUnprobed:         0,
 		statusError:            0,
@@ -1260,18 +1327,15 @@ func (store *ipStore) summary() (map[string]int64, error) {
 }
 
 func (store *ipStore) settings() (pluginSettings, error) {
-	settings := pluginSettings{
-		WorkerCount:              defaultWorkerCount,
-		RefreshIntervalSeconds:   defaultRefreshIntervalSeconds,
-		KeepaliveWorkerCount:     defaultKeepaliveWorkerCount,
-		KeepaliveIntervalSeconds: defaultKeepaliveIntervalSeconds,
-		ReviveIntervalSeconds:    defaultReviveIntervalSeconds,
-		ProbeRetryCount:          defaultProbeRetryCount,
-	}
+	settings := defaultPluginSettings()
 	rows, err := store.database.Query(`
 SELECT setting_key, setting_value
 FROM plugin_settings
-WHERE setting_key IN ('worker_count', 'refresh_interval_seconds', 'keepalive_worker_count', 'keepalive_interval_seconds', 'revive_interval_seconds', 'probe_retry_count')`)
+WHERE setting_key IN (
+    'worker_count', 'refresh_interval_seconds', 'keepalive_worker_count', 'keepalive_interval_seconds',
+    'revive_interval_seconds', 'probe_retry_count', 'healthy_slot_count', 'healthy_candidate_slot_count',
+    'quality_worker_count', 'quality_probe_timeout_seconds', 'quality_soft_tps', 'quality_hard_tps'
+)`)
 	if err != nil {
 		return pluginSettings{}, fmt.Errorf("read plugin settings: %w", err)
 	}
@@ -1282,23 +1346,44 @@ WHERE setting_key IN ('worker_count', 'refresh_interval_seconds', 'keepalive_wor
 		if err := rows.Scan(&settingKey, &rawValue); err != nil {
 			return pluginSettings{}, fmt.Errorf("scan plugin settings: %w", err)
 		}
-		value, err := strconv.Atoi(strings.TrimSpace(rawValue))
-		if err != nil {
-			continue
-		}
 		switch settingKey {
-		case "worker_count":
-			settings.WorkerCount = value
-		case "refresh_interval_seconds":
-			settings.RefreshIntervalSeconds = value
-		case "keepalive_worker_count":
-			settings.KeepaliveWorkerCount = value
-		case "keepalive_interval_seconds":
-			settings.KeepaliveIntervalSeconds = value
-		case "revive_interval_seconds":
-			settings.ReviveIntervalSeconds = value
-		case "probe_retry_count":
-			settings.ProbeRetryCount = value
+		case "quality_soft_tps", "quality_hard_tps":
+			value, parseErr := strconv.ParseFloat(strings.TrimSpace(rawValue), 64)
+			if parseErr != nil {
+				continue
+			}
+			if settingKey == "quality_soft_tps" {
+				settings.QualitySoftTPS = value
+			} else {
+				settings.QualityHardTPS = value
+			}
+		default:
+			value, parseErr := strconv.Atoi(strings.TrimSpace(rawValue))
+			if parseErr != nil {
+				continue
+			}
+			switch settingKey {
+			case "worker_count":
+				settings.WorkerCount = value
+			case "refresh_interval_seconds":
+				settings.RefreshIntervalSeconds = value
+			case "keepalive_worker_count":
+				settings.KeepaliveWorkerCount = value
+			case "keepalive_interval_seconds":
+				settings.KeepaliveIntervalSeconds = value
+			case "revive_interval_seconds":
+				settings.ReviveIntervalSeconds = value
+			case "probe_retry_count":
+				settings.ProbeRetryCount = value
+			case "healthy_slot_count":
+				settings.HealthySlotCount = value
+			case "healthy_candidate_slot_count":
+				settings.HealthyCandidateSlotCount = value
+			case "quality_worker_count":
+				settings.QualityWorkerCount = value
+			case "quality_probe_timeout_seconds":
+				settings.QualityProbeTimeoutSeconds = value
+			}
 		}
 	}
 	if err := rows.Err(); err != nil {
@@ -1308,14 +1393,7 @@ WHERE setting_key IN ('worker_count', 'refresh_interval_seconds', 'keepalive_wor
 		return pluginSettings{}, fmt.Errorf("close plugin settings: %w", err)
 	}
 	if err := validatePluginSettings(settings); err != nil {
-		settings = pluginSettings{
-			WorkerCount:              defaultWorkerCount,
-			RefreshIntervalSeconds:   defaultRefreshIntervalSeconds,
-			KeepaliveWorkerCount:     defaultKeepaliveWorkerCount,
-			KeepaliveIntervalSeconds: defaultKeepaliveIntervalSeconds,
-			ReviveIntervalSeconds:    defaultReviveIntervalSeconds,
-			ProbeRetryCount:          defaultProbeRetryCount,
-		}
+		settings = defaultPluginSettings()
 		if err := store.setSettings(settings); err != nil {
 			return pluginSettings{}, err
 		}
@@ -1333,18 +1411,24 @@ func (store *ipStore) setSettings(settings pluginSettings) error {
 	}
 	defer transaction.Rollback()
 
-	settingsToSave := map[string]int{
-		"worker_count":               settings.WorkerCount,
-		"refresh_interval_seconds":   settings.RefreshIntervalSeconds,
-		"keepalive_worker_count":     settings.KeepaliveWorkerCount,
-		"keepalive_interval_seconds": settings.KeepaliveIntervalSeconds,
-		"revive_interval_seconds":    settings.ReviveIntervalSeconds,
-		"probe_retry_count":          settings.ProbeRetryCount,
+	settingsToSave := map[string]string{
+		"worker_count":                  strconv.Itoa(settings.WorkerCount),
+		"refresh_interval_seconds":      strconv.Itoa(settings.RefreshIntervalSeconds),
+		"keepalive_worker_count":        strconv.Itoa(settings.KeepaliveWorkerCount),
+		"keepalive_interval_seconds":    strconv.Itoa(settings.KeepaliveIntervalSeconds),
+		"revive_interval_seconds":       strconv.Itoa(settings.ReviveIntervalSeconds),
+		"probe_retry_count":             strconv.Itoa(settings.ProbeRetryCount),
+		"healthy_slot_count":            strconv.Itoa(settings.HealthySlotCount),
+		"healthy_candidate_slot_count":  strconv.Itoa(settings.HealthyCandidateSlotCount),
+		"quality_worker_count":          strconv.Itoa(settings.QualityWorkerCount),
+		"quality_probe_timeout_seconds": strconv.Itoa(settings.QualityProbeTimeoutSeconds),
+		"quality_soft_tps":              strconv.FormatFloat(settings.QualitySoftTPS, 'f', -1, 64),
+		"quality_hard_tps":              strconv.FormatFloat(settings.QualityHardTPS, 'f', -1, 64),
 	}
 	for settingKey, settingValue := range settingsToSave {
 		if _, err := transaction.Exec(`
 INSERT INTO plugin_settings(setting_key, setting_value) VALUES (?, ?)
-ON CONFLICT(setting_key) DO UPDATE SET setting_value = excluded.setting_value`, settingKey, strconv.Itoa(settingValue)); err != nil {
+ON CONFLICT(setting_key) DO UPDATE SET setting_value = excluded.setting_value`, settingKey, settingValue); err != nil {
 			return fmt.Errorf("save plugin setting %s: %w", settingKey, err)
 		}
 	}
@@ -1373,5 +1457,5 @@ func validatePluginSettings(settings pluginSettings) error {
 	if settings.ProbeRetryCount < 1 || settings.ProbeRetryCount > maxProbeRetryCount {
 		return fmt.Errorf("probe retry count must be between 1 and %d", maxProbeRetryCount)
 	}
-	return nil
+	return validateSlotSettings(settings)
 }

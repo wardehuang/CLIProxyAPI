@@ -39,6 +39,19 @@ static const cliproxy_host_api* stored_host;
 static void store_host_api(const cliproxy_host_api* host) {
 	stored_host = host;
 }
+
+static int call_host_api(const char* method, const uint8_t* request, size_t request_len, cliproxy_buffer* response) {
+	if (stored_host == NULL || stored_host->call == NULL) {
+		return 1;
+	}
+	return stored_host->call(stored_host->host_ctx, method, request, request_len, response);
+}
+
+static void free_host_buffer(void* ptr, size_t len) {
+	if (stored_host != NULL && stored_host->free_buffer != NULL && ptr != NULL) {
+		stored_host->free_buffer(ptr, len);
+	}
+}
 */
 import "C"
 
@@ -189,6 +202,50 @@ func cliproxyPluginFree(ptr unsafe.Pointer, length C.size_t) {
 //export cliproxyPluginShutdown
 func cliproxyPluginShutdown() {
 	pluginRuntime.shutdown()
+}
+
+func callHost(method string, payload any) (json.RawMessage, error) {
+	rawPayload, err := json.Marshal(payload)
+	if err != nil {
+		return nil, fmt.Errorf("marshal host callback payload %s: %w", method, err)
+	}
+	cMethod := C.CString(method)
+	defer C.free(unsafe.Pointer(cMethod))
+	var requestPointer *C.uint8_t
+	if len(rawPayload) > 0 {
+		payloadPointer := C.CBytes(rawPayload)
+		if payloadPointer == nil {
+			return nil, fmt.Errorf("allocate host callback payload %s", method)
+		}
+		defer C.free(payloadPointer)
+		requestPointer = (*C.uint8_t)(payloadPointer)
+	}
+	var response C.cliproxy_buffer
+	callCode := C.call_host_api(cMethod, requestPointer, C.size_t(len(rawPayload)), &response)
+	var rawResponse []byte
+	if response.ptr != nil && response.len > 0 {
+		rawResponse = C.GoBytes(response.ptr, C.int(response.len))
+	}
+	if response.ptr != nil {
+		C.free_host_buffer(response.ptr, response.len)
+	}
+	if len(rawResponse) == 0 {
+		return nil, fmt.Errorf("host callback %s returned no response, code=%d", method, int(callCode))
+	}
+	var callbackEnvelope envelope
+	if err := json.Unmarshal(rawResponse, &callbackEnvelope); err != nil {
+		return nil, fmt.Errorf("decode host callback envelope %s: %w", method, err)
+	}
+	if !callbackEnvelope.OK {
+		if callbackEnvelope.Error != nil {
+			return nil, fmt.Errorf("%s: %s", callbackEnvelope.Error.Code, callbackEnvelope.Error.Message)
+		}
+		return nil, fmt.Errorf("host callback %s failed", method)
+	}
+	if callCode != 0 {
+		return nil, fmt.Errorf("host callback %s returned code=%d", method, int(callCode))
+	}
+	return append(json.RawMessage(nil), callbackEnvelope.Result...), nil
 }
 
 func handleMethod(method string, request []byte) ([]byte, error) {
@@ -378,37 +435,79 @@ func updatePluginSettings(body json.RawMessage) ([]byte, error) {
 }
 
 func settingsFromPayload(payload map[string]any) (pluginSettings, error) {
-	workerCount, ok := integerValue(payload["workerCount"])
-	if !ok {
-		workerCount, ok = integerValue(payload["worker_count"])
-	}
-	refreshIntervalSeconds, refreshOK := integerValue(payload["refreshIntervalSeconds"])
-	keepaliveWorkerCount, keepaliveWorkersOK := integerValue(payload["keepaliveWorkerCount"])
-	keepaliveIntervalSeconds, keepaliveIntervalOK := integerValue(payload["keepaliveIntervalSeconds"])
-	reviveIntervalSeconds, reviveIntervalOK := integerValue(payload["reviveIntervalSeconds"])
-	probeRetryCount, retryOK := integerValue(payload["probeRetryCount"])
-	if !ok || !refreshOK || !keepaliveWorkersOK || !keepaliveIntervalOK || !reviveIntervalOK || !retryOK {
-		return pluginSettings{}, fmt.Errorf("必须同时提供探测线程数、刷新时间、保活线程数、保活间隔、复活间隔和探测重试次数")
+	workerCount, workerOK := integerValue(firstValue(payload, "workerCount", "worker_count"))
+	refreshIntervalSeconds, refreshOK := integerValue(firstValue(payload, "refreshIntervalSeconds", "refresh_interval_seconds"))
+	keepaliveWorkerCount, keepaliveWorkersOK := integerValue(firstValue(payload, "keepaliveWorkerCount", "keepalive_worker_count"))
+	keepaliveIntervalSeconds, keepaliveIntervalOK := integerValue(firstValue(payload, "keepaliveIntervalSeconds", "keepalive_interval_seconds"))
+	reviveIntervalSeconds, reviveIntervalOK := integerValue(firstValue(payload, "reviveIntervalSeconds", "revive_interval_seconds"))
+	probeRetryCount, retryOK := integerValue(firstValue(payload, "probeRetryCount", "probe_retry_count"))
+	healthySlotCount, healthySlotOK := integerValue(firstValue(payload, "healthySlotCount", "healthy_slot_count"))
+	healthyCandidateSlotCount, healthyCandidateSlotOK := integerValue(firstValue(payload, "healthyCandidateSlotCount", "healthy_candidate_slot_count"))
+	qualityWorkerCount, qualityWorkerOK := integerValue(firstValue(payload, "qualityWorkerCount", "quality_worker_count"))
+	qualityProbeTimeoutSeconds, qualityTimeoutOK := integerValue(firstValue(payload, "qualityProbeTimeoutSeconds", "quality_probe_timeout_seconds"))
+	qualitySoftTPS, softTPSOK := floatValue(firstValue(payload, "qualitySoftTPS", "quality_soft_tps"))
+	qualityHardTPS, hardTPSOK := floatValue(firstValue(payload, "qualityHardTPS", "quality_hard_tps"))
+	if !workerOK || !refreshOK || !keepaliveWorkersOK || !keepaliveIntervalOK || !reviveIntervalOK || !retryOK ||
+		!healthySlotOK || !healthyCandidateSlotOK || !qualityWorkerOK || !qualityTimeoutOK || !softTPSOK || !hardTPSOK {
+		return pluginSettings{}, fmt.Errorf("必须同时提供基础调度、健康槽位和智商探测配置")
 	}
 	settings := pluginSettings{
-		WorkerCount:              workerCount,
-		RefreshIntervalSeconds:   refreshIntervalSeconds,
-		KeepaliveWorkerCount:     keepaliveWorkerCount,
-		KeepaliveIntervalSeconds: keepaliveIntervalSeconds,
-		ReviveIntervalSeconds:    reviveIntervalSeconds,
-		ProbeRetryCount:          probeRetryCount,
+		WorkerCount:                workerCount,
+		RefreshIntervalSeconds:     refreshIntervalSeconds,
+		KeepaliveWorkerCount:       keepaliveWorkerCount,
+		KeepaliveIntervalSeconds:   keepaliveIntervalSeconds,
+		ReviveIntervalSeconds:      reviveIntervalSeconds,
+		ProbeRetryCount:            probeRetryCount,
+		HealthySlotCount:           healthySlotCount,
+		HealthyCandidateSlotCount:  healthyCandidateSlotCount,
+		QualityWorkerCount:         qualityWorkerCount,
+		QualityProbeTimeoutSeconds: qualityProbeTimeoutSeconds,
+		QualitySoftTPS:             qualitySoftTPS,
+		QualityHardTPS:             qualityHardTPS,
 	}
 	return settings, validatePluginSettings(settings)
 }
 
+func firstValue(payload map[string]any, keys ...string) any {
+	for _, key := range keys {
+		if value, exists := payload[key]; exists {
+			return value
+		}
+	}
+	return nil
+}
+
+func floatValue(value any) (float64, bool) {
+	switch typed := value.(type) {
+	case float64:
+		return typed, true
+	case json.Number:
+		parsed, err := strconv.ParseFloat(typed.String(), 64)
+		return parsed, err == nil
+	case int:
+		return float64(typed), true
+	case string:
+		parsed, err := strconv.ParseFloat(strings.TrimSpace(typed), 64)
+		return parsed, err == nil
+	default:
+		return 0, false
+	}
+}
+
 func publicSettings(settings pluginSettings) map[string]any {
 	return map[string]any{
-		"workerCount":              settings.WorkerCount,
-		"refreshIntervalSeconds":   settings.RefreshIntervalSeconds,
-		"keepaliveWorkerCount":     settings.KeepaliveWorkerCount,
-		"keepaliveIntervalSeconds": settings.KeepaliveIntervalSeconds,
-		"reviveIntervalSeconds":    settings.ReviveIntervalSeconds,
-		"probeRetryCount":          settings.ProbeRetryCount,
+		"workerCount":                settings.WorkerCount,
+		"refreshIntervalSeconds":     settings.RefreshIntervalSeconds,
+		"keepaliveWorkerCount":       settings.KeepaliveWorkerCount,
+		"keepaliveIntervalSeconds":   settings.KeepaliveIntervalSeconds,
+		"reviveIntervalSeconds":      settings.ReviveIntervalSeconds,
+		"probeRetryCount":            settings.ProbeRetryCount,
+		"healthySlotCount":           settings.HealthySlotCount,
+		"healthyCandidateSlotCount":  settings.HealthyCandidateSlotCount,
+		"qualityWorkerCount":         settings.QualityWorkerCount,
+		"qualityProbeTimeoutSeconds": settings.QualityProbeTimeoutSeconds,
+		"qualitySoftTPS":             settings.QualitySoftTPS,
+		"qualityHardTPS":             settings.QualityHardTPS,
 	}
 }
 
@@ -542,6 +641,47 @@ func dispatchAPIWithStore(store *ipStore, method, path string, query url.Values,
 			return managementJSON(http.StatusInternalServerError, errorMessage("settingsFailed", err.Error()))
 		}
 		return managementJSON(http.StatusOK, map[string]any{"data": publicSettings(settings)})
+
+	case len(parts) == 3 && parts[0] == "nodes" && parts[2] == "auth-bindings" && method == http.MethodGet:
+		nodeID, err := strconv.ParseInt(parts[1], 10, 64)
+		if err != nil || nodeID <= 0 {
+			return managementJSON(http.StatusBadRequest, errorMessage("invalidNodeID", "invalid node id"))
+		}
+		node, found, err := store.getNode(nodeID)
+		if err != nil {
+			return managementJSON(http.StatusInternalServerError, errorMessage("detailFailed", err.Error()))
+		}
+		if !found {
+			return managementJSON(http.StatusNotFound, errorMessage("notFound", "node not found"))
+		}
+		if node.Status != statusHealthy {
+			return managementJSON(http.StatusBadRequest, errorMessage("invalidNodeStatus", "only healthy nodes have auth bindings"))
+		}
+		bindings, err := store.listHealthyAuthBindings(nodeID)
+		if err != nil {
+			return managementJSON(http.StatusInternalServerError, errorMessage("authBindingsFailed", err.Error()))
+		}
+		verifiedCount := 0
+		failedCount := 0
+		for _, binding := range bindings {
+			switch binding.SyncStatus {
+			case "verified":
+				verifiedCount++
+			case "failed":
+				failedCount++
+			}
+		}
+		return managementJSON(http.StatusOK, map[string]any{
+			"data": map[string]any{
+				"nodeId":        node.ID,
+				"nodeName":      node.Name,
+				"proxyUrl":      node.ProxyURL,
+				"total":         len(bindings),
+				"verifiedCount": verifiedCount,
+				"failedCount":   failedCount,
+				"items":         publicAuthBindings(bindings),
+			},
+		})
 
 	case len(parts) == 3 && parts[0] == "nodes" && parts[2] == "error" && method == http.MethodGet:
 		nodeID, err := strconv.ParseInt(parts[1], 10, 64)
@@ -678,8 +818,28 @@ func publicNodes(nodes []proxyNode) []map[string]any {
 			"exitIp":             node.ExitIP,
 			"exitCountry":        node.ExitCountry,
 			"reviveFailureCount": node.ReviveFailureCount,
+			"slotId":             node.SlotID,
+			"fallbackOrigin":     node.FallbackOrigin,
 			"errorReason":        node.ErrorReason,
 			"errorDetail":        node.ErrorDetail,
+		})
+	}
+	return items
+}
+
+func publicAuthBindings(bindings []authBinding) []map[string]any {
+	items := make([]map[string]any, 0, len(bindings))
+	for _, binding := range bindings {
+		items = append(items, map[string]any{
+			"authName":   binding.AuthName,
+			"authIndex":  binding.AuthIndex,
+			"slotId":     binding.SlotID,
+			"nodeId":     binding.NodeID,
+			"proxyUrl":   binding.ProxyURL,
+			"syncStatus": binding.SyncStatus,
+			"syncError":  binding.SyncError,
+			"verifiedAt": binding.VerifiedAt,
+			"updatedAt":  binding.UpdatedAt,
 		})
 	}
 	return items
@@ -709,13 +869,22 @@ func publicLogGroups(groups []logGroup) []map[string]any {
 	items := make([]map[string]any, 0, len(groups))
 	for _, group := range groups {
 		items = append(items, map[string]any{
-			"id":             group.ID,
-			"sequenceNumber": group.SequenceNumber,
-			"startedAt":      group.StartedAt,
-			"completedAt":    group.CompletedAt,
-			"status":         group.Status,
-			"logCount":       group.LogCount,
-			"category":       group.Category,
+			"id":                      group.ID,
+			"sequenceNumber":          group.SequenceNumber,
+			"startedAt":               group.StartedAt,
+			"completedAt":             group.CompletedAt,
+			"status":                  group.Status,
+			"logCount":                group.LogCount,
+			"category":                group.Category,
+			"candidateCount":          group.CandidateCount,
+			"successCount":            group.SuccessCount,
+			"failureCount":            group.FailureCount,
+			"connectivityCompletedAt": group.ConnectivityCompletedAt,
+			"qualityStartedAt":        group.QualityStartedAt,
+			"qualityCompletedAt":      group.QualityCompletedAt,
+			"qualityCandidateCount":   group.QualityCandidateCount,
+			"qualitySuccessCount":     group.QualitySuccessCount,
+			"qualityFailureCount":     group.QualityFailureCount,
 		})
 	}
 	return items

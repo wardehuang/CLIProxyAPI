@@ -76,7 +76,7 @@ func (store *ipStore) snapshotReviveRound(roundID int64) (int64, error) {
 	}
 	defer transaction.Rollback()
 
-	if _, err := transaction.Exec(`DELETE FROM revive_round_nodes`); err != nil {
+	if _, err := transaction.Exec(`DELETE FROM revive_round_nodes WHERE round_id = ?`, roundID); err != nil {
 		return 0, fmt.Errorf("clear sqlite revive snapshot: %w", err)
 	}
 	result, err := transaction.Exec(`
@@ -109,7 +109,7 @@ func (store *ipStore) claimNextRevive(roundID int64) (*proxyNode, error) {
 
 	var node proxyNode
 	err = transaction.QueryRow(`
-SELECT candidates.node_id, node_name, proxy_url, host, input_ip, port, protocol, domain, batch_id, status, revive_failure_count, exit_country
+SELECT candidates.node_id, node_name, proxy_url, host, input_ip, port, protocol, domain, batch_id, status, revive_failure_count, exit_country, revive_target_status
 FROM revive_round_nodes AS candidates
 JOIN ip_nodes ON ip_nodes.id = candidates.node_id
 WHERE candidates.round_id = ?
@@ -130,6 +130,7 @@ ORDER BY node_id ASC LIMIT 1`, roundID, statusError, roundID).Scan(
 		&node.Status,
 		&node.ReviveFailureCount,
 		&node.ExitCountry,
+		&node.ReviveTargetStatus,
 	)
 	if err == sql.ErrNoRows {
 		return nil, nil
@@ -166,6 +167,10 @@ WHERE id = ? AND status = ? AND probe_kind = '' AND revive_round_id <> ?`, statu
 
 func (store *ipStore) completeReviveProbe(node proxyNode, result probeResult) (bool, error) {
 	probeTime := time.Now().UnixMilli()
+	targetStatus := node.ReviveTargetStatus
+	if targetStatus != statusCooldown && targetStatus != statusConnected {
+		targetStatus = statusConnected
+	}
 	if result.Reason == "非us出口" {
 		_, err := store.database.Exec(`
 UPDATE ip_nodes
@@ -191,11 +196,11 @@ SET status = ?, initial_connected = 1, latency_ms = ?, probe_time = ?, probe_sta
     exit_country = CASE WHEN ? <> '' THEN ? ELSE exit_country END,
     revive_failure_count = 0,
     error_reason = '', error_detail = ?
-WHERE id = ? AND status = ? AND probe_kind = ? AND revive_round_id = ?`, statusConnected, result.LatencyMs, probeTime, result.ExitIP, result.ExitIP, result.CountryCode, result.CountryCode, result.Detail, node.ID, statusReviveProbing, probeKindRevive, node.ReviveRoundID)
+WHERE id = ? AND status = ? AND probe_kind = ? AND revive_round_id = ?`, targetStatus, result.LatencyMs, probeTime, result.ExitIP, result.ExitIP, result.CountryCode, result.CountryCode, result.Detail, node.ID, statusReviveProbing, probeKindRevive, node.ReviveRoundID)
 		if err != nil {
 			return false, fmt.Errorf("save revive success: %w", err)
 		}
-		_ = store.appendProbeLog(logCategoryReviveProbe, reviveGroupID(node.ReviveRoundID), logStatusConnected, logLevelInfo, "revive.completed", node.ID, node.Name, "异常节点已恢复为已连通", formatProbeResultDetail(result))
+		_ = store.appendProbeLog(logCategoryReviveProbe, reviveGroupID(node.ReviveRoundID), logStatusConnected, logLevelInfo, "revive.completed", node.ID, node.Name, fmt.Sprintf("异常节点已恢复为 %s", targetStatus), formatProbeResultDetail(result))
 		return false, nil
 	}
 

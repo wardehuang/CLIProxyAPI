@@ -40,6 +40,24 @@ func runKeepaliveRound(ctx context.Context, store *ipStore, workerCount, probeRe
 		_ = store.appendLog(logLevelError, "keepalive.round_create_failed", 0, "", "创建保活探测轮次失败", err.Error())
 		return
 	}
+	settings, err := store.settings()
+	if err != nil {
+		_ = store.finishKeepaliveRound(roundID, groupStatusCompleted, 0, 0, 0)
+		_ = store.appendLog(logLevelError, "keepalive.settings_failed", 0, "", "读取保活轮次配置失败", err.Error())
+		return
+	}
+	cleanedFallbackSlotCount, err := store.removeExpiredFallbackSlots(roundID)
+	if err != nil {
+		_ = store.finishKeepaliveRound(roundID, groupStatusCompleted, 0, 0, 0)
+		_ = store.appendProbeLog(logCategoryKeepaliveProbe, keepaliveGroupID(roundID), logStatusError, logLevelError, "fallback.expired_cleanup_failed", 0, "", "清理上一轮保底来源节点失败", err.Error())
+		return
+	}
+	if cleanedFallbackSlotCount > 0 {
+		_ = store.appendProbeLog(logCategoryKeepaliveProbe, keepaliveGroupID(roundID), logStatusConnected, logLevelInfo, "fallback.expired_cleaned", 0, "", "已在新一轮开始时清理上一轮保底来源节点", fmt.Sprintf("清理槽位 %d 个", cleanedFallbackSlotCount))
+		if err := refreshHealthyAuthDistribution(store, settings.HealthySlotCount); err != nil {
+			_ = store.appendLog(logLevelError, "auth_distribution.fallback_cleanup_failed", 0, "", "清理保底来源后重分配 auth 失败", err.Error())
+		}
+	}
 	candidateCount, err := store.snapshotKeepaliveRound(roundID)
 	if err != nil {
 		_ = store.finishKeepaliveRound(roundID, groupStatusCompleted, 0, 0, 0)
@@ -54,7 +72,7 @@ func runKeepaliveRound(ctx context.Context, store *ipStore, workerCount, probeRe
 		"keepalive.round_started",
 		0,
 		"",
-		"开始保活探测轮次",
+		"开始保活连通阶段",
 		fmt.Sprintf("轮次 %d，保活线程数 %d，候选节点 %d，仅使用触发时已完成探测的批次", roundID, workerCount, candidateCount),
 	)
 
@@ -69,14 +87,27 @@ func runKeepaliveRound(ctx context.Context, store *ipStore, workerCount, probeRe
 		}()
 	}
 	workerGroup.Wait()
+	if err := store.updateKeepaliveQualityPhase(roundID, "connectivity_completed", candidateCount, successCount.Load(), failureCount.Load()); err != nil {
+		_ = store.appendLog(logLevelError, "keepalive.connectivity_phase_save_failed", 0, "", "保存保活连通阶段失败", err.Error())
+	}
 	if ctx.Err() != nil {
 		_ = store.finishKeepaliveRound(roundID, groupStatusCompleted, candidateCount, successCount.Load(), failureCount.Load())
 		return
 	}
 
-	successTotal := successCount.Load()
-	failureTotal := failureCount.Load()
-	_ = store.finishKeepaliveRound(roundID, groupStatusCompleted, candidateCount, successTotal, failureTotal)
+	qualityCandidateCount, qualitySuccessCount, qualityFailureCount := runQualityRound(ctx, store, roundID, workerCount, settings)
+	_ = store.setQualityRoundCompleted(roundID, qualityCandidateCount, qualitySuccessCount, qualityFailureCount)
+	if ctx.Err() != nil {
+		_ = store.finishKeepaliveRound(roundID, groupStatusCompleted, candidateCount, successCount.Load(), failureCount.Load())
+		_ = store.appendProbeLog(logCategoryKeepaliveProbe, keepaliveGroupID(roundID), logStatusProbing, logLevelWarn, "keepalive.round_cancelled", 0, "", "保活两阶段轮次已取消", fmt.Sprintf("连通成功 %d，连通失败 %d，智商候选 %d，智商通过 %d，智商未通过 %d；所有处理中节点已恢复领取前状态", successCount.Load(), failureCount.Load(), qualityCandidateCount, qualitySuccessCount, qualityFailureCount))
+		return
+	}
+	if err := refreshHealthyAuthDistribution(store, settings.HealthySlotCount); err != nil {
+		_ = store.appendLog(logLevelError, "auth_distribution.round_failed", 0, "", "保活轮次后重分配 auth 失败", err.Error())
+	}
+
+	failureTotal := failureCount.Load() + qualityFailureCount
+	_ = store.finishKeepaliveRound(roundID, groupStatusCompleted, candidateCount, successCount.Load(), failureCount.Load())
 	completionStatus := logStatusConnected
 	completionLevel := logLevelInfo
 	if failureTotal > 0 {
@@ -91,8 +122,8 @@ func runKeepaliveRound(ctx context.Context, store *ipStore, workerCount, probeRe
 		"keepalive.round_completed",
 		0,
 		"",
-		"保活探测轮次完成",
-		fmt.Sprintf("成功 %d，失败 %d", successTotal, failureTotal),
+		"保活两阶段轮次完成",
+		fmt.Sprintf("连通成功 %d，连通失败 %d，智商候选 %d，智商通过 %d，智商未通过 %d", successCount.Load(), failureCount.Load(), qualityCandidateCount, qualitySuccessCount, qualityFailureCount),
 	)
 }
 
@@ -126,11 +157,17 @@ func runKeepaliveWorker(ctx context.Context, store *ipStore, roundID int64, prob
 		} else {
 			failureCount.Add(1)
 		}
-		if err := store.completeProbe(*node, result); err != nil {
+		var completionErr error
+		if result.Success || result.PreserveStatus {
+			completionErr = store.completeProbe(*node, result)
+		} else {
+			completionErr = store.completeKeepaliveFailure(*node, result)
+		}
+		if completionErr != nil {
 			if resetErr := store.resetProbe(*node); resetErr != nil {
-				_ = store.appendProbeLog(logCategoryKeepaliveProbe, keepaliveGroupID(node.KeepaliveRoundID), logStatusError, logLevelError, "keepalive.reset_failed", node.ID, node.Name, "保存保活结果后重置节点失败", resetErr.Error())
+				_ = store.appendProbeLog(logCategoryKeepaliveProbe, keepaliveGroupID(node.KeepaliveRoundID), logStatusError, logLevelError, "keepalive.reset_failed", node.ID, node.Name, "保存保活结果失败后重置节点失败", resetErr.Error())
 			}
-			_ = store.appendProbeLog(logCategoryKeepaliveProbe, keepaliveGroupID(node.KeepaliveRoundID), logStatusError, logLevelError, "keepalive.save_failed", node.ID, node.Name, "保存保活结果失败", err.Error())
+			_ = store.appendProbeLog(logCategoryKeepaliveProbe, keepaliveGroupID(node.KeepaliveRoundID), logStatusError, logLevelError, "keepalive.save_failed", node.ID, node.Name, "保存保活结果失败", completionErr.Error())
 		}
 	}
 }

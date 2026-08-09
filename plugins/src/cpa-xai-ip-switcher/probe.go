@@ -304,6 +304,10 @@ func probeGrokEndpoint(ctx context.Context, client *http.Client) probeResult {
 }
 
 func newProxyHTTPClient(proxyURL string) (*http.Client, error) {
+	return newProxyHTTPClientWithTimeout(proxyURL, probeHTTPTimeout)
+}
+
+func newProxyHTTPClientWithTimeout(proxyURL string, timeout time.Duration) (*http.Client, error) {
 	parsedURL, err := url.Parse(proxyURL)
 	if err != nil || parsedURL.Host == "" {
 		return nil, fmt.Errorf("代理 URL 无效")
@@ -312,7 +316,7 @@ func newProxyHTTPClient(proxyURL string) (*http.Client, error) {
 		Proxy:                 nil,
 		DialContext:           (&net.Dialer{Timeout: probeDialTimeout, KeepAlive: 30 * time.Second}).DialContext,
 		TLSHandshakeTimeout:   probeDialTimeout,
-		ResponseHeaderTimeout: probeHTTPTimeout,
+		ResponseHeaderTimeout: timeout,
 		IdleConnTimeout:       30 * time.Second,
 	}
 	if parsedURL.Scheme == "http" || parsedURL.Scheme == "https" {
@@ -333,7 +337,7 @@ func newProxyHTTPClient(proxyURL string) (*http.Client, error) {
 	} else {
 		return nil, fmt.Errorf("不支持的代理协议 %s", parsedURL.Scheme)
 	}
-	return &http.Client{Timeout: probeHTTPTimeout, Transport: transport}, nil
+	return &http.Client{Timeout: timeout, Transport: transport}, nil
 }
 
 func formatProbeResultDetail(result probeResult) string {

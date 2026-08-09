@@ -441,7 +441,16 @@ SELECT
         WHERE plugin_logs.category = ?
           AND plugin_logs.group_id = CAST(rounds.round_id AS TEXT)
           AND plugin_logs.event NOT IN ('probe.started', 'keepalive.started', 'revive.started')
-    )
+    ),
+    candidate_count,
+    success_count,
+    failure_count,
+    connectivity_completed_at,
+    quality_started_at,
+    quality_completed_at,
+    quality_candidate_count,
+    quality_success_count,
+    quality_failure_count
 FROM keepalive_rounds AS rounds
 ORDER BY sequence_number DESC, started_at DESC
 LIMIT ?`, logCategoryKeepaliveProbe, maxGroupedLogSets)
@@ -453,7 +462,23 @@ LIMIT ?`, logCategoryKeepaliveProbe, maxGroupedLogSets)
 	items := make([]logGroup, 0)
 	for rows.Next() {
 		var item logGroup
-		if err := rows.Scan(&item.ID, &item.SequenceNumber, &item.StartedAt, &item.CompletedAt, &item.Status, &item.LogCount); err != nil {
+		if err := rows.Scan(
+			&item.ID,
+			&item.SequenceNumber,
+			&item.StartedAt,
+			&item.CompletedAt,
+			&item.Status,
+			&item.LogCount,
+			&item.CandidateCount,
+			&item.SuccessCount,
+			&item.FailureCount,
+			&item.ConnectivityCompletedAt,
+			&item.QualityStartedAt,
+			&item.QualityCompletedAt,
+			&item.QualityCandidateCount,
+			&item.QualitySuccessCount,
+			&item.QualityFailureCount,
+		); err != nil {
 			return nil, fmt.Errorf("scan sqlite keepalive log group: %w", err)
 		}
 		item.Category = logCategoryKeepaliveProbe

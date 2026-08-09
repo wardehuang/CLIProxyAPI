@@ -2,7 +2,7 @@
 
 > 本文记录 `CPA-Manager-Plus` 当前 wXAi 巡检源码的真实行为。
 >
-> 最后核对日期：2026-08-07
+> 最后核对日期：2026-08-08
 >
 > 权威实现目录：`CPA-Manager-Plus/apps/manager-server/internal/service/wxaiinspection`
 
@@ -385,48 +385,52 @@ ProxyURL：
 
 ## 13. CPA xAI 出口节点插件（`cpa-xai-ip-switcher`）
 
-本节记录 CLIProxyAPI 插件的出口节点探测行为；该插件不属于 Manager wXAi 账号巡检，不读取账号 auth，不执行 FREE/SUPER 判断，不写入 priority，不使用 chat completions，也不复用 Manager 巡检 run。
+本节记录 CLIProxyAPI 插件当前源码的真实行为。插件独立于 Manager wXAi 账号巡检：不执行 FREE/SUPER 判断，不写入账号 `priority`，不调用 `/v1/chat/completions`，不创建或复用 Manager 巡检 run。
 
-### 13.1 触发与候选
+### 13.1 触发、槽位与候选
 
-- 初次探测：节点录入后进入 `unprobed`，由初次探测 worker 领取。
-- 保活探测：只检查 `initial_connected=1` 且状态为 `healthy`、`connected` 或 `cooldown` 的节点；同一批次存在初次探测候选时跳过该批次。
-- 复活探测：定时调度 `error` 节点，但只快照 `probe_kind=''`、`revive_failure_count < 3` 且 `exit_country` 为空或为 `US` 的节点。已持久化为非 US 的节点不再进入复活候选。
-- 复活探测不是账号 priority 冷却机制；插件只有 SQLite 复活间隔和失败次数规则。
-
-
+- 初次探测：节点录入后进入 `unprobed`，由初次探测 worker 领取；成功先进入 `connected`，尚未进入健康槽位。
+- 保活调度器：插件启动后立即执行首轮，之后按 `keepalive_interval_seconds` 调度。第一阶段在轮次开始时快照 `initial_connected=1` 且状态为 `healthy`、`healthy_candidate`、`connected` 或 `cooldown` 的节点；同一批次仍有 `unprobed`、`probing` 或 `probe_kind=initial` 节点时，该批次候选全部跳过。
+- 保活第一阶段结束后，才启动同一轮第二阶段智商探测；两阶段都结束后才完成保活轮次。取消时分别恢复连通探测和智商探测领取前状态。
+- 复活调度器：插件启动后立即执行首轮，之后按 `revive_interval_seconds` 调度。只快照 `error`、`probe_kind=''`、`revive_failure_count < 3` 且 `exit_country` 为空或为 `US` 的节点；已确认非 US 的异常节点不再进入复活候选。
+- 健康槽位默认 `50` 个，健康备选槽位默认 `20` 个；槽位总数最多 `1000`。槽号 `1..healthy_slot_count` 为 `healthy`，其余为 `healthy_candidate`。健康备选槽位不参与 auth `proxy_url` 分配。
+- 空槽候选只从 `connected` 节点领取，按 `latency_ms ASC, id ASC` 排序；领取时原子改为 `quality_probing`，写入槽位处理租约和 `claim_node_id`，`ip_slots.node_id` 在检测通过前保持为空。`claim_node_id` 只用于处理中槽位展示和中断恢复，完成、失败或取消时清零。
+- 正式补槽只发生在质量结果为 `normal`：节点按槽位类型改为 `healthy` 或 `healthy_candidate`，再原子写入 `ip_slots.node_id`。`connected` 不是直接补槽条件。
 
 ### 13.2 endpoint 与调用顺序
 
+初次、保活和复活的连通探测：
+
 1. 使用节点自身代理访问 `GET https://grok.com/`。
-2. 初次探测在 xAI endpoint 成功后调用同一代理的 `GET http://163.192.9.157:2261/trace`，获取出口 IP 和国家代码。
-3. 复活探测仅在节点 `exit_country` 为空、出口仍不确定且 xAI endpoint 成功后调用 `probeExitTrace`；已知 `US` 的节点不调用出口 trace。
-4. 初次或复活探测发现非 US 时，结果为 `非us出口`；初次批次的 `delete_non_us=1` 时删除节点，否则持久化出口 IP、国家代码和异常状态；复活路径始终保留节点，后续轮次也不再探测。
-5. 已知 `US` 的复活节点只调用 xAI endpoint；endpoint 成功后恢复为 `connected`，保留已知出口国家。
+2. 初次探测在 xAI endpoint 成功后，使用同一代理访问 `GET http://163.192.9.157:2261/trace`，持久化出口 IP 和国家代码。
+3. 复活探测仅在 `exit_country` 为空时调用出口 trace；已知 `US` 时只调用 xAI endpoint。
+4. 初次或复活发现非 US 时，结果为 `非us出口`。初次批次 `delete_non_us=1` 时删除节点，否则保存异常；复活路径保留节点并清零复活失败计数，使其不再进入后续复活候选。
 
+保活第二阶段和空槽补槽的智商探测：
 
+1. 通过 Host ABI `host.auth.list`、`host.auth.get` 读取 xAI auth JSON；质量探测只选择 `priority > 0`、未禁用且存在 `access_token` 的 auth。
+2. 选择顺序为当前节点已绑定 auth 文件名排序后的首个、该节点历史成功 auth、全局最近 10 次随机选择排除后的随机 auth。最近 10 次口径只统计 `selection_source='random' AND was_success=0` 的随机领取记录，不把绑定命中、历史命中或成功结果重复计入随机窗口。额度耗尽时把当前 auth 加入本轮已用集合，立即从随机池切换；候选 auth 全部耗尽时结果为 `unknown/auth_pool_exhausted`，不误伤节点。
+3. 使用节点自身代理调用 `POST https://cli-chat-proxy.grok.com/v1/responses`，请求体固定为 `grok-4.5`、中文 `17 × 23` 探针、`stream=true`、high/detailed reasoning、`max_output_tokens=96`、`temperature=0`；期望答案 `391` 只作展示信号。
+4. 读取完整 SSE，成功条件为 `response.completed` 或 `[DONE]`；`response.incomplete`、`response.failed`、`error`、网络错误、超时和不完整流均为非 `normal` 结果。按 `output_tokens × 1000 / max(1, total_ms-first_token_ms)` 计算 TPS；`TPS >= hard` 为 `suspected_degradation/hard`，`TPS >= soft` 为 `suspected_degradation/soft`，否则为 `normal/healthy`。
+5. 智商探测不调用 Manager API，不调用 `/v1/chat/completions`，不执行 FREE/SUPER 判断，不修改账号 priority。
 
-### 13.3 状态、恢复与并发
+### 13.3 状态、恢复、保底与 auth 分配
 
-- 初次 endpoint 与出口检查成功：`connected`。
-- 初次出口非 US、出口 trace 失败或 endpoint 失败：`error`。
-- 保活成功：保持原状态；保活失败：`error`。
-- SQLite `ip_node_statuses` 表和 IP 列表 UI 已登记 `healthy_candidate`（健康备选）与 `healthy_fallback`（健康保底）；当前探测流程暂不将节点切换到这两个状态，仅提供状态存储、统计和筛选展示。
-- 复活成功：`connected`；普通复活失败累计 `revive_failure_count`，达到 3 次删除节点。
-- 复活确认非 US：保持 `error`，清零复活失败计数，不执行后续复活，不触发删除。
-- 不存在 FREE/SUPER 判断、chat 条件、priority 映射、priority 恢复和 Manager run 复用。
-- 初次探测线程、保活线程、复活线程分别受插件配置的 worker 数限制；复活和保活按各自间隔调度，启动后立即执行首轮。
-- xAI endpoint HTTP client 总超时 25 秒，拨号和 TLS 握手超时 15 秒；探测轮询间隔 750 毫秒；单节点按插件配置执行重试。
+- 连通阶段成功：初次节点为 `connected`；保活节点恢复其原状态。
+- 保活连通失败：`healthy`、`healthy_candidate`、`connected` 来源改为 `error`，复活目标为 `connected`；`cooldown` 来源改为 `error`，复活目标为 `cooldown`。保活遇到“连接数不足”时保持原状态并记为不可判定。
+- 槽位已有节点时，本轮先对该节点做智商探测。质量结果为 `normal`，槽位保持占用；`soft`、`hard` 或普通请求/SSE 失败时节点改为 `cooldown`，清空槽位并继续领取下一个候选。
+- 空槽新候选质量结果为 `normal` 才正式占槽；`soft`、`hard` 或普通请求/SSE 失败时节点改为 `cooldown`，清空处理租约并继续当前槽位；auth 池耗尽或不可判定时节点恢复 `connected`，槽位保持空并阻塞该槽位到本轮结束。
+- 保底节点：质量阶段优先领取 `healthy_fallback` 节点，先做连通探测，再做智商探测。任一步失败永久删除并继续领取；通过后按槽位类型占槽并保留 `fallback_origin`。下一轮创建后、生成连通候选快照前，先清槽并永久删除上一轮已入槽的保底来源，同时立即重算健康槽位 auth 分配；该保底节点不会再进入下一轮连通探测。当前轮质量阶段结束后，未占槽的溢出 `connected` 节点转为 `healthy_fallback`。
+- 槽位数量变化时，普通占槽节点释放为 `connected`，已入槽保底来源永久删除，绑定表清空，随后按新布局重新执行候选领取和智商探测。
+- 健康槽位 auth 分配：以 Host Auth List 返回的全部 xAI auth 为全集，不过滤 `priority`；按文件名排序，文件序号从 1 开始，使用 `slot=((fileIndex-1)%healthySlotCount)+1`。健康槽位为空时对应 auth 删除根字段 `proxy_url`。每个文件独立读取；读取失败也按其列表文件名和槽号写入 `ip_slot_auth_bindings.failed`，不会静默跳过。读取成功后执行 Host Auth Save 并重新读取验证，逐文件写入 `verified` 或 `failed` 状态；失败不伪造跨文件事务。
+- 质量探测配置默认 `quality_worker_count=8`、单次超时 `25` 秒、soft TPS `500`、hard TPS `1000`；hard 必须大于 soft。配置变化先停止当前 worker并等待取消恢复完成，再重建槽位、保存设置、同步 auth 分配并启动新 worker；槽位重建或设置保存失败时按旧配置恢复 worker。
+- 初次探测 worker、保活连通 worker、智商探测 worker、复活 worker 分别受配置并发数限制；连通探测默认 HTTP 总超时 `25` 秒、拨号/TLS 超时 `15` 秒、空闲轮询 `750` 毫秒；质量探测超时可配置，最大 `600` 秒；单节点重试次数使用 `probe_retry_count`。
 
+### 13.4 落库、API、UI 与日志
 
-
-### 13.4 落库与日志
-
-- `ip_nodes.exit_ip`、`ip_nodes.exit_country` 持久化出口结果；`error_reason` 与 `error_detail` 持久化异常原因。
-- `ip_batches.total_count` 在录入时固定保存原始新增数量；`initial_probe_completed_count` 和 `initial_connected_count` 只在初次探测结果落库时递增，初次探测完成后不受保活、复活、异常或节点删除影响。
-- 批次页面的「初次探测」读取固定的 `initial_probe_completed_count/total_count`，「初次已连通」读取固定的 `initial_connected_count`；只有「实时已连通」按当前 `healthy`、`connected`、`cooldown` 节点数量实时计算。
-- 旧数据库首次迁移时，从保留的 `batch_probe` 初次结果日志回填两个固定计数；已被日志保留策略清理的更早批次无法完整恢复历史删除细节。
-- `revive_rounds` 保存复活轮次、候选数、成功数、失败数和删除数；`revive_round_nodes` 保存轮次快照。
-- 批次日志使用 `batch_probe`，保活日志使用 `keepalive_probe`，复活日志使用 `revive_probe`。
-- 非 US 初次结果记录 `probe.failed`；导入选项要求删除时记录 `probe.deleted_non_us`；复活确认非 US 记录 `revive.non_us`。
-- 插件不创建或复用 Manager 巡检 run；仅保存自己的批次、保活轮次、复活轮次和 SQLite 日志。
+- SQLite 保存 `ip_nodes`、`ip_batches`、`keepalive_rounds`、`keepalive_round_nodes`、`revive_rounds`、`revive_round_nodes`、`ip_slots`、`ip_slot_auth_bindings`、`quality_probe_attempts`、`auth_selection_history`、`plugin_settings` 和 `plugin_logs`。
+- `ip_nodes` 持久化状态、复活目标、质量延迟标记、出口 IP/国家、失败原因和探测时间；`ip_slots.node_id` 保存正式占槽节点，`claim_node_id` 保存处理中节点，`fallback_origin` 保存保底来源。服务启动时会把中断中的节点探测恢复到 `probe_return_status` 或复活目标状态，并清理遗留槽位租约和 `claim_node_id`。
+- 保活轮次保存连通阶段完成时间、质量阶段开始/完成时间、两阶段计数；轮次只有两阶段结束才记为完成。质量每次 auth 尝试保存 auth、选择来源、代理、HTTP、TTFB、首生成、生成/总耗时、tokens、TPS、分类、阈值结果和错误详情；不保存 token 或完整 auth JSON。
+- 批次日志使用 `batch_probe`，保活连通/智商/保底日志使用 `keepalive_probe`，复活日志使用 `revive_probe`；日志记录轮次、阶段、槽位、节点、auth 选择来源、代理、HTTP/SSE、指标、分类、状态转换、换号、保底删除和 auth 同步结果。
+- IP 列表提供 `healthy`、`healthy_candidate`、`healthy_fallback`、`quality_probing` 等状态页签及槽位/保底来源展示；处理中节点通过 `claim_node_id` 显示目标槽位。保活日志批次摘要展示连通阶段与智商阶段的候选、成功和失败计数。`healthy` 节点每行显示“查看绑定 auth”按钮，通过 `GET /nodes/{nodeID}/auth-bindings` 查询当前绑定记录、已验证数和失败数；非健康节点不显示。接口不返回 token 或完整 auth JSON，无绑定时返回“当前无绑定 auth 文件”。
+- 批次固定保存初次探测完成数和初次已连通数；实时已连通统计按当前 `healthy`、`healthy_candidate`、`connected`、`cooldown` 状态计算。插件不创建或复用 Manager 巡检 run。
