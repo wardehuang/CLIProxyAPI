@@ -77,9 +77,9 @@ func (m *Manager) Register(ctx context.Context, auth *Auth) (*Auth, error) {
 		auth.ID = uuid.NewString()
 	}
 	now := time.Now()
-	clearedCooldown := false
+	cooldownStateChanged := normalizeModelStates(auth)
 	if m.cooldownDisabledForAuth(auth) || auth.Disabled || auth.Status == StatusDisabled {
-		clearedCooldown = clearCooldownStateForAuth(auth, now)
+		cooldownStateChanged = clearCooldownStateForAuth(auth, now) || cooldownStateChanged
 	}
 	auth.EnsureIndex()
 	authClone := auth.Clone()
@@ -95,7 +95,7 @@ func (m *Manager) Register(ctx context.Context, auth *Auth) (*Auth, error) {
 	m.queueRefreshReschedule(auth.ID)
 	_ = m.persist(ctx, auth)
 	m.hook.OnAuthRegistered(ctx, auth.Clone())
-	if clearedCooldown {
+	if cooldownStateChanged {
 		m.persistCooldownStates(ctx)
 	}
 	return auth.Clone(), nil
@@ -128,9 +128,9 @@ func (m *Manager) Update(ctx context.Context, auth *Auth) (*Auth, error) {
 		}
 	}
 	now := time.Now()
-	clearedCooldown := false
+	cooldownStateChanged := normalizeModelStates(auth)
 	if m.cooldownDisabledForAuth(auth) || auth.Disabled || auth.Status == StatusDisabled {
-		clearedCooldown = clearCooldownStateForAuth(auth, now)
+		cooldownStateChanged = clearCooldownStateForAuth(auth, now) || cooldownStateChanged
 	}
 	auth.EnsureIndex()
 	authClone := auth.Clone()
@@ -145,7 +145,7 @@ func (m *Manager) Update(ctx context.Context, auth *Auth) (*Auth, error) {
 	m.queueRefreshReschedule(auth.ID)
 	_ = m.persist(ctx, auth)
 	m.hook.OnAuthUpdated(ctx, auth.Clone())
-	if clearedCooldown {
+	if cooldownStateChanged {
 		m.persistCooldownStates(ctx)
 	}
 	return auth.Clone(), nil

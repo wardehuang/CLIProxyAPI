@@ -144,7 +144,19 @@ func shouldReturnLastErrorOnPickFailure(homeMode bool, lastErr error, errPick er
 	if !homeMode {
 		return true
 	}
-	return isHomeRequestRetryExceededError(errPick)
+	if isHomeRequestRetryExceededError(errPick) {
+		return true
+	}
+	var authErr *Error
+	if !errors.As(errPick, &authErr) || authErr == nil {
+		return false
+	}
+	switch strings.ToLower(strings.TrimSpace(authErr.Code)) {
+	case "auth_not_found", "auth_unavailable":
+		return true
+	default:
+		return false
+	}
 }
 
 func homeAuthAlreadyTried(tried map[string]struct{}, authID string) bool {
@@ -1153,7 +1165,7 @@ func (m *Manager) tryAntigravityCreditsExecuteStream(ctx context.Context, req cl
 		if len(models) == 0 {
 			continue
 		}
-		result, errStream := m.executeStreamWithModelPool(creditsCtx, c.executor, c.auth, c.provider, req, creditsOpts, routeModel, "", models, pooled, aliasResult, routing, true, false)
+		result, errStream := m.executeStreamWithModelPool(creditsCtx, c.executor, c.auth, c.provider, req, creditsOpts, routeModel, "", models, pooled, aliasResult, routing, true, false, nil)
 		if errStream != nil {
 			continue
 		}

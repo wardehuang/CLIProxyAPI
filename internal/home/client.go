@@ -41,6 +41,7 @@ const (
 	homeReconnectInterval                     = time.Second
 	homeReconnectFailoverThreshold            = 3
 	homeRedisOperationTimeout                 = 3 * time.Second
+	homeRefreshOperationTimeout               = 35 * time.Second
 	homePluginSyncOperationTimeout            = 2 * time.Minute
 	homeSubscriptionReceiveTimeout            = 3 * time.Second
 	credentialConcurrencyNodeHeartbeatTimeout = 20 * time.Second
@@ -1359,7 +1360,7 @@ func (c *Client) GetRefreshAuth(ctx context.Context, authIndex string, lastRefre
 		return nil, err
 	}
 
-	raw, err := cmd.Get(ctx, string(keyBytes)).Bytes()
+	raw, err := cmd.WithTimeout(homeRefreshOperationTimeout).Get(ctx, string(keyBytes)).Bytes()
 	if errors.Is(err, redis.Nil) {
 		return nil, ErrAuthNotFound
 	}

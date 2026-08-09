@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -20,8 +21,10 @@ func TestStatusFromHomeErrorCodeMapsAuthenticationErrorToUnauthorized(t *testing
 	if got := statusFromHomeErrorCode("unauthorized"); got != http.StatusUnauthorized {
 		t.Fatalf("statusFromHomeErrorCode(unauthorized) = %d, want %d", got, http.StatusUnauthorized)
 	}
-	if got := statusFromHomeErrorCode("refresh_temporarily_unavailable"); got != http.StatusServiceUnavailable {
-		t.Fatalf("statusFromHomeErrorCode(refresh_temporarily_unavailable) = %d, want %d", got, http.StatusServiceUnavailable)
+	for _, code := range []string{"auth_not_found", "auth_unavailable", "refresh_temporarily_unavailable", "refresh_unsupported"} {
+		if got := statusFromHomeErrorCode(code); got != http.StatusServiceUnavailable {
+			t.Fatalf("statusFromHomeErrorCode(%s) = %d, want %d", code, got, http.StatusServiceUnavailable)
+		}
 	}
 }
 
@@ -60,6 +63,41 @@ func TestRefreshAuthViaHomePreservesContextErrors(t *testing.T) {
 	}
 }
 
+func TestRefreshAuthViaHomeMapsTransportFailureToRedacted503(t *testing.T) {
+	client := &fakeHomeRefreshClient{err: errors.New("dial failed with provider-secret")}
+	oldCurrentHomeRefreshClient := currentHomeRefreshClient
+	currentHomeRefreshClient = func() homeRefreshClient { return client }
+	t.Cleanup(func() { currentHomeRefreshClient = oldCurrentHomeRefreshClient })
+
+	cfg := &config.Config{Home: config.HomeConfig{Enabled: true}}
+	auth := &cliproxyauth.Auth{ID: "home-auth", Index: "home-auth", Provider: "codex"}
+	_, handled, errRefresh := RefreshAuthViaHome(context.Background(), cfg, auth)
+	statusErr, okStatus := errRefresh.(interface{ StatusCode() int })
+	if !handled || !okStatus || statusErr.StatusCode() != http.StatusServiceUnavailable {
+		t.Fatalf("RefreshAuthViaHome() = handled %v err %v, want redacted 503", handled, errRefresh)
+	}
+	if strings.Contains(errRefresh.Error(), "provider-secret") {
+		t.Fatalf("refresh error leaked transport detail: %v", errRefresh)
+	}
+}
+
+func TestRefreshAuthViaHomeRedactsLegacyErrorEnvelope(t *testing.T) {
+	client := &fakeHomeRefreshClient{raw: []byte(`{"error":{"type":"error","message":"provider response: refresh_token=provider-secret"}}`)}
+	oldCurrentHomeRefreshClient := currentHomeRefreshClient
+	currentHomeRefreshClient = func() homeRefreshClient { return client }
+	t.Cleanup(func() { currentHomeRefreshClient = oldCurrentHomeRefreshClient })
+
+	cfg := &config.Config{Home: config.HomeConfig{Enabled: true}}
+	auth := &cliproxyauth.Auth{ID: "home-auth", Index: "home-auth", Provider: "codex"}
+	_, handled, errRefresh := RefreshAuthViaHome(context.Background(), cfg, auth)
+	statusErr, okStatus := errRefresh.(interface{ StatusCode() int })
+	if !handled || !okStatus || statusErr.StatusCode() != http.StatusServiceUnavailable {
+		t.Fatalf("RefreshAuthViaHome() = handled %v err %v, want redacted 503", handled, errRefresh)
+	}
+	if strings.Contains(errRefresh.Error(), "provider-secret") {
+		t.Fatalf("refresh error leaked legacy Home detail: %v", errRefresh)
+	}
+}
 func TestAuthAccessTokenSHA256SupportsKnownMetadataShapes(t *testing.T) {
 	want := authAccessTokenSHA256(&cliproxyauth.Auth{Metadata: map[string]any{"access_token": "same-token"}})
 	cases := map[string]*cliproxyauth.Auth{
