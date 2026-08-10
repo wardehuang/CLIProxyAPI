@@ -418,7 +418,7 @@ func updatePluginSettings(body json.RawMessage) ([]byte, error) {
 	if store == nil {
 		return managementJSON(http.StatusInternalServerError, errorMessage("settingsFailed", "plugin store is not initialized"))
 	}
-	settingsChanged, err := pluginRuntime.updateSettings(store, settings)
+	settingsSaved, err := pluginRuntime.updateSettings(store, settings)
 	if err != nil {
 		_ = store.appendLog(logLevelError, "settings.update_failed", 0, "", "更新插件配置失败", err.Error())
 		return managementJSON(http.StatusInternalServerError, errorMessage("settingsFailed", err.Error()))
@@ -428,8 +428,8 @@ func updatePluginSettings(body json.RawMessage) ([]byte, error) {
 		"settings.updated",
 		0,
 		"",
-		"插件配置已更新",
-		fmt.Sprintf("探测线程数 %d，页面刷新 %d 秒，保活线程数 %d，保活间隔 %d 秒，复活间隔 %d 秒，探测重试次数 %d，是否重启线程 %t", settings.WorkerCount, settings.RefreshIntervalSeconds, settings.KeepaliveWorkerCount, settings.KeepaliveIntervalSeconds, settings.ReviveIntervalSeconds, settings.ProbeRetryCount, settingsChanged),
+		"插件配置已保存，将在下次启动时生效",
+		fmt.Sprintf("探测线程数 %d，页面刷新 %d 秒，保活线程数 %d，保活间隔 %d 秒，复活间隔 %d 秒，探测重试次数 %d，配置变化 %t；当前进程未重启", settings.WorkerCount, settings.RefreshIntervalSeconds, settings.KeepaliveWorkerCount, settings.KeepaliveIntervalSeconds, settings.ReviveIntervalSeconds, settings.ProbeRetryCount, settingsSaved),
 	)
 	return managementJSON(http.StatusOK, map[string]any{"data": publicSettings(settings)})
 }
@@ -708,9 +708,10 @@ func dispatchAPIWithStore(store *ipStore, method, path string, query url.Values,
 
 func addNodes(store *ipStore, body json.RawMessage) ([]byte, error) {
 	var payload struct {
-		Text        string `json:"text"`
-		IPs         string `json:"ips"`
-		DeleteNonUS bool   `json:"deleteNonUS"`
+		Text           string `json:"text"`
+		IPs            string `json:"ips"`
+		DeleteNonUS    bool   `json:"deleteNonUS"`
+		ManualFallback bool   `json:"manualFallback"`
 	}
 	if err := json.Unmarshal(body, &payload); err != nil {
 		return managementJSON(http.StatusBadRequest, errorMessage("invalidBody", "invalid body"))
@@ -724,7 +725,7 @@ func addNodes(store *ipStore, body json.RawMessage) ([]byte, error) {
 	}
 
 	nodes, inputErrors := parseProxyLines(text)
-	batchID, added, duplicates, err := store.insertNodes(nodes, len(inputErrors), payload.DeleteNonUS)
+	batchID, added, duplicates, err := store.insertNodes(nodes, len(inputErrors), payload.DeleteNonUS, payload.ManualFallback)
 	if err != nil {
 		_ = store.appendLog(logLevelError, "nodes.insert_failed", 0, "", "录入节点失败", err.Error())
 		return managementJSON(http.StatusInternalServerError, errorMessage("insertFailed", err.Error()))
@@ -739,15 +740,19 @@ func addNodes(store *ipStore, body json.RawMessage) ([]byte, error) {
 	if len(inputErrors) > 0 {
 		logLevel = logLevelWarn
 	}
+	inputMode := "初次探测"
+	if payload.ManualFallback {
+		inputMode = "手动健康保底"
+	}
 	_ = store.appendLog(
 		logLevel,
 		"nodes.inserted",
 		0,
 		"",
-		fmt.Sprintf("节点录入完成：新增 %d，重复 %d，格式错误 %d", added, duplicates, len(inputErrors)),
+		fmt.Sprintf("节点录入完成：新增 %d，重复 %d，格式错误 %d；模式 %s", added, duplicates, len(inputErrors), inputMode),
 		fmt.Sprintf("批次 %s；%s", batchID, formatInputErrors(inputErrors)),
 	)
-	if added > 0 {
+	if added > 0 && !payload.ManualFallback {
 		_ = store.appendProbeLog(
 			logCategoryBatchProbe,
 			batchID,

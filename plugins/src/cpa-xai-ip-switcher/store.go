@@ -44,6 +44,7 @@ const (
 	logCategoryGeneral        = "general"
 	logCategoryBatchProbe     = "batch_probe"
 	logCategoryKeepaliveProbe = "keepalive_probe"
+	logCategoryQualityProbe   = "quality_probe"
 	logCategoryReviveProbe    = "revive_probe"
 	logStatusConnected        = "connected"
 	logStatusProbing          = "probing"
@@ -69,7 +70,6 @@ const (
 	probeKindKeepalive = "keepalive"
 	probeKindQuality   = "quality"
 	probeKindRevive    = "revive"
-	probeKindFallback  = "fallback"
 )
 
 type pluginSettings struct {
@@ -383,13 +383,17 @@ INSERT OR IGNORE INTO plugin_settings(setting_key, setting_value) VALUES
 	if err := store.ensureSlotMetadata(); err != nil {
 		return err
 	}
+	if err := store.clearAutomaticFallbackNodes(); err != nil {
+		return err
+	}
 	if err := store.pruneStoredLogs(); err != nil {
 		return err
 	}
 	_, err = store.database.Exec(`
 UPDATE ip_nodes
 SET status = CASE
-        WHEN probe_kind IN ('keepalive', 'quality', 'fallback') AND probe_return_status IN ('healthy', 'healthy_candidate', 'healthy_fallback', 'connected', 'cooldown') THEN probe_return_status
+        WHEN probe_kind = 'fallback' THEN 'connected'
+        WHEN probe_kind IN ('keepalive', 'quality') AND probe_return_status IN ('healthy', 'healthy_candidate', 'healthy_fallback', 'connected', 'cooldown') THEN probe_return_status
         WHEN probe_kind = 'revive' AND revive_target_status IN ('cooldown', 'connected') THEN revive_target_status
         WHEN probe_kind = 'revive' THEN 'error'
         ELSE 'unprobed'
@@ -650,7 +654,7 @@ func newBatchID() string {
 	return fmt.Sprintf("B%d", time.Now().UnixNano())
 }
 
-func (store *ipStore) insertNodes(nodes []proxyNode, inputErrorCount int, deleteNonUS bool) (batchID string, added, duplicates int, err error) {
+func (store *ipStore) insertNodes(nodes []proxyNode, inputErrorCount int, deleteNonUS, manualFallback bool) (batchID string, added, duplicates int, err error) {
 	if len(nodes) == 0 {
 		return "", 0, 0, nil
 	}
@@ -676,10 +680,18 @@ VALUES (?, ?, ?, ?, ?)`, batchID, sequenceNumber, createdAt, inputErrorCount, de
 		return batchID, 0, 0, fmt.Errorf("create sqlite batch: %w", err)
 	}
 
+	initialStatus := statusUnprobed
+	initialConnected := 0
+	manualFallbackValue := 0
+	if manualFallback {
+		initialStatus = statusHealthyFallback
+		initialConnected = 1
+		manualFallbackValue = 1
+	}
 	statement, err := transaction.Prepare(`
 INSERT OR IGNORE INTO ip_nodes(
-    node_name, proxy_url, host, input_ip, port, protocol, domain, batch_id, status, entered_at
-) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+    node_name, proxy_url, host, input_ip, port, protocol, domain, batch_id, status, initial_connected, manual_fallback, entered_at
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
 	if err != nil {
 		return batchID, 0, 0, fmt.Errorf("prepare sqlite insert: %w", err)
 	}
@@ -695,7 +707,9 @@ INSERT OR IGNORE INTO ip_nodes(
 			node.Protocol,
 			node.Domain,
 			batchID,
-			statusUnprobed,
+			initialStatus,
+			initialConnected,
+			manualFallbackValue,
 			createdAt,
 		)
 		if execErr != nil {
@@ -711,8 +725,16 @@ INSERT OR IGNORE INTO ip_nodes(
 			added++
 		}
 	}
+	initialProbeCompletedCount := 0
+	initialConnectedCount := 0
+	if manualFallback {
+		initialProbeCompletedCount = added
+		initialConnectedCount = added
+	}
 	if _, err := transaction.Exec(`
-UPDATE ip_batches SET total_count = ?, duplicate_count = ? WHERE batch_id = ?`, added, duplicates, batchID); err != nil {
+UPDATE ip_batches
+SET total_count = ?, duplicate_count = ?, initial_probe_completed_count = ?, initial_connected_count = ?
+WHERE batch_id = ?`, added, duplicates, initialProbeCompletedCount, initialConnectedCount, batchID); err != nil {
 		return batchID, 0, 0, fmt.Errorf("update sqlite batch: %w", err)
 	}
 	if err := transaction.Commit(); err != nil {
@@ -1275,7 +1297,7 @@ WHERE id = ? AND status = ? AND probe_kind = ?`, statusError, result.LatencyMs, 
 }
 
 func (store *ipStore) resetProbe(node proxyNode) error {
-	if node.ProbeKind == probeKindKeepalive || node.ProbeKind == probeKindFallback {
+	if node.ProbeKind == probeKindKeepalive {
 		_, err := store.database.Exec(`
 UPDATE ip_nodes SET status = ?, probe_started_at = 0, probe_kind = '', probe_return_status = '', keepalive_round_id = 0
 WHERE id = ? AND status = ? AND probe_kind = ? AND keepalive_round_id = ?`, node.ProbeReturnStatus, node.ID, statusKeepaliveProbing, node.ProbeKind, node.KeepaliveRoundID)
@@ -1293,19 +1315,19 @@ WHERE id = ? AND status = ? AND probe_kind = ?`, statusUnprobed, node.ID, status
 	return nil
 }
 
-func (store *ipStore) summary() (map[string]int64, error) {
-	counts := map[string]int64{
-		statusHealthy:          0,
-		statusHealthyCandidate: 0,
-		statusHealthyFallback:  0,
-		statusConnected:        0,
-		statusCooldown:         0,
-		statusProbing:          0,
-		statusKeepaliveProbing: 0,
-		statusQualityProbing:   0,
-		statusReviveProbing:    0,
-		statusUnprobed:         0,
-		statusError:            0,
+func (store *ipStore) summary() (map[string]any, error) {
+	counts := map[string]any{
+		statusHealthy:          int64(0),
+		statusHealthyCandidate: int64(0),
+		statusHealthyFallback:  int64(0),
+		statusConnected:        int64(0),
+		statusCooldown:         int64(0),
+		statusProbing:          int64(0),
+		statusKeepaliveProbing: int64(0),
+		statusQualityProbing:   int64(0),
+		statusReviveProbing:    int64(0),
+		statusUnprobed:         int64(0),
+		statusError:            int64(0),
 	}
 	rows, err := store.database.Query(`SELECT status, COUNT(*) FROM ip_nodes GROUP BY status`)
 	if err != nil {
@@ -1323,6 +1345,51 @@ func (store *ipStore) summary() (map[string]int64, error) {
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("iterate sqlite summary: %w", err)
 	}
+
+	slotRows, err := store.database.Query(`
+SELECT slot_id, slot_kind, node_id
+FROM ip_slots
+WHERE slot_kind IN (?, ?)
+ORDER BY slot_id ASC`, statusHealthy, statusHealthyCandidate)
+	if err != nil {
+		return nil, fmt.Errorf("list sqlite summary slots: %w", err)
+	}
+	defer slotRows.Close()
+	healthyEmptySlotIDs := make([]int64, 0)
+	healthyCandidateEmptySlotIDs := make([]int64, 0)
+	var healthySlotCount, healthyCandidateSlotCount int64
+	var healthyOccupiedSlotCount, healthyCandidateOccupiedSlotCount int64
+	for slotRows.Next() {
+		var slotID, nodeID int64
+		var slotKind string
+		if err := slotRows.Scan(&slotID, &slotKind, &nodeID); err != nil {
+			return nil, fmt.Errorf("scan sqlite summary slot: %w", err)
+		}
+		if slotKind == statusHealthy {
+			healthySlotCount++
+			if nodeID == 0 {
+				healthyEmptySlotIDs = append(healthyEmptySlotIDs, slotID)
+			} else {
+				healthyOccupiedSlotCount++
+			}
+			continue
+		}
+		healthyCandidateSlotCount++
+		if nodeID == 0 {
+			healthyCandidateEmptySlotIDs = append(healthyCandidateEmptySlotIDs, slotID)
+		} else {
+			healthyCandidateOccupiedSlotCount++
+		}
+	}
+	if err := slotRows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate sqlite summary slots: %w", err)
+	}
+	counts["healthySlotCount"] = healthySlotCount
+	counts["healthyOccupiedSlotCount"] = healthyOccupiedSlotCount
+	counts["healthyEmptySlotIds"] = healthyEmptySlotIDs
+	counts["healthyCandidateSlotCount"] = healthyCandidateSlotCount
+	counts["healthyCandidateOccupiedSlotCount"] = healthyCandidateOccupiedSlotCount
+	counts["healthyCandidateEmptySlotIds"] = healthyCandidateEmptySlotIDs
 	return counts, nil
 }
 

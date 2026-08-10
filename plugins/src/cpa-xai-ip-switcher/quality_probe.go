@@ -61,7 +61,7 @@ func (result qualityProbeResult) DisplayReason() string {
 	return result.Classification
 }
 
-func runQualityProbeForWork(ctx context.Context, store *ipStore, work qualityWork, settings pluginSettings) (qualityProbeResult, authFile, string) {
+func runQualityProbeForWork(ctx context.Context, store *ipStore, work qualityWork, settings pluginSettings, authFiles []authFile) (qualityProbeResult, authFile, string) {
 	usedAuth := make(map[string]struct{})
 	var lastResult qualityProbeResult
 	var lastAuth authFile
@@ -71,9 +71,9 @@ func runQualityProbeForWork(ctx context.Context, store *ipStore, work qualityWor
 		var source string
 		var err error
 		if lastResult.Classification == qualityClassificationQuota {
-			auth, source, err = selectRandomAuthAfterQuota(store, work.Node, work.Slot.ID, work.RoundID, usedAuth)
+			auth, source, err = selectRandomAuthAfterQuota(store, work.Node, work.Slot.ID, work.RoundID, usedAuth, authFiles)
 		} else {
-			auth, source, err = selectAuthForQuality(store, work.Node, work.Slot.ID, work.RoundID, usedAuth)
+			auth, source, err = selectAuthForQuality(store, work.Node, work.Slot.ID, work.RoundID, usedAuth, authFiles)
 		}
 		if err != nil {
 			now := time.Now().UnixMilli()
@@ -90,7 +90,7 @@ func runQualityProbeForWork(ctx context.Context, store *ipStore, work qualityWor
 				Unavailable:          true,
 			}
 			_ = store.appendProbeLog(
-				logCategoryKeepaliveProbe,
+				logCategoryQualityProbe,
 				keepaliveGroupID(work.RoundID),
 				logStatusProbing,
 				logLevelWarn,
@@ -106,10 +106,10 @@ func runQualityProbeForWork(ctx context.Context, store *ipStore, work qualityWor
 		lastSource = source
 		result := probeQualityOnce(ctx, work.Node.ProxyURL, auth, settings)
 		if err := store.recordQualityAttempt(work.RoundID, work.Slot.ID, work.Node.ID, auth, source, result); err != nil {
-			_ = store.appendLog(logLevelError, "quality.attempt_save_failed", work.Node.ID, work.Node.Name, "保存智商探测记录失败", err.Error())
+			_ = store.appendProbeLog(logCategoryQualityProbe, keepaliveGroupID(work.RoundID), logStatusError, logLevelError, "quality.attempt_save_failed", work.Node.ID, work.Node.Name, "保存智商探测记录失败", err.Error())
 		}
 		_ = store.appendProbeLog(
-			logCategoryKeepaliveProbe,
+			logCategoryQualityProbe,
 			keepaliveGroupID(work.RoundID),
 			qualityLogStatus(result),
 			qualityLogLevel(result),
@@ -121,7 +121,7 @@ func runQualityProbeForWork(ctx context.Context, store *ipStore, work qualityWor
 		)
 		if result.Classification == qualityClassificationQuota {
 			_ = store.appendProbeLog(
-				logCategoryKeepaliveProbe,
+				logCategoryQualityProbe,
 				keepaliveGroupID(work.RoundID),
 				logStatusProbing,
 				logLevelWarn,
@@ -136,7 +136,7 @@ func runQualityProbeForWork(ctx context.Context, store *ipStore, work qualityWor
 		}
 		if result.Classification == qualityClassificationNormal {
 			if err := store.recordAuthSuccess(work.Node.ID, work.Slot.ID, work.RoundID, auth, source); err != nil {
-				_ = store.appendLog(logLevelError, "quality.auth_history_save_failed", work.Node.ID, work.Node.Name, "保存智商探测成功 auth 历史失败", err.Error())
+				_ = store.appendProbeLog(logCategoryQualityProbe, keepaliveGroupID(work.RoundID), logStatusError, logLevelError, "quality.auth_history_save_failed", work.Node.ID, work.Node.Name, "保存智商探测成功 auth 历史失败", err.Error())
 			}
 		}
 		return result, auth, source
@@ -174,11 +174,7 @@ func qualityAttemptLogDetail(work qualityWork, auth authFile, source string, res
 	)
 }
 
-func selectRandomAuthAfterQuota(store *ipStore, node proxyNode, slotID, roundID int64, used map[string]struct{}) (authFile, string, error) {
-	authFiles, err := listAuthFiles()
-	if err != nil {
-		return authFile{}, "", err
-	}
+func selectRandomAuthAfterQuota(store *ipStore, node proxyNode, slotID, roundID int64, used map[string]struct{}, authFiles []authFile) (authFile, string, error) {
 	candidates := make([]authFile, 0, len(authFiles))
 	for _, auth := range authFiles {
 		if auth.HasPositivePriority() {
@@ -439,9 +435,9 @@ func updateQualityUsage(event map[string]any, result *qualityProbeResult) {
 	if usage == nil {
 		return
 	}
-	result.OutputTokens = integerField(usage, "output_tokens")
+	result.OutputTokens = int64(integerField(usage, "output_tokens"))
 	if details, ok := usage["output_tokens_details"].(map[string]any); ok {
-		result.ReasoningTokens = integerField(details, "reasoning_tokens")
+		result.ReasoningTokens = int64(integerField(details, "reasoning_tokens"))
 	}
 }
 

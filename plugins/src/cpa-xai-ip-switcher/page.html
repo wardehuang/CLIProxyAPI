@@ -88,8 +88,9 @@
     .error-group-count { color: var(--muted-foreground); font-size: var(--text-2xs); white-space: nowrap; }
     .error-group .button { min-height: 1.85rem; font-size: var(--text-2xs); }
     .notice { min-height: 2.5rem; padding: var(--space-2xs) var(--space-sm); color: var(--muted-foreground); font-size: var(--text-xs); }
-    .notice.success { color: var(--success); }
-    .notice.error { color: var(--destructive); }
+    .slot-availability { padding: var(--space-2xs) var(--space-sm); border-bottom: var(--rule-hairline) solid var(--border); color: var(--muted-foreground); font-size: var(--text-xs); line-height: 1.7; }
+    .slot-availability strong { color: var(--foreground); }
+    .slot-availability .empty-slot-list { color: var(--warning); font-family: var(--font-mono); }
     .modal-layer { position: fixed; inset: 0; z-index: 20; display: grid; place-items: center; padding: var(--space-sm); background: var(--overlay); }
     .modal { width: min(40rem, 100%); max-height: calc(100svh - 2rem); overflow: auto; border: var(--rule-hairline) solid var(--border); border-radius: var(--radius-md); background: var(--popover); color: var(--popover-foreground); box-shadow: var(--shadow); }
     .settings-modal { width: min(58rem, 100%); }
@@ -146,7 +147,7 @@
       <div class="section-head">
         <div>
           <h2>IP列表</h2>
-          <p>新录入节点先进入【未探测】；探测成功进入【已连通】。</p>
+          <p>新录入节点先进入【未探测】；探测成功进入【已连通】。健康和健康备选槽位数固定；无节点的健康槽位对应 auth 的 proxy_url 为空。</p>
         </div>
         <div class="toolbar">
           <button id="settings-button" class="button" type="button">运行配置</button>
@@ -154,8 +155,8 @@
         </div>
       </div>
       <nav id="status-tabs" class="status-tabs" aria-label="IP状态页签">
-        <button class="tab" type="button" data-status="healthy">健康 <span class="tab-count" data-count="healthy">0</span></button>
-        <button class="tab" type="button" data-status="healthy_candidate">健康备选 <span class="tab-count" data-count="healthy_candidate">0</span></button>
+        <button class="tab" type="button" data-status="healthy">健康 <span class="tab-count" data-count="healthy">0/0</span></button>
+        <button class="tab" type="button" data-status="healthy_candidate">健康备选 <span class="tab-count" data-count="healthy_candidate">0/0</span></button>
         <button class="tab" type="button" data-status="healthy_fallback">健康保底 <span class="tab-count" data-count="healthy_fallback">0</span></button>
         <button class="tab active" type="button" data-status="connected">已连通 <span class="tab-count" data-count="connected">0</span></button>
         <button class="tab" type="button" data-status="cooldown">冷却中 <span class="tab-count" data-count="cooldown">0</span></button>
@@ -166,6 +167,7 @@
         <button class="tab" type="button" data-status="unprobed">未探测 <span class="tab-count" data-count="unprobed">0</span></button>
         <button class="tab" type="button" data-status="error">异常 <span class="tab-count" data-count="error">0</span></button>
       </nav>
+      <div id="slot-availability" class="slot-availability">正在读取健康与健康备选槽位…</div>
       <div id="notice" class="notice" role="status">初次探测成功进入【已连通】；保活成功保持原状态，失败进入【异常】。</div>
       <div id="table-container" class="table-wrap"><div class="loading">正在加载 IP 列表…</div></div>
       </div>
@@ -214,6 +216,7 @@
           <button class="tab active" type="button" data-log-category="general">通用</button>
           <button class="tab" type="button" data-log-category="batch_probe">批次探测</button>
           <button class="tab" type="button" data-log-category="keepalive_probe">保活探测</button>
+          <button class="tab" type="button" data-log-category="quality_probe">智商探测</button>
           <button class="tab" type="button" data-log-category="revive_probe">复活探测</button>
         </nav>
         <div id="log-group-panel" hidden>
@@ -246,6 +249,10 @@ socks5://username:pass@ip:port
 socks5h://username:pass@ip:port
 38.244.38.76:8888,38.244.38.76,8888,socks5"></textarea>
         <p class="help">支持 http、https、socks5、socks5h URL；也支持 host:port,ip,port,protocol[,domain]。错误行不会写入数据库。</p>
+        <label class="settings-field checkbox-field" for="manual-fallback-input">
+          <span><input id="manual-fallback-input" type="checkbox"> 直接录入为【健康保底】</span>
+          <span class="settings-help">仅手动录入可使用。节点不参加初次探测和智商检测，也不自动占用健康或健康备选槽位。</span>
+        </label>
         <label class="settings-field checkbox-field" for="delete-non-us-input">
           <span><input id="delete-non-us-input" type="checkbox"> 录入探测发现非 US 出口时删除节点</span>
           <span class="settings-help">关闭时保留节点并标记为【异常】，后续复活探测仍会按规则处理。</span>
@@ -263,7 +270,7 @@ socks5h://username:pass@ip:port
       <div class="modal-head">
         <div>
           <h3 id="settings-modal-title">运行配置</h3>
-          <p>配置保存到插件 SQLite。只有配置实际变化时，探测线程、保活和复活调度才会重启；正在执行的探测会按原流程恢复。</p>
+          <p>配置保存到插件 SQLite。当前探测、保活和复活不会中断；全部新配置仅在插件下次启动时生效。</p>
         </div>
         <button class="button icon ghost" type="button" data-close-modal="settings-modal" aria-label="关闭">×</button>
       </div>
@@ -272,7 +279,7 @@ socks5h://username:pass@ip:port
           <label class="settings-field" for="worker-count">
             探测线程数
             <input id="worker-count" type="number" min="1" max="64" step="1" value="4">
-            <span class="settings-help">处理【未探测】节点的并发线程数。范围 1–64。</span>
+            <span class="settings-help">处理【未探测】节点的并发线程数。范围 1–64。配置仅下次启动生效。</span>
           </label>
           <label class="settings-field" for="refresh-interval">
             页面刷新时间（秒）
@@ -282,22 +289,22 @@ socks5h://username:pass@ip:port
           <label class="settings-field" for="keepalive-worker-count">
             保活线程数
             <input id="keepalive-worker-count" type="number" min="1" max="64" step="1" value="8">
-            <span class="settings-help">每轮并发复查【健康】【已连通】【冷却中】节点。范围 1–64。</span>
+            <span class="settings-help">每轮并发复查【健康】【已连通】【冷却中】节点。范围 1–64。配置仅下次启动生效。</span>
           </label>
           <label class="settings-field" for="keepalive-interval">
             保活间隔时间（秒）
             <input id="keepalive-interval" type="number" min="1" max="86400" step="1" value="1800">
-            <span class="settings-help">上一轮全部结束后，从该时刻开始计时。启动后立即执行第一轮。默认 1800 秒（30 分钟），范围 1–86400 秒。</span>
+            <span class="settings-help">上一轮全部结束后，从该时刻开始计时。启动后立即执行第一轮。默认 1800 秒（30 分钟），范围 1–86400 秒。配置仅下次启动生效。</span>
           </label>
           <label class="settings-field" for="revive-interval">
             复活间隔时间（秒）
             <input id="revive-interval" type="number" min="1" max="86400" step="1" value="1800">
-            <span class="settings-help">复查【异常】节点的间隔。启动后立即执行第一轮。默认 1800 秒（30 分钟），范围 1–86400 秒。</span>
+            <span class="settings-help">复查【异常】节点的间隔。启动后立即执行第一轮。默认 1800 秒（30 分钟），范围 1–86400 秒。配置仅下次启动生效。</span>
           </label>
           <label class="settings-field" for="probe-retry-count">
             探测总次数（含首次）
             <input id="probe-retry-count" type="number" min="1" max="10" step="1" value="3">
-            <span class="settings-help">总探测次数，包含首次探测。默认 3 次；全部失败才归类为【异常】。范围 1–10。</span>
+            <span class="settings-help">总探测次数，包含首次探测。默认 3 次；全部失败才归类为【异常】。范围 1–10。配置仅下次启动生效。</span>
           </label>
           <label class="settings-field" for="healthy-slot-count">
             健康槽位数
@@ -377,13 +384,14 @@ socks5h://username:pass@ip:port
       const defaultRefreshIntervalSeconds = 30;
       const minimumRefreshIntervalSeconds = 5;
       const maximumRefreshIntervalSeconds = 3600;
-      const state = { activeView: "nodes", activeStatus: "connected", nodes: [], batches: [], batchNodes: [], selectedBatchID: "", batchStatusFilter: "all", batchSortKey: "", batchSortDirection: "asc", nodeSortKey: "", nodeSortDirection: "asc", activeLogCategory: "general", activeLogStatus: "connected", selectedLogGroupIDs: { batch_probe: "", keepalive_probe: "", revive_probe: "" }, logGroups: { batch_probe: [], keepalive_probe: [], revive_probe: [] }, logs: [], logSearch: "", refreshingViews: { nodes: false, batches: false, logs: false }, refreshIntervalSeconds: defaultRefreshIntervalSeconds, timer: null, noticeTimer: null };
+      const state = { activeView: "nodes", activeStatus: "connected", nodes: [], batches: [], batchNodes: [], selectedBatchID: "", batchStatusFilter: "all", batchSortKey: "", batchSortDirection: "asc", nodeSortKey: "", nodeSortDirection: "asc", activeLogCategory: "general", activeLogStatus: "connected", selectedLogGroupIDs: { batch_probe: "", keepalive_probe: "", quality_probe: "", revive_probe: "" }, logGroups: { batch_probe: [], keepalive_probe: [], quality_probe: [], revive_probe: [] }, logs: [], logSearch: "", refreshingViews: { nodes: false, batches: false, logs: false }, refreshIntervalSeconds: defaultRefreshIntervalSeconds, timer: null, noticeTimer: null };
       const statusLabels = { healthy: "健康", healthy_candidate: "健康备选", healthy_fallback: "健康保底", connected: "已连通", cooldown: "冷却中", probing: "探测中", keepalive_probing: "保活探测中", quality_probing: "智商探测中", revive_probing: "复活探测中", unprobed: "未探测", error: "异常" };
-      const logCategoryLabels = { general: "通用", batch_probe: "批次探测", keepalive_probe: "保活探测", revive_probe: "复活探测" };
+      const logCategoryLabels = { general: "通用", batch_probe: "批次探测", keepalive_probe: "保活探测", quality_probe: "智商探测", revive_probe: "复活探测" };
       const logStatusLabels = { connected: "已连通", probing: "探测中", error: "账号异常" };
       const logLevelLabels = { info: "信息", warn: "警告", error: "错误" };
       const elements = {
         deleteNonUSInput: document.getElementById("delete-non-us-input"),
+        manualFallbackInput: document.getElementById("manual-fallback-input"),
         serviceDot: document.getElementById("service-dot"),
         serviceText: document.getElementById("service-text"),
         refreshButton: document.getElementById("refresh-button"),
@@ -393,6 +401,7 @@ socks5h://username:pass@ip:port
         batchesView: document.getElementById("batches-view"),
         logsView: document.getElementById("logs-view"),
         notice: document.getElementById("notice"),
+        slotAvailability: document.getElementById("slot-availability"),
         table: document.getElementById("table-container"),
         batches: document.getElementById("batches-container"),
         batchSummary: document.getElementById("batch-summary"),
@@ -492,7 +501,7 @@ socks5h://username:pass@ip:port
         state.timer = window.setInterval(() => refresh(state.activeView), state.refreshIntervalSeconds * 1000);
       }
 
-      function applySettings(settings) {
+      function applySettings(settings, applyRefreshInterval = true) {
         elements.workerCount.value = String(settings.workerCount);
         elements.refreshInterval.value = String(settings.refreshIntervalSeconds);
         elements.keepaliveWorkerCount.value = String(settings.keepaliveWorkerCount);
@@ -505,7 +514,7 @@ socks5h://username:pass@ip:port
         elements.qualityProbeTimeout.value = String(settings.qualityProbeTimeoutSeconds);
         elements.qualitySoftTPS.value = String(settings.qualitySoftTPS);
         elements.qualityHardTPS.value = String(settings.qualityHardTPS);
-        if (state.refreshIntervalSeconds !== settings.refreshIntervalSeconds) {
+        if (applyRefreshInterval && state.refreshIntervalSeconds !== settings.refreshIntervalSeconds) {
           state.refreshIntervalSeconds = settings.refreshIntervalSeconds;
           resetRefreshTimer();
         }
@@ -540,50 +549,90 @@ socks5h://username:pass@ip:port
         return payload.data ?? payload;
       }
 
-      function renderCounts(counts) {
+      function renderCounts(summary) {
         ["healthy", "healthy_candidate", "healthy_fallback", "connected", "cooldown", "probing", "keepalive_probing", "quality_probing", "revive_probing", "unprobed", "error"].forEach((status) => {
           const count = document.querySelector(`[data-count="${status}"]`);
-          count.textContent = String(counts[status] || 0);
+          count.textContent = String(summary[status] || 0);
         });
+        document.querySelector('[data-count="healthy"]').textContent = `${summary.healthyOccupiedSlotCount}/${summary.healthySlotCount}`;
+        document.querySelector('[data-count="healthy_candidate"]').textContent = `${summary.healthyCandidateOccupiedSlotCount}/${summary.healthyCandidateSlotCount}`;
+        renderSlotAvailability(summary);
+      }
+
+      function formatSlotRanges(slotIDs) {
+        const sortedSlotIDs = slotIDs.map(Number).sort((leftSlotID, rightSlotID) => leftSlotID - rightSlotID);
+        const ranges = [];
+        let rangeStart = sortedSlotIDs[0];
+        let rangeEnd = sortedSlotIDs[0];
+        for (const slotID of sortedSlotIDs.slice(1)) {
+          if (slotID === rangeEnd + 1) {
+            rangeEnd = slotID;
+            continue;
+          }
+          ranges.push(rangeStart === rangeEnd ? String(rangeStart) : `${rangeStart}-${rangeEnd}`);
+          rangeStart = slotID;
+          rangeEnd = slotID;
+        }
+        if (rangeStart !== undefined) {
+          ranges.push(rangeStart === rangeEnd ? String(rangeStart) : `${rangeStart}-${rangeEnd}`);
+        }
+        return ranges.length > 0 ? ranges.join("、") : "无";
+      }
+
+      function renderSlotAvailability(summary) {
+        const healthyEmptySlotIDs = summary.healthyEmptySlotIds;
+        const healthyCandidateEmptySlotIDs = summary.healthyCandidateEmptySlotIds;
+        elements.slotAvailability.innerHTML = `<strong>健康槽位：</strong>${summary.healthyOccupiedSlotCount}/${summary.healthySlotCount}，空槽 <span class="empty-slot-list">${formatSlotRanges(healthyEmptySlotIDs)}</span>；<strong>健康备选槽位：</strong>${summary.healthyCandidateOccupiedSlotCount}/${summary.healthyCandidateSlotCount}，空槽 <span class="empty-slot-list">${formatSlotRanges(healthyCandidateEmptySlotIDs)}</span>。`;
       }
 
       function formatNodeName(node) {
         return `${node.protocol}://${node.name}`;
       }
 
-      function nodeLatencySortIndicator() {
-        if (state.nodeSortKey !== "latencyMs") return "↕";
+      function nodeSortIndicator(sortKey) {
+        if (state.nodeSortKey !== sortKey) return "↕";
         return state.nodeSortDirection === "asc" ? "↑" : "↓";
       }
 
-      function renderNodeLatencySortHeader() {
-        const isActive = state.nodeSortKey === "latencyMs";
+      function renderNodeSortHeader(label, sortKey) {
+        const isActive = state.nodeSortKey === sortKey;
         const activeClass = isActive ? " active" : "";
         const directionLabel = isActive ? (state.nodeSortDirection === "asc" ? "升序" : "降序") : "未排序";
-        return `<button class="table-sort${activeClass}" type="button" data-node-sort="latencyMs" aria-label="按延迟排序，当前${directionLabel}">延迟<span class="table-sort-indicator" aria-hidden="true">${nodeLatencySortIndicator()}</span></button>`;
+        return `<button class="table-sort${activeClass}" type="button" data-node-sort="${sortKey}" aria-label="按${label}排序，当前${directionLabel}">${label}<span class="table-sort-indicator" aria-hidden="true">${nodeSortIndicator(sortKey)}</span></button>`;
+      }
+
+      function nodeSortValue(node, sortKey) {
+        if (sortKey === "latencyMs") {
+          return Number(node.latencyMs) > 0 ? Number(node.latencyMs) : null;
+        }
+        if (sortKey === "slotId") {
+          return Number(node.slotId) > 0 ? Number(node.slotId) : null;
+        }
+        return null;
       }
 
       function getVisibleNodes(status) {
         const rows = state.nodes.filter((node) => node.status === status);
-        if (state.nodeSortKey !== "latencyMs" || (status !== "healthy" && status !== "healthy_candidate" && status !== "healthy_fallback" && status !== "connected" && status !== "cooldown")) return rows;
+        const supportsNodeSorting = status === "healthy" || status === "healthy_candidate" || status === "healthy_fallback" || status === "connected" || status === "cooldown";
+        if (!state.nodeSortKey || !supportsNodeSorting) return rows;
         const sortDirection = state.nodeSortDirection === "asc" ? 1 : -1;
         return rows.sort((leftNode, rightNode) => {
-          const leftLatency = Number(leftNode.latencyMs) > 0 ? Number(leftNode.latencyMs) : null;
-          const rightLatency = Number(rightNode.latencyMs) > 0 ? Number(rightNode.latencyMs) : null;
-          if (leftLatency === null && rightLatency !== null) return 1;
-          if (leftLatency !== null && rightLatency === null) return -1;
-          if (leftLatency !== null && rightLatency !== null && leftLatency !== rightLatency) {
-            return (leftLatency - rightLatency) * sortDirection;
+          const leftValue = nodeSortValue(leftNode, state.nodeSortKey);
+          const rightValue = nodeSortValue(rightNode, state.nodeSortKey);
+          if (leftValue === null && rightValue !== null) return 1;
+          if (leftValue !== null && rightValue === null) return -1;
+          if (leftValue !== null && rightValue !== null && leftValue !== rightValue) {
+            return (leftValue - rightValue) * sortDirection;
           }
           return Number(rightNode.id) - Number(leftNode.id);
         });
       }
 
-      function toggleNodeLatencySort() {
-        if (state.nodeSortKey === "latencyMs") {
+      function toggleNodeSort(sortKey) {
+        if (state.nodeSortKey === sortKey) {
           state.nodeSortDirection = state.nodeSortDirection === "asc" ? "desc" : "asc";
         } else {
-          state.nodeSortKey = "latencyMs";
+          state.nodeSortKey = sortKey;
           state.nodeSortDirection = "asc";
         }
         renderTable();
@@ -608,7 +657,7 @@ socks5h://username:pass@ip:port
           return;
         }
         if (status === "healthy" || status === "healthy_candidate" || status === "healthy_fallback" || status === "connected" || status === "cooldown") {
-          elements.table.innerHTML = `<table><thead><tr><th>节点名字</th><th>${renderNodeLatencySortHeader()}</th><th>槽位</th><th>探测时间</th><th>操作</th></tr></thead><tbody>${rows.map((node) => `<tr><td class="node-name">${escapeHTML(formatNodeName(node))}</td><td class="mono">${node.latencyMs ? escapeHTML(node.latencyMs) + " ms" : "-"}</td><td>${renderNodeSlot(node)}</td><td>${escapeHTML(formatTime(node.probeTime))}</td><td>${renderNodeActions(node)}</td></tr>`).join("")}</tbody></table>`;
+          elements.table.innerHTML = `<table><thead><tr><th>节点名字</th><th>${renderNodeSortHeader("延迟", "latencyMs")}</th><th>${renderNodeSortHeader("槽位", "slotId")}</th><th>探测时间</th><th>操作</th></tr></thead><tbody>${rows.map((node) => `<tr><td class="node-name">${escapeHTML(formatNodeName(node))}</td><td class="mono">${node.latencyMs ? escapeHTML(node.latencyMs) + " ms" : "-"}</td><td>${renderNodeSlot(node)}</td><td>${escapeHTML(formatTime(node.probeTime))}</td><td>${renderNodeActions(node)}</td></tr>`).join("")}</tbody></table>`;
           return;
         }
         if (status === "probing" || status === "keepalive_probing" || status === "quality_probing" || status === "revive_probing") {
@@ -738,7 +787,7 @@ socks5h://username:pass@ip:port
       }
 
       function keepaliveRoundSummary(group) {
-        if (!group || group.category !== "keepalive_probe") return "";
+        if (!group || (group.category !== "keepalive_probe" && group.category !== "quality_probe")) return "";
         const connectivityPhase = group.connectivityCompletedAt
           ? `连通阶段：候选 ${group.candidateCount}，成功 ${group.successCount}，失败 ${group.failureCount}`
           : "连通阶段：运行中";
@@ -891,11 +940,13 @@ socks5h://username:pass@ip:port
         const button = document.getElementById("submit-ip-button");
         button.disabled = true;
         try {
-          const result = await callAPI("POST", "/nodes", { text, deleteNonUS: elements.deleteNonUSInput.checked });
+          const result = await callAPI("POST", "/nodes", { text, deleteNonUS: elements.deleteNonUSInput.checked, manualFallback: elements.manualFallbackInput.checked });
           const errors = result.errors || [];
           const errorMessage = errors.length ? `，${errors.length} 行格式错误` : "";
-          setNotice(`已录入 ${result.added} 个节点，重复 ${result.duplicates} 个${errorMessage}。`, errors.length ? "error" : "success", 5000);
+          const inputMode = elements.manualFallbackInput.checked ? "健康保底" : "初次探测";
+          setNotice(`已录入 ${result.added} 个节点，重复 ${result.duplicates} 个${errorMessage}；模式 ${inputMode}。`, errors.length ? "error" : "success", 5000);
           elements.ipInput.value = "";
+          elements.manualFallbackInput.checked = false;
           closeModal(elements.addModal);
           await refresh();
         } catch (error) {
@@ -927,9 +978,9 @@ socks5h://username:pass@ip:port
         elements.saveSettingsButton.disabled = true;
         try {
           const savedSettings = await callAPI("PUT", "/settings", settings);
-          applySettings(savedSettings);
+          applySettings(savedSettings, false);
           closeModal(elements.settingsModal);
-          setNotice("运行配置已保存；配置有变化时才会重启探测线程、保活和复活调度。", "success");
+          setNotice("运行配置已保存；当前任务不中断，全部新配置将在插件下次启动时生效。", "success");
         } catch (error) {
           setNotice(error instanceof Error ? error.message : String(error), "error");
         } finally {
@@ -1045,7 +1096,7 @@ socks5h://username:pass@ip:port
       elements.table.addEventListener("click", (event) => {
         const sortButton = event.target.closest("[data-node-sort]");
         if (sortButton) {
-          toggleNodeLatencySort();
+          toggleNodeSort(sortButton.dataset.nodeSort);
           return;
         }
         const deleteButton = event.target.closest("[data-delete-error-reason]");

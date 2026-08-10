@@ -319,14 +319,14 @@ LIMIT ?`, logCategoryReviveProbe, maxGroupedLogSets)
 	return items, nil
 }
 
-func runReviveScheduler(ctx context.Context, store *ipStore, workerCount, intervalSeconds, probeRetryCount int) {
-	_ = store.appendLog(logLevelInfo, "revive.scheduler_started", 0, "", "复活探测调度器已启动", fmt.Sprintf("首轮立即执行，后续间隔 %d 秒，线程上限 %d", intervalSeconds, workerCount))
+func runReviveScheduler(ctx context.Context, store *ipStore, settings pluginSettings) {
+	_ = store.appendLog(logLevelInfo, "revive.scheduler_started", 0, "", "复活探测调度器已启动", fmt.Sprintf("首轮立即执行，后续间隔 %d 秒，线程上限 %d", settings.ReviveIntervalSeconds, settings.KeepaliveWorkerCount))
 	for {
-		runReviveRound(ctx, store, workerCount, probeRetryCount)
+		runReviveRound(ctx, store, settings.KeepaliveWorkerCount, settings.ProbeRetryCount)
 		if ctx.Err() != nil {
 			return
 		}
-		timer := time.NewTimer(time.Duration(intervalSeconds) * time.Second)
+		timer := time.NewTimer(time.Duration(settings.ReviveIntervalSeconds) * time.Second)
 		select {
 		case <-ctx.Done():
 			timer.Stop()
@@ -337,6 +337,9 @@ func runReviveScheduler(ctx context.Context, store *ipStore, workerCount, interv
 }
 
 func runReviveRound(ctx context.Context, store *ipStore, workerCount, probeRetryCount int) {
+	defer func() {
+		_ = store.pruneStoredLogs()
+	}()
 	roundID := time.Now().UnixNano()
 	if _, err := store.startReviveRound(roundID); err != nil {
 		_ = store.appendLog(logLevelError, "revive.round_create_failed", 0, "", "创建 复活探测 轮次失败", err.Error())
@@ -401,7 +404,7 @@ func runReviveWorker(ctx context.Context, store *ipStore, roundID int64, probeRe
 			if resetErr := store.resetReviveProbe(*node); resetErr != nil {
 				_ = store.appendProbeLog(logCategoryReviveProbe, reviveGroupID(node.ReviveRoundID), logStatusError, logLevelError, "revive.reset_failed", node.ID, node.Name, "取消 复活探测 后重置节点失败", resetErr.Error())
 			}
-			_ = store.appendProbeLog(logCategoryReviveProbe, reviveGroupID(node.ReviveRoundID), logStatusProbing, logLevelWarn, "revive.cancelled", node.ID, node.Name, "节点 复活探测 已取消", "插件配置变更或插件关闭中断探测")
+			_ = store.appendProbeLog(logCategoryReviveProbe, reviveGroupID(node.ReviveRoundID), logStatusProbing, logLevelWarn, "revive.cancelled", node.ID, node.Name, "节点 复活探测 已取消", "插件停止中断探测")
 			return
 		}
 		if result.Success {

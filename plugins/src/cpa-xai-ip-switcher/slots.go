@@ -52,6 +52,9 @@ func (store *ipStore) ensureSlotMetadata() error {
 	if err := ensureSQLiteColumn(store.database, "ip_nodes", "quality_deferred_round_id", "INTEGER NOT NULL DEFAULT 0"); err != nil {
 		return err
 	}
+	if err := ensureSQLiteColumn(store.database, "ip_nodes", "manual_fallback", "INTEGER NOT NULL DEFAULT 0"); err != nil {
+		return err
+	}
 	for _, column := range []struct {
 		name       string
 		definition string
@@ -196,7 +199,45 @@ func slotCount(settings pluginSettings) int {
 	return settings.HealthySlotCount + settings.HealthyCandidateSlotCount
 }
 
-func (store *ipStore) reconcileSlotLayout(previousSettings, settings pluginSettings) error {
+func (store *ipStore) clearAutomaticFallbackNodes() error {
+	transaction, err := store.database.Begin()
+	if err != nil {
+		return fmt.Errorf("begin sqlite automatic fallback cleanup: %w", err)
+	}
+	defer transaction.Rollback()
+	if _, err := transaction.Exec(`
+UPDATE ip_nodes
+SET status = ?, revive_target_status = ?
+WHERE status = ? AND manual_fallback = 0`, statusConnected, statusConnected, statusHealthyFallback); err != nil {
+		return fmt.Errorf("restore sqlite automatic fallback nodes: %w", err)
+	}
+	if _, err := transaction.Exec(`
+UPDATE ip_nodes
+SET status = ?, revive_target_status = ?
+WHERE id IN (
+    SELECT node_id FROM ip_slots WHERE fallback_origin = 1 AND node_id > 0
+)`, statusConnected, statusConnected); err != nil {
+		return fmt.Errorf("restore sqlite automatic fallback slot nodes: %w", err)
+	}
+	if _, err := transaction.Exec(`
+DELETE FROM ip_slot_auth_bindings
+WHERE slot_id IN (SELECT slot_id FROM ip_slots WHERE fallback_origin = 1)`); err != nil {
+		return fmt.Errorf("delete sqlite automatic fallback bindings: %w", err)
+	}
+	if _, err := transaction.Exec(`
+UPDATE ip_slots
+SET node_id = 0, claim_node_id = 0, fallback_origin = 0, fallback_entered_round_id = 0,
+    claim_token = '', claim_stage = '', claim_started_at = 0, last_processed_round_id = 0, blocked_round_id = 0
+WHERE fallback_origin = 1`); err != nil {
+		return fmt.Errorf("clear sqlite automatic fallback slots: %w", err)
+	}
+	if err := transaction.Commit(); err != nil {
+		return fmt.Errorf("commit sqlite automatic fallback cleanup: %w", err)
+	}
+	return nil
+}
+
+func (store *ipStore) reconcileSlotLayout(_ pluginSettings, settings pluginSettings) error {
 	if err := validateSlotSettings(settings); err != nil {
 		return err
 	}
@@ -205,9 +246,15 @@ func (store *ipStore) reconcileSlotLayout(previousSettings, settings pluginSetti
 	if err := store.database.QueryRow(`SELECT COUNT(*) FROM ip_slots`).Scan(&existingCount); err != nil {
 		return fmt.Errorf("count sqlite slots: %w", err)
 	}
-	capacityChanged := previousSettings.HealthySlotCount > 0 &&
-		(previousSettings.HealthySlotCount != settings.HealthySlotCount || previousSettings.HealthyCandidateSlotCount != settings.HealthyCandidateSlotCount)
-	if existingCount != totalSlots || capacityChanged {
+	var matchingLayoutCount int
+	if err := store.database.QueryRow(`
+SELECT COUNT(*)
+FROM ip_slots
+WHERE (slot_id <= ? AND slot_kind = ?)
+   OR (slot_id > ? AND slot_kind = ?)`, settings.HealthySlotCount, statusHealthy, settings.HealthySlotCount, statusHealthyCandidate).Scan(&matchingLayoutCount); err != nil {
+		return fmt.Errorf("count sqlite matching slots: %w", err)
+	}
+	if existingCount != totalSlots || matchingLayoutCount != totalSlots {
 		if err := store.resetSlotAssignments(); err != nil {
 			return err
 		}
@@ -713,6 +760,28 @@ ORDER BY bindings.auth_name ASC`, nodeID, statusHealthy)
 		return nil, fmt.Errorf("iterate sqlite auth bindings: %w", err)
 	}
 	return items, nil
+}
+
+func (store *ipStore) replaceAuthBindings(bindings []authBinding) error {
+	transaction, err := store.database.Begin()
+	if err != nil {
+		return fmt.Errorf("begin sqlite auth binding replacement: %w", err)
+	}
+	defer transaction.Rollback()
+	if _, err := transaction.Exec(`DELETE FROM ip_slot_auth_bindings`); err != nil {
+		return fmt.Errorf("clear sqlite auth bindings: %w", err)
+	}
+	for _, binding := range bindings {
+		if _, err := transaction.Exec(`
+INSERT INTO ip_slot_auth_bindings(auth_name, auth_index, auth_identity, slot_id, node_id, proxy_url, sync_status, sync_error, verified_at, updated_at)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, binding.AuthName, binding.AuthIndex, binding.AuthIdentity, binding.SlotID, binding.NodeID, binding.ProxyURL, binding.SyncStatus, binding.SyncError, binding.VerifiedAt, binding.UpdatedAt); err != nil {
+			return fmt.Errorf("insert sqlite auth binding %s: %w", binding.AuthName, err)
+		}
+	}
+	if err := transaction.Commit(); err != nil {
+		return fmt.Errorf("commit sqlite auth binding replacement: %w", err)
+	}
+	return nil
 }
 
 func (store *ipStore) upsertAuthBinding(binding authBinding) error {

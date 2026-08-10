@@ -203,9 +203,6 @@ VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, time.Now().UnixMilli(), level, event, ca
 	if err != nil {
 		return fmt.Errorf("insert sqlite log: %w", err)
 	}
-	if err := store.pruneLogs(transaction, category); err != nil {
-		return err
-	}
 	if err := transaction.Commit(); err != nil {
 		return fmt.Errorf("commit sqlite log: %w", err)
 	}
@@ -230,7 +227,7 @@ WHERE category = ?
   )`, category, maxGroupedLogSets); err != nil {
 			return fmt.Errorf("prune batch sqlite logs: %w", err)
 		}
-	case logCategoryKeepaliveProbe:
+	case logCategoryKeepaliveProbe, logCategoryQualityProbe:
 		if _, err := transaction.Exec(`
 DELETE FROM plugin_logs
 WHERE category = ?
@@ -259,7 +256,7 @@ func (store *ipStore) pruneStoredLogs() error {
 	}
 	defer transaction.Rollback()
 
-	for _, category := range []string{logCategoryGeneral, logCategoryBatchProbe, logCategoryKeepaliveProbe, logCategoryReviveProbe} {
+	for _, category := range []string{logCategoryGeneral, logCategoryBatchProbe, logCategoryKeepaliveProbe, logCategoryQualityProbe, logCategoryReviveProbe} {
 		if err := store.pruneLogs(transaction, category); err != nil {
 			return err
 		}
@@ -358,7 +355,9 @@ func (store *ipStore) listLogGroups(category string) ([]logGroup, error) {
 	case logCategoryBatchProbe:
 		return store.listBatchLogGroups()
 	case logCategoryKeepaliveProbe:
-		return store.listKeepaliveLogGroups()
+		return store.listKeepaliveLogGroups(logCategoryKeepaliveProbe)
+	case logCategoryQualityProbe:
+		return store.listKeepaliveLogGroups(logCategoryQualityProbe)
 	case logCategoryReviveProbe:
 		return store.listReviveLogGroups()
 	default:
@@ -427,7 +426,7 @@ LIMIT ?`, statusUnprobed, statusProbing, probeKindInitial, groupStatusRunning, g
 	return items, nil
 }
 
-func (store *ipStore) listKeepaliveLogGroups() ([]logGroup, error) {
+func (store *ipStore) listKeepaliveLogGroups(category string) ([]logGroup, error) {
 	rows, err := store.database.Query(`
 SELECT
     CAST(round_id AS TEXT),
@@ -453,7 +452,7 @@ SELECT
     quality_failure_count
 FROM keepalive_rounds AS rounds
 ORDER BY sequence_number DESC, started_at DESC
-LIMIT ?`, logCategoryKeepaliveProbe, maxGroupedLogSets)
+LIMIT ?`, category, maxGroupedLogSets)
 	if err != nil {
 		return nil, fmt.Errorf("list sqlite keepalive log groups: %w", err)
 	}
@@ -481,7 +480,7 @@ LIMIT ?`, logCategoryKeepaliveProbe, maxGroupedLogSets)
 		); err != nil {
 			return nil, fmt.Errorf("scan sqlite keepalive log group: %w", err)
 		}
-		item.Category = logCategoryKeepaliveProbe
+		item.Category = category
 		items = append(items, item)
 	}
 	if err := rows.Err(); err != nil {

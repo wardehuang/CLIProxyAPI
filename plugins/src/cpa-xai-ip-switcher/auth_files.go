@@ -2,7 +2,9 @@ package main
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
+	"os"
 	"path/filepath"
 	"sort"
 	"strconv"
@@ -34,6 +36,8 @@ type authFile struct {
 	Raw      map[string]any
 }
 
+var errHostAuthIndexUnavailable = errors.New("host auth index is unavailable")
+
 func listXAIAuthEntries() ([]pluginapi.HostAuthFileEntry, error) {
 	raw, err := callHost(pluginabi.MethodHostAuthList, map[string]any{})
 	if err != nil {
@@ -49,9 +53,13 @@ func listXAIAuthEntries() ([]pluginapi.HostAuthFileEntry, error) {
 	}
 	entries := make([]pluginapi.HostAuthFileEntry, 0, len(response.Files))
 	for _, entry := range response.Files {
-		if isXAIAuthEntry(entry) && authEntryIdentity(entry) != "" {
-			entries = append(entries, entry)
+		if !isXAIAuthEntry(entry) {
+			continue
 		}
+		if strings.TrimSpace(entry.AuthIndex) == "" {
+			return nil, fmt.Errorf("%w: %s", errHostAuthIndexUnavailable, authEntryName(entry))
+		}
+		entries = append(entries, entry)
 	}
 	sort.SliceStable(entries, func(leftIndex, rightIndex int) bool {
 		return strings.ToLower(authEntryName(entries[leftIndex])) < strings.ToLower(authEntryName(entries[rightIndex]))
@@ -76,13 +84,25 @@ func authEntryName(entry pluginapi.HostAuthFileEntry) string {
 	return authEntryIdentity(entry)
 }
 
-func getAuthFileForEntry(entry pluginapi.HostAuthFileEntry) (authFile, error) {
-	identity := authEntryIdentity(entry)
-	file, err := getAuthFile(identity)
-	if err != nil && strings.TrimSpace(entry.Name) != "" && strings.TrimSpace(entry.Name) != identity {
-		return getAuthFile(entry.Name)
+func authFileFromDirectWriteEntry(entry pluginapi.HostAuthFileEntry) (authFile, error) {
+	path := strings.TrimSpace(entry.Path)
+	if path == "" {
+		return authFile{}, fmt.Errorf("xAI auth %s has no writable file path", authEntryName(entry))
 	}
-	return file, err
+	auth := authFile{
+		Index: strings.TrimSpace(entry.AuthIndex),
+		Name:  authEntryName(entry),
+		Path:  path,
+	}
+	return loadAuthFileForDirectWrite(auth)
+}
+
+func getAuthFileForEntry(entry pluginapi.HostAuthFileEntry) (authFile, error) {
+	authIndex := strings.TrimSpace(entry.AuthIndex)
+	if authIndex == "" {
+		return authFile{}, fmt.Errorf("%w: %s", errHostAuthIndexUnavailable, authEntryName(entry))
+	}
+	return getAuthFile(authIndex)
 }
 
 func listAuthFiles() ([]authFile, error) {
@@ -94,11 +114,18 @@ func listAuthFiles() ([]authFile, error) {
 	for _, entry := range entries {
 		file, getErr := getAuthFileForEntry(entry)
 		if getErr != nil {
+			if isHostAuthIndexUnavailable(getErr) {
+				return nil, getErr
+			}
 			continue
 		}
 		authFiles = append(authFiles, file)
 	}
 	return authFiles, nil
+}
+
+func isHostAuthIndexUnavailable(err error) bool {
+	return errors.Is(err, errHostAuthIndexUnavailable) || strings.Contains(strings.ToLower(err.Error()), "auth_index is required")
 }
 
 func isXAIAuthEntry(entry pluginapi.HostAuthFileEntry) bool {
@@ -109,10 +136,7 @@ func isXAIAuthEntry(entry pluginapi.HostAuthFileEntry) bool {
 func getAuthFile(authIndex string) (authFile, error) {
 	raw, err := callHost(pluginabi.MethodHostAuthGet, map[string]any{"auth_index": authIndex})
 	if err != nil {
-		raw, err = callHost(pluginabi.MethodHostAuthGet, map[string]any{"name": authIndex})
-		if err != nil {
-			return authFile{}, err
-		}
+		return authFile{}, err
 	}
 	var response hostAuthGetResponse
 	if err := json.Unmarshal(raw, &response); err != nil {
@@ -147,31 +171,77 @@ func getAuthFile(authIndex string) (authFile, error) {
 	}, nil
 }
 
-func saveAuthFile(auth authFile) error {
-	if strings.TrimSpace(auth.Name) == "" {
-		return fmt.Errorf("xAI auth name is required")
+func loadAuthFileForDirectWrite(auth authFile) (authFile, error) {
+	if strings.TrimSpace(auth.Path) == "" {
+		return authFile{}, fmt.Errorf("xAI auth %s has no writable file path", auth.Name)
 	}
-	raw, err := json.Marshal(auth.Raw)
+	raw, err := os.ReadFile(auth.Path)
+	if err != nil {
+		return authFile{}, fmt.Errorf("read xAI auth file %s: %w", auth.Name, err)
+	}
+	object := make(map[string]any)
+	if err := json.Unmarshal(raw, &object); err != nil {
+		return authFile{}, fmt.Errorf("decode xAI auth file %s: %w", auth.Name, err)
+	}
+	auth.Raw = object
+	auth.ProxyURL = strings.TrimSpace(stringField(object, "proxy_url"))
+	return auth, nil
+}
+
+func saveAuthFileDirect(auth authFile) error {
+	if strings.TrimSpace(auth.Path) == "" {
+		return fmt.Errorf("xAI auth %s has no writable file path", auth.Name)
+	}
+	raw, err := json.MarshalIndent(auth.Raw, "", "  ")
 	if err != nil {
 		return fmt.Errorf("encode xAI auth %s: %w", auth.Name, err)
 	}
-	_, err = callHost(pluginabi.MethodHostAuthSave, map[string]any{
-		"name": auth.Name,
-		"json": json.RawMessage(raw),
-	})
+	raw = append(raw, '\n')
+	fileInfo, err := os.Stat(auth.Path)
 	if err != nil {
-		return fmt.Errorf("save xAI auth %s: %w", auth.Name, err)
+		return fmt.Errorf("stat xAI auth file %s: %w", auth.Name, err)
+	}
+	temporaryFile, err := os.CreateTemp(filepath.Dir(auth.Path), "."+filepath.Base(auth.Path)+".*.tmp")
+	if err != nil {
+		return fmt.Errorf("create temporary xAI auth file %s: %w", auth.Name, err)
+	}
+	temporaryPath := temporaryFile.Name()
+	defer os.Remove(temporaryPath)
+	if err := temporaryFile.Chmod(fileInfo.Mode().Perm()); err != nil {
+		_ = temporaryFile.Close()
+		return fmt.Errorf("set temporary xAI auth file mode %s: %w", auth.Name, err)
+	}
+	if _, err := temporaryFile.Write(raw); err != nil {
+		_ = temporaryFile.Close()
+		return fmt.Errorf("write temporary xAI auth file %s: %w", auth.Name, err)
+	}
+	if err := temporaryFile.Sync(); err != nil {
+		_ = temporaryFile.Close()
+		return fmt.Errorf("sync temporary xAI auth file %s: %w", auth.Name, err)
+	}
+	if err := temporaryFile.Close(); err != nil {
+		return fmt.Errorf("close temporary xAI auth file %s: %w", auth.Name, err)
+	}
+	if err := os.Rename(temporaryPath, auth.Path); err != nil {
+		return fmt.Errorf("replace xAI auth file %s: %w", auth.Name, err)
 	}
 	return nil
 }
 
-func setAuthProxyURL(auth authFile, proxyURL string) error {
-	if proxyURL == "" {
-		delete(auth.Raw, "proxy_url")
-	} else {
-		auth.Raw["proxy_url"] = proxyURL
+func setAuthProxyURLDirect(auth authFile, proxyURL string) error {
+	auth.Raw["proxy_url"] = proxyURL
+	return saveAuthFileDirect(auth)
+}
+
+func verifyAuthProxyURLDirect(auth authFile, expectedProxyURL string) error {
+	verifiedAuth, err := loadAuthFileForDirectWrite(auth)
+	if err != nil {
+		return err
 	}
-	return saveAuthFile(auth)
+	if verifiedAuth.ProxyURL != expectedProxyURL {
+		return fmt.Errorf("proxy_url mismatch: expected %q, actual %q", expectedProxyURL, verifiedAuth.ProxyURL)
+	}
+	return nil
 }
 
 func (auth authFile) Identity() string {
@@ -236,11 +306,7 @@ func boolField(object map[string]any, key string) bool {
 	return ok && flag
 }
 
-func selectAuthForQuality(store *ipStore, node proxyNode, slotID, roundID int64, used map[string]struct{}) (authFile, string, error) {
-	authFiles, err := listAuthFiles()
-	if err != nil {
-		return authFile{}, "", err
-	}
+func selectAuthForQuality(store *ipStore, node proxyNode, slotID, roundID int64, used map[string]struct{}, authFiles []authFile) (authFile, string, error) {
 	available := make([]authFile, 0, len(authFiles))
 	for _, auth := range authFiles {
 		if auth.HasPositivePriority() {

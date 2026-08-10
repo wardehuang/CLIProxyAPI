@@ -173,7 +173,7 @@ func runProbeWorker(ctx context.Context, store *ipStore, probeRetryCount int) {
 			if resetErr := store.resetProbe(*node); resetErr != nil {
 				_ = store.appendProbeLog(logCategoryBatchProbe, node.BatchID, logStatusError, logLevelError, "probe.reset_failed", node.ID, node.Name, "取消探测后重置节点失败", resetErr.Error())
 			}
-			_ = store.appendProbeLog(logCategoryBatchProbe, node.BatchID, logStatusProbing, logLevelWarn, "probe.cancelled", node.ID, node.Name, "节点探测已取消", "插件配置变更或插件关闭中断探测")
+			_ = store.appendProbeLog(logCategoryBatchProbe, node.BatchID, logStatusProbing, logLevelWarn, "probe.cancelled", node.ID, node.Name, "节点探测已取消", "插件停止中断探测")
 			return
 		}
 		if err := store.completeProbe(*node, result); err != nil {
