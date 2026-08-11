@@ -9,10 +9,11 @@ import (
 var pluginRuntime = &runtimeController{}
 
 type runtimeController struct {
-	mutex        sync.RWMutex
-	store        *ipStore
-	workerCancel context.CancelFunc
-	workerGroup  sync.WaitGroup
+	mutex              sync.RWMutex
+	realtimeGuardMutex sync.Mutex
+	store              *ipStore
+	workerCancel       context.CancelFunc
+	workerGroup        sync.WaitGroup
 }
 
 func (controller *runtimeController) configure(config pluginConfig) error {
@@ -94,7 +95,11 @@ func pluginSettingsEqual(left, right pluginSettings) bool {
 		left.QualityWorkerCount == right.QualityWorkerCount &&
 		left.QualityProbeTimeoutSeconds == right.QualityProbeTimeoutSeconds &&
 		left.QualitySoftTPS == right.QualitySoftTPS &&
-		left.QualityHardTPS == right.QualityHardTPS
+		left.QualityHardTPS == right.QualityHardTPS &&
+		left.Grok2apiSyncEnabled == right.Grok2apiSyncEnabled &&
+		left.Grok2apiBaseUrl == right.Grok2apiBaseUrl &&
+		left.Grok2apiAdminUsername == right.Grok2apiAdminUsername &&
+		left.Grok2apiAdminPassword == right.Grok2apiAdminPassword
 }
 
 func (controller *runtimeController) ensure() error {
@@ -113,6 +118,15 @@ func (controller *runtimeController) withStore(fn func(*ipStore) ([]byte, error)
 		return nil, fmt.Errorf("plugin store is not initialized")
 	}
 	return fn(controller.store)
+}
+
+func (controller *runtimeController) currentSettings() (pluginSettings, error) {
+	controller.mutex.RLock()
+	defer controller.mutex.RUnlock()
+	if controller.store == nil {
+		return pluginSettings{}, fmt.Errorf("plugin store is not initialized")
+	}
+	return controller.store.settings()
 }
 
 func (controller *runtimeController) updateSettings(store *ipStore, settings pluginSettings) (bool, error) {

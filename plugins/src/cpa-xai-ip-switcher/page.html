@@ -93,32 +93,95 @@
     .slot-availability .empty-slot-list { color: var(--warning); font-family: var(--font-mono); }
     .modal-layer { position: fixed; inset: 0; z-index: 20; display: grid; place-items: center; padding: var(--space-sm); background: var(--overlay); }
     .modal { width: min(40rem, 100%); max-height: calc(100svh - 2rem); overflow: auto; border: var(--rule-hairline) solid var(--border); border-radius: var(--radius-md); background: var(--popover); color: var(--popover-foreground); box-shadow: var(--shadow); }
-    .settings-modal { width: min(58rem, 100%); }
+    .settings-modal { width: min(52rem, 100%); display: flex; flex-direction: column; max-height: calc(100svh - 2rem); overflow: hidden; }
+    .settings-modal .modal-body { display: flex; flex-direction: column; gap: var(--space-sm); padding: var(--space-sm); overflow: auto; flex: 1 1 auto; min-height: 0; }
+    .settings-stack { display: grid; gap: var(--space-sm); }
+    .settings-card {
+      border: var(--rule-hairline) solid var(--border);
+      border-radius: var(--radius-sm);
+      background: color-mix(in oklch, var(--secondary) 35%, transparent);
+      padding: var(--space-sm);
+    }
+    .settings-card-head { display: flex; align-items: baseline; justify-content: space-between; gap: var(--space-xs); margin-bottom: var(--space-xs); }
+    .settings-card-title { margin: 0; color: var(--foreground); font-size: var(--text-sm); font-weight: 700; letter-spacing: .01em; }
+    .settings-card-badge {
+      flex: 0 0 auto;
+      border-radius: 999px;
+      padding: .15rem .55rem;
+      background: var(--secondary);
+      color: var(--muted-foreground);
+      font-size: var(--text-2xs);
+      font-weight: 650;
+      white-space: nowrap;
+    }
+    .settings-card-badge.live { color: var(--primary); background: var(--accent); }
+    .settings-card-help { margin: 0 0 var(--space-xs); color: var(--muted-foreground); font-size: var(--text-2xs); line-height: 1.55; }
+    .settings-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: var(--space-xs) var(--space-sm); }
+    .settings-grid.cols-2 { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    .settings-grid.cols-4 { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+    .settings-field { display: grid; gap: .35rem; color: var(--foreground); font-size: var(--text-xs); font-weight: 650; min-width: 0; }
+    .settings-field input { width: 100%; min-height: 2.2rem; padding: .45rem .65rem; }
+    .settings-field.span-2 { grid-column: span 2; }
+    .settings-field.span-3 { grid-column: span 3; }
+    .settings-help { margin: 0; color: var(--muted-foreground); font-size: var(--text-2xs); font-weight: 500; line-height: 1.45; }
+    .settings-checkbox-field {
+      display: inline-flex;
+      align-items: center;
+      gap: var(--space-2xs);
+      margin-bottom: var(--space-xs);
+      color: var(--foreground);
+      font-size: var(--text-xs);
+      font-weight: 650;
+      cursor: pointer;
+      user-select: none;
+    }
+    .settings-checkbox-field input[type="checkbox"] { width: 1.1rem; height: 1.1rem; margin: 0; flex: 0 0 auto; accent-color: var(--primary); }
+    .settings-actions {
+      position: sticky;
+      bottom: 0;
+      display: flex;
+      align-items: center;
+      justify-content: flex-end;
+      flex-wrap: wrap;
+      gap: var(--space-xs);
+      margin: 0 calc(var(--space-sm) * -1) calc(var(--space-sm) * -1);
+      padding: var(--space-xs) var(--space-sm);
+      border-top: var(--rule-hairline) solid var(--border);
+      background: color-mix(in oklch, var(--popover) 92%, transparent);
+      backdrop-filter: blur(8px);
+    }
+    .settings-actions .help { margin: 0 auto 0 0; max-width: 28rem; }
     .modal-head { padding: var(--space-sm); border-bottom: var(--rule-hairline) solid var(--border); }
     .modal-head h3 { margin: 0; font-size: var(--text-lg); }
     .modal-head p { margin: var(--space-3xs) 0 0; color: var(--muted-foreground); font-size: var(--text-xs); }
     .modal-body { padding: var(--space-sm); }
     .modal-actions { justify-content: flex-end; margin-top: var(--space-sm); }
-    .settings-grid { display: grid; grid-template-columns: repeat(4, minmax(10rem, 1fr)); gap: var(--space-xs); margin-top: var(--space-sm); }
-    .settings-field { display: grid; gap: var(--space-3xs); color: var(--foreground); font-size: var(--text-xs); font-weight: 650; }
-    .settings-field input { width: 100%; }
     .checkbox-field > span:first-child { display: flex; align-items: center; gap: var(--space-2xs); min-height: 1.5rem; }
     .checkbox-field input[type="checkbox"] { flex: 0 0 auto; width: 1.25rem; height: 1.25rem; margin: 0; padding: 0; accent-color: var(--primary); }
-    .settings-help { margin: var(--space-2xs) 0 0; color: var(--muted-foreground); font-size: var(--text-2xs); line-height: 1.7; }
-    .settings-actions { display: flex; align-items: center; justify-content: flex-end; gap: var(--space-xs); margin-top: var(--space-sm); }
-    .settings-actions .help { margin: 0 auto 0 0; }
-    .modal-actions { justify-content: flex-end; margin-top: var(--space-sm); }
     .modal-body #ip-input { min-height: 25rem; }
     .modal-body #ip-input { resize: vertical; }
     .help { margin: var(--space-xs) 0 0; color: var(--muted-foreground); font-size: var(--text-2xs); line-height: 1.7; }
     .detail { max-height: 24rem; overflow: auto; margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; font-family: var(--font-mono); font-size: var(--text-xs); line-height: 1.6; }
+    @media (max-width: 900px) {
+      .settings-grid,
+      .settings-grid.cols-2,
+      .settings-grid.cols-4 { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+      .settings-field.span-2,
+      .settings-field.span-3 { grid-column: span 2; }
+    }
     @media (max-width: 760px) {
       .shell { padding: var(--space-sm); }
       .page-head, .section-head { display: block; }
       .toolbar { justify-content: flex-start; margin-top: var(--space-sm); }
-      .settings-grid { grid-template-columns: 1fr; }
-      .settings-actions { display: block; }
-      .settings-actions .help { margin: 0 0 var(--space-xs); }
+      .settings-grid,
+      .settings-grid.cols-2,
+      .settings-grid.cols-4 { grid-template-columns: 1fr; }
+      .settings-field.span-2,
+      .settings-field.span-3 { grid-column: auto; }
+      .settings-card-head { flex-direction: column; align-items: flex-start; }
+      .settings-actions { justify-content: stretch; }
+      .settings-actions .help { margin: 0 0 var(--space-3xs); max-width: none; width: 100%; }
+      .settings-actions .button { flex: 1 1 auto; }
       th, td { padding: .7rem .6rem; }
       .node-name { min-width: 11rem; }
     }
@@ -217,6 +280,7 @@
           <button class="tab" type="button" data-log-category="batch_probe">批次探测</button>
           <button class="tab" type="button" data-log-category="keepalive_probe">保活探测</button>
           <button class="tab" type="button" data-log-category="quality_probe">智商探测</button>
+          <button class="tab" type="button" data-log-category="realtime_guard">实时守护</button>
           <button class="tab" type="button" data-log-category="revive_probe">复活探测</button>
         </nav>
         <div id="log-group-panel" hidden>
@@ -270,75 +334,143 @@ socks5h://username:pass@ip:port
       <div class="modal-head">
         <div>
           <h3 id="settings-modal-title">运行配置</h3>
-          <p>配置保存到插件 SQLite。当前探测、保活和复活不会中断；全部新配置仅在插件下次启动时生效。</p>
+          <p>保存到插件 SQLite。探测/保活/复活调度类：下次启动生效。页面刷新与 grok2api 同步：立即生效。</p>
         </div>
         <button class="button icon ghost" type="button" data-close-modal="settings-modal" aria-label="关闭">×</button>
       </div>
       <div class="modal-body">
-        <div class="settings-grid">
-          <label class="settings-field" for="worker-count">
-            探测线程数
-            <input id="worker-count" type="number" min="1" max="64" step="1" value="4">
-            <span class="settings-help">处理【未探测】节点的并发线程数。范围 1–64。配置仅下次启动生效。</span>
-          </label>
-          <label class="settings-field" for="refresh-interval">
-            页面刷新时间（秒）
-            <input id="refresh-interval" type="number" min="5" max="3600" step="5" value="30">
-            <span class="settings-help">只控制页面读取数据的周期，不会主动发起探测。范围 5–3600 秒。</span>
-          </label>
-          <label class="settings-field" for="keepalive-worker-count">
-            保活线程数
-            <input id="keepalive-worker-count" type="number" min="1" max="64" step="1" value="8">
-            <span class="settings-help">每轮并发复查【健康】【已连通】【冷却中】节点。范围 1–64。配置仅下次启动生效。</span>
-          </label>
-          <label class="settings-field" for="keepalive-interval">
-            保活间隔时间（秒）
-            <input id="keepalive-interval" type="number" min="1" max="86400" step="1" value="1800">
-            <span class="settings-help">上一轮全部结束后，从该时刻开始计时。启动后立即执行第一轮。默认 1800 秒（30 分钟），范围 1–86400 秒。配置仅下次启动生效。</span>
-          </label>
-          <label class="settings-field" for="revive-interval">
-            复活间隔时间（秒）
-            <input id="revive-interval" type="number" min="1" max="86400" step="1" value="1800">
-            <span class="settings-help">复查【异常】节点的间隔。启动后立即执行第一轮。默认 1800 秒（30 分钟），范围 1–86400 秒。配置仅下次启动生效。</span>
-          </label>
-          <label class="settings-field" for="probe-retry-count">
-            探测总次数（含首次）
-            <input id="probe-retry-count" type="number" min="1" max="10" step="1" value="3">
-            <span class="settings-help">总探测次数，包含首次探测。默认 3 次；全部失败才归类为【异常】。范围 1–10。配置仅下次启动生效。</span>
-          </label>
-          <label class="settings-field" for="healthy-slot-count">
-            健康槽位数
-            <input id="healthy-slot-count" type="number" min="1" max="1000" step="1" value="50">
-            <span class="settings-help">智商检测通过后进入【健康】的槽位数。默认 50。</span>
-          </label>
-          <label class="settings-field" for="healthy-candidate-slot-count">
-            健康备选槽位数
-            <input id="healthy-candidate-slot-count" type="number" min="0" max="1000" step="1" value="20">
-            <span class="settings-help">智商检测通过后进入【健康备选】的槽位数。总槽位最多 1000。</span>
-          </label>
-          <label class="settings-field" for="quality-worker-count">
-            智商探测线程数
-            <input id="quality-worker-count" type="number" min="1" max="64" step="1" value="8">
-            <span class="settings-help">第二阶段智商探测并发数。范围 1–64。</span>
-          </label>
-          <label class="settings-field" for="quality-probe-timeout">
-            智商探测超时（秒）
-            <input id="quality-probe-timeout" type="number" min="1" max="600" step="1" value="25">
-            <span class="settings-help">单次 `/v1/responses` 流式探测超时。范围 1–600 秒。</span>
-          </label>
-          <label class="settings-field" for="quality-soft-tps">
-            soft TPS 阈值
-            <input id="quality-soft-tps" type="number" min="0.01" step="0.01" value="500">
-            <span class="settings-help">TPS 大于等于该值时分类为 soft 降智。</span>
-          </label>
-          <label class="settings-field" for="quality-hard-tps">
-            hard TPS 阈值
-            <input id="quality-hard-tps" type="number" min="0.01" step="0.01" value="1000">
-            <span class="settings-help">TPS 大于等于该值时分类为 hard 降智，必须高于 soft。</span>
-          </label>
+        <div class="settings-stack">
+          <section class="settings-card" aria-labelledby="settings-schedule-title">
+            <div class="settings-card-head">
+              <h4 id="settings-schedule-title" class="settings-card-title">探测与页面</h4>
+              <span class="settings-card-badge">调度类下次启动</span>
+            </div>
+            <p class="settings-card-help">初次连通探测并发、失败重试，以及管理页自动刷新周期。</p>
+            <div class="settings-grid">
+              <label class="settings-field" for="worker-count">
+                探测线程数
+                <input id="worker-count" type="number" min="1" max="64" step="1" value="4" title="处理【未探测】节点并发，1–64">
+                <span class="settings-help">【未探测】并发 · 1–64</span>
+              </label>
+              <label class="settings-field" for="probe-retry-count">
+                探测总次数
+                <input id="probe-retry-count" type="number" min="1" max="10" step="1" value="3" title="含首次；全部失败才归【异常】，1–10">
+                <span class="settings-help">含首次 · 全失败才异常 · 1–10</span>
+              </label>
+              <label class="settings-field" for="refresh-interval">
+                页面刷新（秒）
+                <input id="refresh-interval" type="number" min="5" max="3600" step="5" value="30" title="仅刷新页面数据，不发起探测；立即生效">
+                <span class="settings-help">只读数据 · 不探测 · 5–3600 · 立即生效</span>
+              </label>
+            </div>
+          </section>
+
+          <section class="settings-card" aria-labelledby="settings-keepalive-title">
+            <div class="settings-card-head">
+              <h4 id="settings-keepalive-title" class="settings-card-title">保活与复活</h4>
+              <span class="settings-card-badge">下次启动</span>
+            </div>
+            <p class="settings-card-help">保活复查【健康】【已连通】【冷却中】；复活复查【异常】。均不检查探测中节点。启动后立即跑首轮。</p>
+            <div class="settings-grid">
+              <label class="settings-field" for="keepalive-worker-count">
+                保活线程数
+                <input id="keepalive-worker-count" type="number" min="1" max="64" step="1" value="8" title="每轮保活并发，1–64">
+                <span class="settings-help">每轮并发 · 1–64</span>
+              </label>
+              <label class="settings-field" for="keepalive-interval">
+                保活间隔（秒）
+                <input id="keepalive-interval" type="number" min="1" max="86400" step="1" value="1800" title="上一轮结束后再计时；默认 1800">
+                <span class="settings-help">上轮结束后计时 · 默认 1800</span>
+              </label>
+              <label class="settings-field" for="revive-interval">
+                复活间隔（秒）
+                <input id="revive-interval" type="number" min="1" max="86400" step="1" value="1800" title="【异常】复查间隔；默认 1800">
+                <span class="settings-help">【异常】复查 · 默认 1800</span>
+              </label>
+            </div>
+          </section>
+
+          <section class="settings-card" aria-labelledby="settings-slots-title">
+            <div class="settings-card-head">
+              <h4 id="settings-slots-title" class="settings-card-title">健康槽位</h4>
+              <span class="settings-card-badge">下次启动</span>
+            </div>
+            <p class="settings-card-help">智商通过后占槽。健康槽同步 auth / grok2api；总槽位 ≤ 1000。</p>
+            <div class="settings-grid cols-2">
+              <label class="settings-field" for="healthy-slot-count">
+                健康槽位数
+                <input id="healthy-slot-count" type="number" min="1" max="1000" step="1" value="50" title="正式【健康】槽位数，默认 50">
+                <span class="settings-help">正式【健康】 · 默认 50</span>
+              </label>
+              <label class="settings-field" for="healthy-candidate-slot-count">
+                健康备选槽位数
+                <input id="healthy-candidate-slot-count" type="number" min="0" max="1000" step="1" value="20" title="【健康备选】槽位数；与健康合计 ≤ 1000">
+                <span class="settings-help">【健康备选】 · 与健康合计 ≤ 1000</span>
+              </label>
+            </div>
+          </section>
+
+          <section class="settings-card" aria-labelledby="settings-quality-title">
+            <div class="settings-card-head">
+              <h4 id="settings-quality-title" class="settings-card-title">智商探测</h4>
+              <span class="settings-card-badge">下次启动</span>
+            </div>
+            <p class="settings-card-help">保活第二阶段 `/v1/responses` 流式探测。hard TPS 必须高于 soft。</p>
+            <div class="settings-grid cols-4">
+              <label class="settings-field" for="quality-worker-count">
+                智商线程数
+                <input id="quality-worker-count" type="number" min="1" max="64" step="1" value="8" title="智商探测并发，1–64">
+                <span class="settings-help">并发 · 1–64</span>
+              </label>
+              <label class="settings-field" for="quality-probe-timeout">
+                超时（秒）
+                <input id="quality-probe-timeout" type="number" min="1" max="600" step="1" value="25" title="单次流式探测超时，1–600">
+                <span class="settings-help">单次超时 · 1–600</span>
+              </label>
+              <label class="settings-field" for="quality-soft-tps">
+                soft TPS
+                <input id="quality-soft-tps" type="number" min="0.01" step="0.01" value="500" title="≥ 该值判 soft 降智">
+                <span class="settings-help">≥ 值 · soft 降智</span>
+              </label>
+              <label class="settings-field" for="quality-hard-tps">
+                hard TPS
+                <input id="quality-hard-tps" type="number" min="0.01" step="0.01" value="1000" title="≥ 该值判 hard 降智，须高于 soft">
+                <span class="settings-help">≥ 值 · hard · 须 &gt; soft</span>
+              </label>
+            </div>
+          </section>
+
+          <section class="settings-card" aria-labelledby="settings-grok2api-title">
+            <div class="settings-card-head">
+              <h4 id="settings-grok2api-title" class="settings-card-title">grok2api 同步</h4>
+              <span class="settings-card-badge live">立即生效</span>
+            </div>
+            <p class="settings-card-help">全量推【健康】槽到 cpa_auto_proxy_{slot}，并绑定 Console 邮箱。保活两阶段结束后自动推一次；也可手动同步。</p>
+            <label class="settings-checkbox-field" for="grok2api-sync-enabled">
+              <input id="grok2api-sync-enabled" type="checkbox">
+              启用 grok2api 同步
+            </label>
+            <div class="settings-grid">
+              <label class="settings-field span-3" for="grok2api-base-url">
+                远端地址
+                <input id="grok2api-base-url" type="url" placeholder="https://g2.example.com" autocomplete="off" title="绝对 URL，无尾斜杠，无 /api/admin/v1">
+                <span class="settings-help">http(s) 绝对 URL · 无尾斜杠 · 无 /api/admin/v1</span>
+              </label>
+              <label class="settings-field" for="grok2api-admin-username">
+                管理员用户名
+                <input id="grok2api-admin-username" type="text" autocomplete="username">
+              </label>
+              <label class="settings-field" for="grok2api-admin-password">
+                管理员密码
+                <input id="grok2api-admin-password" type="password" autocomplete="current-password">
+              </label>
+            </div>
+          </section>
         </div>
+
         <div class="settings-actions">
-          <span class="help">保活不检查【异常】【探测中】【保活探测中】【未探测】节点。</span>
+          <span class="help">调度类保存后下次启动生效；grok2api 与页面刷新立即生效。</span>
+          <button id="sync-grok2api-button" class="button" type="button">立即同步 grok2api</button>
           <button id="save-settings-button" class="button primary" type="button">保存运行配置</button>
         </div>
       </div>
@@ -386,7 +518,7 @@ socks5h://username:pass@ip:port
       const maximumRefreshIntervalSeconds = 3600;
       const state = { activeView: "nodes", activeStatus: "connected", nodes: [], batches: [], batchNodes: [], selectedBatchID: "", batchStatusFilter: "all", batchSortKey: "", batchSortDirection: "asc", nodeSortKey: "", nodeSortDirection: "asc", activeLogCategory: "general", activeLogStatus: "connected", selectedLogGroupIDs: { batch_probe: "", keepalive_probe: "", quality_probe: "", revive_probe: "" }, logGroups: { batch_probe: [], keepalive_probe: [], quality_probe: [], revive_probe: [] }, logs: [], logSearch: "", refreshingViews: { nodes: false, batches: false, logs: false }, refreshIntervalSeconds: defaultRefreshIntervalSeconds, timer: null, noticeTimer: null };
       const statusLabels = { healthy: "健康", healthy_candidate: "健康备选", healthy_fallback: "健康保底", connected: "已连通", cooldown: "冷却中", probing: "探测中", keepalive_probing: "保活探测中", quality_probing: "智商探测中", revive_probing: "复活探测中", unprobed: "未探测", error: "异常" };
-      const logCategoryLabels = { general: "通用", batch_probe: "批次探测", keepalive_probe: "保活探测", quality_probe: "智商探测", revive_probe: "复活探测" };
+      const logCategoryLabels = { general: "通用", batch_probe: "批次探测", keepalive_probe: "保活探测", quality_probe: "智商探测", realtime_guard: "实时守护", revive_probe: "复活探测" };
       const logStatusLabels = { connected: "已连通", probing: "探测中", error: "账号异常" };
       const logLevelLabels = { info: "信息", warn: "警告", error: "错误" };
       const elements = {
@@ -427,7 +559,12 @@ socks5h://username:pass@ip:port
         qualityProbeTimeout: document.getElementById("quality-probe-timeout"),
         qualitySoftTPS: document.getElementById("quality-soft-tps"),
         qualityHardTPS: document.getElementById("quality-hard-tps"),
+        grok2apiSyncEnabled: document.getElementById("grok2api-sync-enabled"),
+        grok2apiBaseUrl: document.getElementById("grok2api-base-url"),
+        grok2apiAdminUsername: document.getElementById("grok2api-admin-username"),
+        grok2apiAdminPassword: document.getElementById("grok2api-admin-password"),
         saveSettingsButton: document.getElementById("save-settings-button"),
+        syncGrok2apiButton: document.getElementById("sync-grok2api-button"),
         addModal: document.getElementById("add-modal"),
         detailModal: document.getElementById("detail-modal"),
         authBindingsModal: document.getElementById("auth-bindings-modal"),
@@ -501,23 +638,43 @@ socks5h://username:pass@ip:port
         state.timer = window.setInterval(() => refresh(state.activeView), state.refreshIntervalSeconds * 1000);
       }
 
-      function applySettings(settings, applyRefreshInterval = true) {
-        elements.workerCount.value = String(settings.workerCount);
-        elements.refreshInterval.value = String(settings.refreshIntervalSeconds);
-        elements.keepaliveWorkerCount.value = String(settings.keepaliveWorkerCount);
-        elements.keepaliveInterval.value = String(settings.keepaliveIntervalSeconds);
-        elements.reviveInterval.value = String(settings.reviveIntervalSeconds);
-        elements.probeRetryCount.value = String(settings.probeRetryCount);
-        elements.healthySlotCount.value = String(settings.healthySlotCount);
-        elements.healthyCandidateSlotCount.value = String(settings.healthyCandidateSlotCount);
-        elements.qualityWorkerCount.value = String(settings.qualityWorkerCount);
-        elements.qualityProbeTimeout.value = String(settings.qualityProbeTimeoutSeconds);
-        elements.qualitySoftTPS.value = String(settings.qualitySoftTPS);
-        elements.qualityHardTPS.value = String(settings.qualityHardTPS);
+      function isSettingsModalOpen() {
+        return !elements.settingsModal.hidden;
+      }
+
+      function applySettings(settings, applyRefreshInterval = true, forceForm = false) {
+        if (forceForm || !isSettingsModalOpen()) {
+          elements.workerCount.value = String(settings.workerCount);
+          elements.refreshInterval.value = String(settings.refreshIntervalSeconds);
+          elements.keepaliveWorkerCount.value = String(settings.keepaliveWorkerCount);
+          elements.keepaliveInterval.value = String(settings.keepaliveIntervalSeconds);
+          elements.reviveInterval.value = String(settings.reviveIntervalSeconds);
+          elements.probeRetryCount.value = String(settings.probeRetryCount);
+          elements.healthySlotCount.value = String(settings.healthySlotCount);
+          elements.healthyCandidateSlotCount.value = String(settings.healthyCandidateSlotCount);
+          elements.qualityWorkerCount.value = String(settings.qualityWorkerCount);
+          elements.qualityProbeTimeout.value = String(settings.qualityProbeTimeoutSeconds);
+          elements.qualitySoftTPS.value = String(settings.qualitySoftTPS);
+          elements.qualityHardTPS.value = String(settings.qualityHardTPS);
+          elements.grok2apiSyncEnabled.checked = Boolean(settings.grok2apiSyncEnabled);
+          elements.grok2apiBaseUrl.value = settings.grok2apiBaseUrl || "";
+          elements.grok2apiAdminUsername.value = settings.grok2apiAdminUsername || "";
+          elements.grok2apiAdminPassword.value = settings.grok2apiAdminPassword || "";
+        }
         if (applyRefreshInterval && state.refreshIntervalSeconds !== settings.refreshIntervalSeconds) {
           state.refreshIntervalSeconds = settings.refreshIntervalSeconds;
           resetRefreshTimer();
         }
+      }
+
+      async function openSettingsModal() {
+        try {
+          const settings = await callAPI("GET", "/settings");
+          applySettings(settings, false, true);
+        } catch (error) {
+          setNotice(error instanceof Error ? error.message : String(error), "error");
+        }
+        openModal(elements.settingsModal);
       }
 
       async function callAPI(method, path, body) {
@@ -586,6 +743,7 @@ socks5h://username:pass@ip:port
       }
 
       function formatNodeName(node) {
+        if (node.emptySlot) return "";
         return `${node.protocol}://${node.name}`;
       }
 
@@ -646,6 +804,9 @@ socks5h://username:pass@ip:port
 
       function renderNodeActions(node) {
         if (node.status !== "healthy") return "";
+        if (node.emptySlot) {
+          return `<button class="button" type="button" data-auth-bindings-slot-id="${escapeHTML(node.slotId)}">查看绑定 auth</button>`;
+        }
         return `<button class="button" type="button" data-auth-bindings-id="${escapeHTML(node.id)}">查看绑定 auth</button>`;
       }
 
@@ -767,9 +928,13 @@ socks5h://username:pass@ip:port
         return "info";
       }
 
+      function isGroupedLogCategory(category) {
+        return ["batch_probe", "keepalive_probe", "quality_probe", "revive_probe"].includes(category);
+      }
+
       function renderLogNavigation() {
         document.querySelectorAll("[data-log-category]").forEach((tab) => tab.classList.toggle("active", tab.dataset.logCategory === state.activeLogCategory));
-        const isGroupedCategory = state.activeLogCategory !== "general";
+        const isGroupedCategory = isGroupedLogCategory(state.activeLogCategory);
         elements.logGroupPanel.hidden = !isGroupedCategory;
         if (!isGroupedCategory) return;
 
@@ -799,15 +964,17 @@ socks5h://username:pass@ip:port
 
       function renderLogs() {
         renderLogNavigation();
-        const visibleLogs = state.activeLogCategory === "general"
-          ? state.logs
-          : state.logs.filter((logEntry) => logEntry.status === state.activeLogStatus);
+        const groupedCategory = isGroupedLogCategory(state.activeLogCategory);
+        const visibleLogs = groupedCategory
+          ? state.logs.filter((logEntry) => logEntry.status === state.activeLogStatus)
+          : state.logs;
         const selectedGroupID = state.selectedLogGroupIDs[state.activeLogCategory];
-        const activeLogGroups = state.activeLogCategory === "general" ? [] : state.logGroups[state.activeLogCategory];
+        const activeLogGroups = groupedCategory ? state.logGroups[state.activeLogCategory] : [];
         const selectedGroup = activeLogGroups.find((group) => group.id === selectedGroupID);
         if (visibleLogs.length === 0) {
-          if (state.activeLogCategory === "general") {
-            elements.logSummary.textContent = state.logSearch ? `没有匹配“${state.logSearch}”的通用日志。` : "暂无通用日志。";
+          if (!groupedCategory) {
+            const categoryLabel = logCategoryLabels[state.activeLogCategory];
+            elements.logSummary.textContent = state.logSearch ? `没有匹配“${state.logSearch}”的${categoryLabel}日志。` : `暂无${categoryLabel}日志。`;
           } else {
             const groupLabel = selectedGroup ? `#${selectedGroup.sequenceNumber}` : "当前探测批次";
             const roundSummary = keepaliveRoundSummary(selectedGroup);
@@ -817,8 +984,8 @@ socks5h://username:pass@ip:port
           return;
         }
         const searchSummary = state.logSearch ? `，搜索：${state.logSearch}` : "";
-        if (state.activeLogCategory === "general") {
-          elements.logSummary.textContent = `显示 ${visibleLogs.length} 条通用日志，最多保存 1000 条${searchSummary}。`;
+        if (!groupedCategory) {
+          elements.logSummary.textContent = `显示 ${visibleLogs.length} 条${logCategoryLabels[state.activeLogCategory]}日志，最多保存 1000 条${searchSummary}。`;
         } else {
           const groupLabel = selectedGroup ? `#${selectedGroup.sequenceNumber}` : "当前探测批次";
           elements.logSummary.textContent = `显示${groupLabel}【${logStatusLabels[state.activeLogStatus]}】${visibleLogs.length} 条日志，保留最近 10 个${logCategoryLabels[state.activeLogCategory]}批次${searchSummary}${keepaliveRoundSummary(selectedGroup)}。`;
@@ -854,7 +1021,7 @@ socks5h://username:pass@ip:port
         const searchParameters = new URLSearchParams();
         searchParameters.set("category", state.activeLogCategory);
         if (state.logSearch) searchParameters.set("search", state.logSearch);
-        if (state.activeLogCategory !== "general") {
+        if (isGroupedLogCategory(state.activeLogCategory)) {
           const groupsData = await callAPI("GET", `/logs/groups?category=${encodeURIComponent(state.activeLogCategory)}`);
           state.logGroups[state.activeLogCategory] = groupsData.items;
           const groups = state.logGroups[state.activeLogCategory];
@@ -866,7 +1033,7 @@ socks5h://username:pass@ip:port
             searchParameters.set("groupId", state.selectedLogGroupIDs[state.activeLogCategory]);
           }
         }
-        const logData = state.activeLogCategory === "general"
+        const logData = !isGroupedLogCategory(state.activeLogCategory)
           ? await callAPI("GET", `/logs?${searchParameters.toString()}`)
           : state.selectedLogGroupIDs[state.activeLogCategory]
             ? await callAPI("GET", `/logs?${searchParameters.toString()}`)
@@ -969,22 +1136,43 @@ socks5h://username:pass@ip:port
           qualityWorkerCount: Number(elements.qualityWorkerCount.value),
           qualityProbeTimeoutSeconds: Number(elements.qualityProbeTimeout.value),
           qualitySoftTPS: Number(elements.qualitySoftTPS.value),
-          qualityHardTPS: Number(elements.qualityHardTPS.value)
+          qualityHardTPS: Number(elements.qualityHardTPS.value),
+          grok2apiSyncEnabled: elements.grok2apiSyncEnabled.checked,
+          grok2apiBaseUrl: elements.grok2apiBaseUrl.value.trim().replace(/\/+$/, ""),
+          grok2apiAdminUsername: elements.grok2apiAdminUsername.value.trim(),
+          grok2apiAdminPassword: elements.grok2apiAdminPassword.value
         };
         if (!Number.isInteger(settings.workerCount) || settings.workerCount < 1 || settings.workerCount > 64 || !Number.isInteger(settings.refreshIntervalSeconds) || settings.refreshIntervalSeconds < minimumRefreshIntervalSeconds || settings.refreshIntervalSeconds > maximumRefreshIntervalSeconds || !Number.isInteger(settings.keepaliveWorkerCount) || settings.keepaliveWorkerCount < 1 || settings.keepaliveWorkerCount > 64 || !Number.isInteger(settings.keepaliveIntervalSeconds) || settings.keepaliveIntervalSeconds < 1 || settings.keepaliveIntervalSeconds > 86400 || !Number.isInteger(settings.reviveIntervalSeconds) || settings.reviveIntervalSeconds < 1 || settings.reviveIntervalSeconds > 86400 || !Number.isInteger(settings.probeRetryCount) || settings.probeRetryCount < 1 || settings.probeRetryCount > 10 || !Number.isInteger(settings.healthySlotCount) || settings.healthySlotCount < 1 || settings.healthySlotCount > 1000 || !Number.isInteger(settings.healthyCandidateSlotCount) || settings.healthyCandidateSlotCount < 0 || settings.healthySlotCount + settings.healthyCandidateSlotCount > 1000 || !Number.isInteger(settings.qualityWorkerCount) || settings.qualityWorkerCount < 1 || settings.qualityWorkerCount > 64 || !Number.isInteger(settings.qualityProbeTimeoutSeconds) || settings.qualityProbeTimeoutSeconds < 1 || settings.qualityProbeTimeoutSeconds > 600 || !Number.isFinite(settings.qualitySoftTPS) || settings.qualitySoftTPS <= 0 || !Number.isFinite(settings.qualityHardTPS) || settings.qualityHardTPS <= settings.qualitySoftTPS) {
           setNotice("配置范围无效：基础线程 1–64，页面刷新 5–3600 秒，保活和复活间隔 1–86400 秒，探测重试 1–10 次，总槽位 1–1000，智商线程 1–64，智商超时 1–600 秒，hard TPS 必须高于 soft TPS。", "error");
           return;
         }
+        if (settings.grok2apiBaseUrl && !/^https?:\/\//i.test(settings.grok2apiBaseUrl)) {
+          setNotice("grok2api 远端地址必须以 http:// 或 https:// 开头。", "error");
+          return;
+        }
         elements.saveSettingsButton.disabled = true;
         try {
           const savedSettings = await callAPI("PUT", "/settings", settings);
-          applySettings(savedSettings, false);
+          applySettings(savedSettings, false, true);
           closeModal(elements.settingsModal);
-          setNotice("运行配置已保存；当前任务不中断，全部新配置将在插件下次启动时生效。", "success");
+          setNotice("运行配置已保存；调度类配置下次启动生效，grok2api 同步配置立即生效。", "success");
         } catch (error) {
           setNotice(error instanceof Error ? error.message : String(error), "error");
         } finally {
           elements.saveSettingsButton.disabled = false;
+        }
+      }
+
+      async function syncGrok2apiNow() {
+        elements.syncGrok2apiButton.disabled = true;
+        try {
+          const summary = await callAPI("POST", "/grok2api/sync", {});
+          const message = summary.message || "grok2api 同步完成";
+          setNotice(message, summary.failedCount > 0 || (summary.skippedEmails || []).length > 0 ? "error" : "success", 8000);
+        } catch (error) {
+          setNotice(error instanceof Error ? error.message : String(error), "error");
+        } finally {
+          elements.syncGrok2apiButton.disabled = false;
         }
       }
 
@@ -999,12 +1187,22 @@ socks5h://username:pass@ip:port
       async function showAuthBindings(nodeID) {
         const node = state.nodes.find((item) => String(item.id) === String(nodeID));
         if (!node || node.status !== "healthy") return;
-        elements.authBindingsName.textContent = formatNodeName(node);
+        await showAuthBindingsAtPath(`/nodes/${encodeURIComponent(nodeID)}/auth-bindings`, formatNodeName(node));
+      }
+
+      async function showSlotAuthBindings(slotID) {
+        const node = state.nodes.find((item) => item.emptySlot && String(item.slotId) === String(slotID));
+        if (!node) return;
+        await showAuthBindingsAtPath(`/slots/${encodeURIComponent(slotID)}/auth-bindings`, `空健康槽位 ${slotID}`);
+      }
+
+      async function showAuthBindingsAtPath(path, title) {
+        elements.authBindingsName.textContent = title;
         elements.authBindingsSummary.textContent = "正在加载绑定 auth…";
         elements.authBindingsContent.innerHTML = `<div class="loading">正在加载绑定 auth…</div>`;
         openModal(elements.authBindingsModal);
         try {
-          const data = await callAPI("GET", `/nodes/${encodeURIComponent(nodeID)}/auth-bindings`);
+          const data = await callAPI("GET", path);
           elements.authBindingsSummary.textContent = data.total > 0
             ? `当前绑定记录 ${data.total} 个：已验证 ${data.verifiedCount} 个，同步失败 ${data.failedCount} 个。`
             : "当前无绑定 auth 文件。";
@@ -1012,7 +1210,7 @@ socks5h://username:pass@ip:port
             elements.authBindingsContent.innerHTML = `<div class="empty">当前无绑定 auth 文件。</div>`;
             return;
           }
-          elements.authBindingsContent.innerHTML = `<table><thead><tr><th>文件名</th><th>auth index</th><th>槽位</th><th>同步状态</th><th>最近验证</th><th>失败信息</th></tr></thead><tbody>${data.items.map((binding) => `<tr><td class="node-name">${escapeHTML(binding.authName)}</td><td class="mono">${escapeHTML(binding.authIndex || "-")}</td><td>${escapeHTML(binding.slotId)}</td><td>${escapeHTML(binding.syncStatus)}</td><td>${escapeHTML(formatTime(binding.verifiedAt))}</td><td>${escapeHTML(binding.syncError || "-")}</td></tr>`).join("")}</tbody></table>`;
+          elements.authBindingsContent.innerHTML = `<table><thead><tr><th>文件名</th><th>auth index</th><th>槽位</th><th>proxy url</th><th>同步状态</th><th>最近验证</th><th>失败信息</th></tr></thead><tbody>${data.items.map((binding) => `<tr><td class="node-name">${escapeHTML(binding.authName)}</td><td class="mono">${escapeHTML(binding.authIndex || "-")}</td><td>${escapeHTML(binding.slotId)}</td><td class="mono">${escapeHTML(binding.proxyUrl || "")}</td><td>${escapeHTML(binding.syncStatus)}</td><td>${escapeHTML(formatTime(binding.verifiedAt))}</td><td>${escapeHTML(binding.syncError || "-")}</td></tr>`).join("")}</tbody></table>`;
         } catch (error) {
           const message = error instanceof Error ? error.message : String(error);
           elements.authBindingsSummary.textContent = `绑定 auth 加载失败：${message}`;
@@ -1034,8 +1232,9 @@ socks5h://username:pass@ip:port
 
       document.getElementById("add-ip-button").addEventListener("click", () => openModal(elements.addModal));
       document.getElementById("submit-ip-button").addEventListener("click", submitIPs);
-      elements.settingsButton.addEventListener("click", () => openModal(elements.settingsModal));
+      elements.settingsButton.addEventListener("click", openSettingsModal);
       elements.saveSettingsButton.addEventListener("click", saveSettings);
+      elements.syncGrok2apiButton.addEventListener("click", syncGrok2apiNow);
       elements.refreshButton.addEventListener("click", () => refresh());
       document.querySelector(".main-tabs").addEventListener("click", (event) => {
         const tab = event.target.closest("[data-main-tab]");
@@ -1110,7 +1309,12 @@ socks5h://username:pass@ip:port
           return;
         }
         const authBindingsButton = event.target.closest("[data-auth-bindings-id]");
-        if (authBindingsButton) showAuthBindings(authBindingsButton.dataset.authBindingsId);
+        if (authBindingsButton) {
+          showAuthBindings(authBindingsButton.dataset.authBindingsId);
+          return;
+        }
+        const slotAuthBindingsButton = event.target.closest("[data-auth-bindings-slot-id]");
+        if (slotAuthBindingsButton) showSlotAuthBindings(slotAuthBindingsButton.dataset.authBindingsSlotId);
       });
       document.querySelectorAll("[data-close-modal]").forEach((button) => button.addEventListener("click", () => closeModal(document.getElementById(button.dataset.closeModal))));
       document.querySelectorAll(".modal-layer").forEach((layer) => layer.addEventListener("click", (event) => { if (event.target === layer) closeModal(layer); }));

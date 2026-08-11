@@ -112,12 +112,9 @@ func listAuthFiles() ([]authFile, error) {
 	}
 	authFiles := make([]authFile, 0, len(entries))
 	for _, entry := range entries {
-		file, getErr := getAuthFileForEntry(entry)
-		if getErr != nil {
-			if isHostAuthIndexUnavailable(getErr) {
-				return nil, getErr
-			}
-			continue
+		file, readErr := authFileFromDirectWriteEntry(entry)
+		if readErr != nil {
+			return nil, readErr
 		}
 		authFiles = append(authFiles, file)
 	}
@@ -184,6 +181,9 @@ func loadAuthFileForDirectWrite(auth authFile) (authFile, error) {
 		return authFile{}, fmt.Errorf("decode xAI auth file %s: %w", auth.Name, err)
 	}
 	auth.Raw = object
+	auth.Email = strings.TrimSpace(stringField(object, "email"))
+	auth.Priority = integerField(object, "priority")
+	auth.Disabled = boolField(object, "disabled")
 	auth.ProxyURL = strings.TrimSpace(stringField(object, "proxy_url"))
 	return auth, nil
 }

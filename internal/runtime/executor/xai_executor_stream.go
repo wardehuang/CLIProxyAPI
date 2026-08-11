@@ -16,6 +16,9 @@ import (
 )
 
 func (e *XAIExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Auth, req cliproxyexecutor.Request, opts cliproxyexecutor.Options) (_ *cliproxyexecutor.StreamResult, err error) {
+	if errProxy := waitForXAIAuthProxyURL(ctx, auth); errProxy != nil {
+		return nil, errProxy
+	}
 	if opts.Alt == "responses/compact" {
 		return nil, statusErr{code: http.StatusBadRequest, msg: "streaming not supported for /responses/compact"}
 	}
@@ -71,8 +74,14 @@ func (e *XAIExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Auth
 	}
 
 	out := make(chan cliproxyexecutor.StreamChunk)
+	completion := make(chan cliproxyexecutor.StreamCompletion, 1)
 	go func() {
-		defer close(out)
+		completionState := cliproxyexecutor.StreamCompletion{}
+		defer func() {
+			completion <- completionState
+			close(completion)
+			close(out)
+		}()
 		defer func() {
 			if errClose := httpResp.Body.Close(); errClose != nil {
 				log.Errorf("xai executor: close response body error: %v", errClose)
@@ -113,6 +122,10 @@ func (e *XAIExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Auth
 				eventDataList := xaiNormalizeReasoningSummaryDataEvents(bytes.TrimSpace(line[len(xaiDataTag):]))
 				hasPendingEventLine := pendingEventLine != nil
 				for i, eventData := range eventDataList {
+					if bytes.Equal(eventData, []byte("[DONE]")) && !completionState.Completed {
+						completionState.Completed = true
+						completionState.Body = append([]byte("data: "), eventData...)
+					}
 					eventData = restoreXAINamespaceToolCalls(eventData, prepared.namespaceTools)
 					eventData = responseFilter.apply(eventData)
 					if len(eventData) == 0 {
@@ -133,6 +146,8 @@ func (e *XAIExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Auth
 						eventData = xaiNormalizeReasoningSummaryData(eventData)
 						cacheXAIReasoningReplayFromCompleted(ctx, prepared.replayScope, eventData)
 						normalizedEventName = gjson.GetBytes(eventData, "type").String()
+						completionState.Completed = true
+						completionState.Body = append([]byte("data: "), eventData...)
 					}
 
 					if hasPendingEventLine {
@@ -166,6 +181,7 @@ func (e *XAIExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Auth
 			emitTranslatedLine(xaiNormalizeReasoningSummaryEventLine(pendingEventLine, ""))
 		}
 		if errScan := scanner.Err(); errScan != nil {
+			completionState.Err = errScan
 			helps.RecordAPIResponseError(ctx, e.cfg, errScan)
 			reporter.PublishFailure(ctx, errScan)
 			select {
@@ -174,5 +190,5 @@ func (e *XAIExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Auth
 			}
 		}
 	}()
-	return &cliproxyexecutor.StreamResult{Headers: httpResp.Header.Clone(), Chunks: out}, nil
+	return &cliproxyexecutor.StreamResult{Headers: httpResp.Header.Clone(), Chunks: out, Completion: completion}, nil
 }

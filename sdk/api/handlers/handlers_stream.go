@@ -291,8 +291,12 @@ func (h *BaseAPIHandler) executeStreamWithAuthManagerFormats(ctx context.Context
 		return nil, nil, errChan
 	}
 	streamResult, err := h.AuthManager.ExecuteStream(ctx, providers, req, opts)
+	completionGuardEnabled := streamCompletionGuardEnabled(h.interceptorHost(), providers)
 	if err != nil {
 		err = enrichAuthSelectionError(err, providers, normalizedModel)
+		if completionGuardEnabled {
+			return h.executeBufferedStreamWithGuard(ctx, providers, responseProtocol, normalizedModel, originalRequestedModel, req, opts, nil, err, lifecycle, execOptions)
+		}
 		errMsg := executionErrorMessage(err)
 		lifecycle.completeError(ctx, errMsg)
 		errChan := make(chan *interfaces.ErrorMessage, 1)
@@ -302,11 +306,17 @@ func (h *BaseAPIHandler) executeStreamWithAuthManagerFormats(ctx context.Context
 	}
 	if streamResult == nil {
 		errMsg := &interfaces.ErrorMessage{StatusCode: http.StatusBadGateway, Error: fmt.Errorf("auth manager returned nil stream")}
+		if completionGuardEnabled {
+			return h.executeBufferedStreamWithGuard(ctx, providers, responseProtocol, normalizedModel, originalRequestedModel, req, opts, nil, errMsg.Error, lifecycle, execOptions)
+		}
 		lifecycle.completeError(ctx, errMsg)
 		errChan := make(chan *interfaces.ErrorMessage, 1)
 		errChan <- errMsg
 		close(errChan)
 		return nil, nil, errChan
+	}
+	if completionGuardEnabled {
+		return h.executeBufferedStreamWithGuard(ctx, providers, responseProtocol, normalizedModel, originalRequestedModel, req, opts, streamResult, nil, lifecycle, execOptions)
 	}
 	executedRequest := func() (coreexecutor.Request, coreexecutor.Options) {
 		return afterAuthCapture.apply(req, opts)

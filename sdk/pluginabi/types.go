@@ -6,8 +6,8 @@ const (
 	// ABIVersion tracks the native C ABI shape (native plugin exports).
 	ABIVersion uint32 = 1
 	// SchemaVersion tracks the RPC JSON contract exchanged at plugin.register.
-	// Version 2 adds request lifecycle completion and active request termination.
-	SchemaVersion uint32 = 2
+	// Version 3 adds stream completion decisions after full response buffering.
+	SchemaVersion uint32 = 3
 )
 
 const (
@@ -48,11 +48,12 @@ const (
 	MethodRequestFinalize        = "request.finalize"
 	MethodRequestComplete        = "request.complete"
 
-	MethodResponseTranslate            = "response.translate"
-	MethodResponseNormalizeBefore      = "response.normalize_before"
-	MethodResponseNormalizeAfter       = "response.normalize_after"
-	MethodResponseInterceptAfter       = "response.intercept_after"
-	MethodResponseInterceptStreamChunk = "response.intercept_stream_chunk"
+	MethodResponseTranslate             = "response.translate"
+	MethodResponseNormalizeBefore       = "response.normalize_before"
+	MethodResponseNormalizeAfter        = "response.normalize_after"
+	MethodResponseInterceptAfter        = "response.intercept_after"
+	MethodResponseInterceptStreamChunk  = "response.intercept_stream_chunk"
+	MethodResponseInterceptStreamFinish = "response.intercept_stream_finish"
 
 	MethodThinkingIdentifier = "thinking.identifier"
 	MethodThinkingApply      = "thinking.apply"

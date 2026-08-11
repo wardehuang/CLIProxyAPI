@@ -111,7 +111,8 @@ type registration struct {
 }
 
 type registrationCapabilities struct {
-	ManagementAPI bool `json:"management_api"`
+	ManagementAPI               bool `json:"management_api"`
+	StreamCompletionInterceptor bool `json:"response_stream_completion_interceptor"`
 }
 
 type managementRegistration struct {
@@ -280,6 +281,18 @@ func handleMethod(method string, request []byte) ([]byte, error) {
 		})
 	case pluginabi.MethodManagementHandle:
 		return handleManagement(request)
+	case pluginabi.MethodResponseInterceptStreamFinish:
+		var completion pluginapi.StreamCompletionInterceptRequest
+		if len(request) > 0 {
+			if err := json.Unmarshal(request, &completion); err != nil {
+				return nil, fmt.Errorf("decode stream completion request: %w", err)
+			}
+		}
+		response, err := handleStreamCompletionIntercept(completion)
+		if err != nil {
+			return nil, err
+		}
+		return okEnvelope(response)
 	default:
 		return errorEnvelope("unknown_method", "unknown method: "+method), nil
 	}
@@ -324,7 +337,10 @@ func pluginRegistration() registration {
 				},
 			},
 		},
-		Capabilities: registrationCapabilities{ManagementAPI: true},
+		Capabilities: registrationCapabilities{
+			ManagementAPI:               true,
+			StreamCompletionInterceptor: true,
+		},
 	}
 }
 
@@ -447,9 +463,14 @@ func settingsFromPayload(payload map[string]any) (pluginSettings, error) {
 	qualityProbeTimeoutSeconds, qualityTimeoutOK := integerValue(firstValue(payload, "qualityProbeTimeoutSeconds", "quality_probe_timeout_seconds"))
 	qualitySoftTPS, softTPSOK := floatValue(firstValue(payload, "qualitySoftTPS", "quality_soft_tps"))
 	qualityHardTPS, hardTPSOK := floatValue(firstValue(payload, "qualityHardTPS", "quality_hard_tps"))
+	grok2apiSyncEnabled, grok2apiSyncEnabledOK := boolValue(firstValue(payload, "grok2apiSyncEnabled", "grok2api_sync_enabled"))
+	grok2apiBaseUrl, grok2apiBaseUrlOK := stringValue(firstValue(payload, "grok2apiBaseUrl", "grok2api_base_url"))
+	grok2apiAdminUsername, grok2apiAdminUsernameOK := stringValue(firstValue(payload, "grok2apiAdminUsername", "grok2api_admin_username"))
+	grok2apiAdminPassword, grok2apiAdminPasswordOK := stringValue(firstValue(payload, "grok2apiAdminPassword", "grok2api_admin_password"))
 	if !workerOK || !refreshOK || !keepaliveWorkersOK || !keepaliveIntervalOK || !reviveIntervalOK || !retryOK ||
-		!healthySlotOK || !healthyCandidateSlotOK || !qualityWorkerOK || !qualityTimeoutOK || !softTPSOK || !hardTPSOK {
-		return pluginSettings{}, fmt.Errorf("必须同时提供基础调度、健康槽位和智商探测配置")
+		!healthySlotOK || !healthyCandidateSlotOK || !qualityWorkerOK || !qualityTimeoutOK || !softTPSOK || !hardTPSOK ||
+		!grok2apiSyncEnabledOK || !grok2apiBaseUrlOK || !grok2apiAdminUsernameOK || !grok2apiAdminPasswordOK {
+		return pluginSettings{}, fmt.Errorf("必须同时提供基础调度、健康槽位、智商探测和 grok2api 同步配置")
 	}
 	settings := pluginSettings{
 		WorkerCount:                workerCount,
@@ -464,8 +485,28 @@ func settingsFromPayload(payload map[string]any) (pluginSettings, error) {
 		QualityProbeTimeoutSeconds: qualityProbeTimeoutSeconds,
 		QualitySoftTPS:             qualitySoftTPS,
 		QualityHardTPS:             qualityHardTPS,
+		Grok2apiSyncEnabled:        grok2apiSyncEnabled,
+		Grok2apiBaseUrl:            normalizeGrok2apiBaseURL(grok2apiBaseUrl),
+		Grok2apiAdminUsername:      strings.TrimSpace(grok2apiAdminUsername),
+		Grok2apiAdminPassword:      grok2apiAdminPassword,
+	}
+	if settings.Grok2apiBaseUrl != "" {
+		if err := validateGrok2apiBaseURLOnly(settings.Grok2apiBaseUrl); err != nil {
+			return pluginSettings{}, err
+		}
 	}
 	return settings, validatePluginSettings(settings)
+}
+
+func validateGrok2apiBaseURLOnly(baseURL string) error {
+	parsedURL, err := url.Parse(baseURL)
+	if err != nil || parsedURL.Scheme == "" || parsedURL.Host == "" {
+		return fmt.Errorf("grok2api 远端地址必须是绝对 URL")
+	}
+	if parsedURL.Scheme != "http" && parsedURL.Scheme != "https" {
+		return fmt.Errorf("grok2api 远端地址必须以 http:// 或 https:// 开头")
+	}
+	return nil
 }
 
 func firstValue(payload map[string]any, keys ...string) any {
@@ -475,6 +516,40 @@ func firstValue(payload map[string]any, keys ...string) any {
 		}
 	}
 	return nil
+}
+
+func stringValue(value any) (string, bool) {
+	switch typed := value.(type) {
+	case string:
+		return typed, true
+	case nil:
+		return "", true
+	default:
+		return "", false
+	}
+}
+
+func boolValue(value any) (bool, bool) {
+	switch typed := value.(type) {
+	case bool:
+		return typed, true
+	case string:
+		return parseSettingBool(typed), true
+	case float64:
+		return typed != 0, true
+	case json.Number:
+		parsed, err := typed.Int64()
+		if err != nil {
+			return false, false
+		}
+		return parsed != 0, true
+	case int:
+		return typed != 0, true
+	case nil:
+		return false, true
+	default:
+		return false, false
+	}
 }
 
 func floatValue(value any) (float64, bool) {
@@ -508,6 +583,10 @@ func publicSettings(settings pluginSettings) map[string]any {
 		"qualityProbeTimeoutSeconds": settings.QualityProbeTimeoutSeconds,
 		"qualitySoftTPS":             settings.QualitySoftTPS,
 		"qualityHardTPS":             settings.QualityHardTPS,
+		"grok2apiSyncEnabled":        settings.Grok2apiSyncEnabled,
+		"grok2apiBaseUrl":            settings.Grok2apiBaseUrl,
+		"grok2apiAdminUsername":      settings.Grok2apiAdminUsername,
+		"grok2apiAdminPassword":      settings.Grok2apiAdminPassword,
 	}
 }
 
@@ -582,6 +661,9 @@ func dispatchAPIWithStore(store *ipStore, method, path string, query url.Values,
 
 	case path == "/logs/groups" && method == http.MethodGet:
 		category := strings.TrimSpace(query.Get("category"))
+		if !isGroupedLogCategory(category) {
+			return managementJSON(http.StatusBadRequest, errorMessage("logGroupsFailed", "日志分类不支持批次分组"))
+		}
 		groups, err := store.listLogGroups(category)
 		if err != nil {
 			return managementJSON(http.StatusBadRequest, errorMessage("logGroupsFailed", err.Error()))
@@ -602,7 +684,7 @@ func dispatchAPIWithStore(store *ipStore, method, path string, query url.Values,
 		}
 		groupID := strings.TrimSpace(query.Get("groupId"))
 		logStatus := strings.TrimSpace(query.Get("status"))
-		if category != logCategoryGeneral && groupID == "" {
+		if isGroupedLogCategory(category) && groupID == "" {
 			return managementJSON(http.StatusBadRequest, errorMessage("invalidLogGroup", "group id is required for grouped logs"))
 		}
 		search := strings.TrimSpace(query.Get("search"))
@@ -613,14 +695,16 @@ func dispatchAPIWithStore(store *ipStore, method, path string, query url.Values,
 		var err error
 		if category == logCategoryGeneral {
 			items, err = store.listLogs(search)
-		} else {
+		} else if isGroupedLogCategory(category) {
 			items, err = store.listGroupedLogs(category, groupID, logStatus, search)
+		} else {
+			items, err = store.listLogsByFilter(category, "", "", search)
 		}
 		if err != nil {
 			return managementJSON(http.StatusInternalServerError, errorMessage("logsFailed", err.Error()))
 		}
 		maxLogs := 0
-		if category == logCategoryGeneral {
+		if !isGroupedLogCategory(category) {
 			maxLogs = maxPluginLogs
 		}
 		return managementJSON(http.StatusOK, map[string]any{
@@ -642,6 +726,43 @@ func dispatchAPIWithStore(store *ipStore, method, path string, query url.Values,
 		}
 		return managementJSON(http.StatusOK, map[string]any{"data": publicSettings(settings)})
 
+	case path == "/grok2api/sync" && method == http.MethodPost:
+		summary, err := syncHealthySlotsToGrok2api(store, grok2apiSyncTriggerManual)
+		if err != nil {
+			return managementJSON(http.StatusBadRequest, errorMessage("grok2apiSyncFailed", err.Error()))
+		}
+		return managementJSON(http.StatusOK, map[string]any{"data": summary})
+
+	case len(parts) == 3 && parts[0] == "slots" && parts[2] == "auth-bindings" && method == http.MethodGet:
+		slotID, err := strconv.ParseInt(parts[1], 10, 64)
+		if err != nil || slotID <= 0 {
+			return managementJSON(http.StatusBadRequest, errorMessage("invalidSlotID", "invalid slot id"))
+		}
+		slot, found, err := store.findSlotByID(slotID)
+		if err != nil {
+			return managementJSON(http.StatusInternalServerError, errorMessage("detailFailed", err.Error()))
+		}
+		if !found || slot.Kind != statusHealthy {
+			return managementJSON(http.StatusNotFound, errorMessage("notFound", "healthy slot not found"))
+		}
+		bindings, err := store.listHealthyAuthBindingsForSlot(slotID)
+		if err != nil {
+			return managementJSON(http.StatusInternalServerError, errorMessage("authBindingsFailed", err.Error()))
+		}
+		verifiedCount, failedCount := countAuthBindingSyncStates(bindings)
+		return managementJSON(http.StatusOK, map[string]any{
+			"data": map[string]any{
+				"slotId":        slot.ID,
+				"nodeId":        slot.NodeID,
+				"nodeName":      "",
+				"proxyUrl":      "",
+				"total":         len(bindings),
+				"verifiedCount": verifiedCount,
+				"failedCount":   failedCount,
+				"items":         publicAuthBindings(bindings),
+			},
+		})
+
 	case len(parts) == 3 && parts[0] == "nodes" && parts[2] == "auth-bindings" && method == http.MethodGet:
 		nodeID, err := strconv.ParseInt(parts[1], 10, 64)
 		if err != nil || nodeID <= 0 {
@@ -661,16 +782,7 @@ func dispatchAPIWithStore(store *ipStore, method, path string, query url.Values,
 		if err != nil {
 			return managementJSON(http.StatusInternalServerError, errorMessage("authBindingsFailed", err.Error()))
 		}
-		verifiedCount := 0
-		failedCount := 0
-		for _, binding := range bindings {
-			switch binding.SyncStatus {
-			case "verified":
-				verifiedCount++
-			case "failed":
-				failedCount++
-			}
-		}
+		verifiedCount, failedCount := countAuthBindingSyncStates(bindings)
 		return managementJSON(http.StatusOK, map[string]any{
 			"data": map[string]any{
 				"nodeId":        node.ID,
@@ -825,11 +937,24 @@ func publicNodes(nodes []proxyNode) []map[string]any {
 			"reviveFailureCount": node.ReviveFailureCount,
 			"slotId":             node.SlotID,
 			"fallbackOrigin":     node.FallbackOrigin,
+			"emptySlot":          node.EmptySlot,
 			"errorReason":        node.ErrorReason,
 			"errorDetail":        node.ErrorDetail,
 		})
 	}
 	return items
+}
+
+func countAuthBindingSyncStates(bindings []authBinding) (verifiedCount, failedCount int) {
+	for _, binding := range bindings {
+		switch binding.SyncStatus {
+		case "verified":
+			verifiedCount++
+		case "failed":
+			failedCount++
+		}
+	}
+	return verifiedCount, failedCount
 }
 
 func publicAuthBindings(bindings []authBinding) []map[string]any {

@@ -115,6 +115,8 @@ type Capabilities struct {
 	ResponseInterceptor ResponseInterceptor
 	// StreamChunkInterceptor rewrites successful HTTP stream chunks before downstream delivery.
 	StreamChunkInterceptor StreamChunkInterceptor
+	// StreamCompletionInterceptor decides whether a fully buffered stream is flushed, retried, or failed.
+	StreamCompletionInterceptor StreamCompletionInterceptor
 	// ThinkingApplier applies validated thinking configuration to provider payloads.
 	ThinkingApplier ThinkingApplier
 	// UsagePlugin receives completed usage records.
@@ -955,6 +957,58 @@ type ResponseInterceptor interface {
 // StreamChunkInterceptor rewrites successful stream chunks before downstream delivery.
 type StreamChunkInterceptor interface {
 	InterceptStreamChunk(context.Context, StreamChunkInterceptRequest) (StreamChunkInterceptResponse, error)
+}
+
+// StreamCompletionInterceptor decides what to do with a fully buffered stream.
+type StreamCompletionInterceptor interface {
+	InterceptStreamCompletion(context.Context, StreamCompletionInterceptRequest) (StreamCompletionInterceptResponse, error)
+}
+
+// StreamCompletionAction identifies the terminal decision for a buffered stream.
+type StreamCompletionAction string
+
+const (
+	// StreamCompletionActionFlush delivers the buffered stream to the downstream client.
+	StreamCompletionActionFlush StreamCompletionAction = "flush"
+	// StreamCompletionActionRetry discards the buffered stream and retries the upstream request.
+	StreamCompletionActionRetry StreamCompletionAction = "retry"
+	// StreamCompletionActionFail discards the buffered stream and reports an error downstream.
+	StreamCompletionActionFail StreamCompletionAction = "fail"
+)
+
+// StreamCompletionInterceptRequest describes one completed or failed upstream stream.
+type StreamCompletionInterceptRequest struct {
+	RequestID       string
+	TraceID         string
+	Provider        string
+	SourceFormat    string
+	Model           string
+	RequestedModel  string
+	AuthID          string
+	AuthIndex       string
+	ProxyURL        string
+	RequestHeaders  http.Header
+	ResponseHeaders http.Header
+	OriginalRequest []byte
+	RequestBody     []byte
+	Body            []byte
+	StatusCode      int
+	Error           string
+	Completed       bool
+	StartedAt       time.Time
+	FirstPayloadAt  time.Time
+	FinishedAt      time.Time
+	RetryCount      int
+	MaxRetries      int
+	Metadata        map[string]any
+}
+
+// StreamCompletionInterceptResponse returns a flush, retry, or fail decision.
+type StreamCompletionInterceptResponse struct {
+	Action     StreamCompletionAction
+	Reason     string
+	StatusCode int
+	Error      string
 }
 
 // StreamChunkHeaderInitIndex marks the header-only stream initialization interceptor call.

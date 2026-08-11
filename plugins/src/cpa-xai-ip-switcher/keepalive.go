@@ -90,6 +90,9 @@ func runKeepaliveRound(ctx context.Context, store *ipStore, settings pluginSetti
 	if err := refreshHealthyAuthDistribution(store, settings.HealthySlotCount); err != nil {
 		_ = store.appendLog(logLevelError, "auth_distribution.round_failed", 0, "", "保活轮次后重分配 auth 失败", err.Error())
 	}
+	if _, err := syncHealthySlotsToGrok2api(store, grok2apiSyncTriggerKeepalive); err != nil {
+		_ = store.appendLog(logLevelError, "grok2api.keepalive_sync_failed", 0, "", "保活轮次后同步 grok2api 失败", err.Error())
+	}
 
 	failureTotal := failureCount.Load() + qualityFailureCount
 	_ = store.finishKeepaliveRound(roundID, groupStatusCompleted, candidateCount, successCount.Load(), failureCount.Load())

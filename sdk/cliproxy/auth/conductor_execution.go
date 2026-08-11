@@ -1084,6 +1084,8 @@ func publishSelectedAuthMetadata(meta map[string]any, auth *Auth) {
 			callback(authIndex)
 		}
 	}
+	meta[cliproxyexecutor.SelectedAuthProxyURLMetadataKey] = strings.TrimSpace(auth.ProxyURL)
+	meta[cliproxyexecutor.SelectedAuthProviderMetadataKey] = strings.TrimSpace(auth.Provider)
 }
 
 func (m *Manager) executorFor(provider string) ProviderExecutor {

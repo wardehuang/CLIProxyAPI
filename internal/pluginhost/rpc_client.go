@@ -134,6 +134,9 @@ func registerRPCPlugin(ctx context.Context, host *Host, id string, client plugin
 	if resp.Capabilities.StreamChunkInterceptor {
 		plugin.Capabilities.StreamChunkInterceptor = adapter
 	}
+	if resp.Capabilities.StreamCompletionInterceptor {
+		plugin.Capabilities.StreamCompletionInterceptor = adapter
+	}
 	if resp.Capabilities.ThinkingApplier {
 		plugin.Capabilities.ThinkingApplier = rpcThinkingApplier{rpcPluginAdapter: adapter}
 	}
@@ -221,6 +224,9 @@ func sanitizePluginRequest(request any) any {
 	case pluginapi.StreamChunkInterceptRequest:
 		req.Metadata = sanitizePluginMetadata(req.Metadata)
 		return req
+	case pluginapi.StreamCompletionInterceptRequest:
+		req.Metadata = sanitizePluginMetadata(req.Metadata)
+		return req
 	case rpcRequestInterceptRequest:
 		req.Metadata = sanitizePluginMetadata(req.Metadata)
 		return req
@@ -243,6 +249,9 @@ func sanitizePluginRequest(request any) any {
 		req.Metadata = sanitizePluginMetadata(req.Metadata)
 		return req
 	case rpcStreamChunkInterceptRequest:
+		req.Metadata = sanitizePluginMetadata(req.Metadata)
+		return req
+	case rpcStreamCompletionInterceptRequest:
 		req.Metadata = sanitizePluginMetadata(req.Metadata)
 		return req
 	case pluginapi.ExecutorHTTPRequest:
@@ -572,6 +581,15 @@ func (a *rpcPluginAdapter) InterceptStreamChunk(ctx context.Context, req plugina
 	return callPlugin[pluginapi.StreamChunkInterceptResponse](ctx, a.client, pluginabi.MethodResponseInterceptStreamChunk, rpcStreamChunkInterceptRequest{
 		StreamChunkInterceptRequest: req,
 		HostCallbackID:              callbackID,
+	})
+}
+
+func (a *rpcPluginAdapter) InterceptStreamCompletion(ctx context.Context, req pluginapi.StreamCompletionInterceptRequest) (pluginapi.StreamCompletionInterceptResponse, error) {
+	callbackID, closeCallback := a.openHostCallbackContext(ctx)
+	defer closeCallback()
+	return callPlugin[pluginapi.StreamCompletionInterceptResponse](ctx, a.client, pluginabi.MethodResponseInterceptStreamFinish, rpcStreamCompletionInterceptRequest{
+		StreamCompletionInterceptRequest: req,
+		HostCallbackID:                   callbackID,
 	})
 }
 

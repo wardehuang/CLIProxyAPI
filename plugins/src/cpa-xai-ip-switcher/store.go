@@ -45,6 +45,7 @@ const (
 	logCategoryBatchProbe     = "batch_probe"
 	logCategoryKeepaliveProbe = "keepalive_probe"
 	logCategoryQualityProbe   = "quality_probe"
+	logCategoryRealtimeGuard  = "realtime_guard"
 	logCategoryReviveProbe    = "revive_probe"
 	logStatusConnected        = "connected"
 	logStatusProbing          = "probing"
@@ -85,6 +86,10 @@ type pluginSettings struct {
 	QualityProbeTimeoutSeconds int
 	QualitySoftTPS             float64
 	QualityHardTPS             float64
+	Grok2apiSyncEnabled        bool
+	Grok2apiBaseUrl            string
+	Grok2apiAdminUsername      string
+	Grok2apiAdminPassword      string
 }
 
 type proxyNode struct {
@@ -115,6 +120,7 @@ type proxyNode struct {
 	ReviveTargetStatus string
 	SlotID             int64
 	FallbackOrigin     bool
+	EmptySlot          bool
 }
 
 type ipBatch struct {
@@ -383,6 +389,9 @@ INSERT OR IGNORE INTO plugin_settings(setting_key, setting_value) VALUES
 	if err := store.ensureSlotMetadata(); err != nil {
 		return err
 	}
+	if err := store.ensureRealtimeGuardMetadata(); err != nil {
+		return err
+	}
 	if err := store.clearAutomaticFallbackNodes(); err != nil {
 		return err
 	}
@@ -392,6 +401,7 @@ INSERT OR IGNORE INTO plugin_settings(setting_key, setting_value) VALUES
 	_, err = store.database.Exec(`
 UPDATE ip_nodes
 SET status = CASE
+        WHEN probe_kind = 'realtime_guard' AND manual_fallback = 1 THEN 'healthy_fallback'
         WHEN probe_kind = 'fallback' THEN 'connected'
         WHEN probe_kind IN ('keepalive', 'quality') AND probe_return_status IN ('healthy', 'healthy_candidate', 'healthy_fallback', 'connected', 'cooldown') THEN probe_return_status
         WHEN probe_kind = 'revive' AND revive_target_status IN ('cooldown', 'connected') THEN revive_target_status
@@ -802,6 +812,43 @@ WHERE nodes.status = ? ORDER BY nodes.id DESC`, status)
 	}
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("iterate sqlite nodes: %w", err)
+	}
+	if status == statusAll || status == statusHealthy {
+		emptyHealthySlots, err := store.listEmptyHealthySlotNodes()
+		if err != nil {
+			return nil, err
+		}
+		items = append(items, emptyHealthySlots...)
+	}
+	return items, nil
+}
+
+func (store *ipStore) listEmptyHealthySlotNodes() ([]proxyNode, error) {
+	rows, err := store.database.Query(`
+SELECT slot_id
+FROM ip_slots
+WHERE slot_kind = ? AND node_id = 0
+ORDER BY slot_id ASC`, statusHealthy)
+	if err != nil {
+		return nil, fmt.Errorf("list sqlite empty healthy slots: %w", err)
+	}
+	defer rows.Close()
+
+	items := make([]proxyNode, 0)
+	for rows.Next() {
+		var slotID int64
+		if err := rows.Scan(&slotID); err != nil {
+			return nil, fmt.Errorf("scan sqlite empty healthy slot: %w", err)
+		}
+		items = append(items, proxyNode{
+			ID:        -slotID,
+			Status:    statusHealthy,
+			SlotID:    slotID,
+			EmptySlot: true,
+		})
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate sqlite empty healthy slots: %w", err)
 	}
 	return items, nil
 }
@@ -1401,7 +1448,8 @@ FROM plugin_settings
 WHERE setting_key IN (
     'worker_count', 'refresh_interval_seconds', 'keepalive_worker_count', 'keepalive_interval_seconds',
     'revive_interval_seconds', 'probe_retry_count', 'healthy_slot_count', 'healthy_candidate_slot_count',
-    'quality_worker_count', 'quality_probe_timeout_seconds', 'quality_soft_tps', 'quality_hard_tps'
+    'quality_worker_count', 'quality_probe_timeout_seconds', 'quality_soft_tps', 'quality_hard_tps',
+    'grok2api_sync_enabled', 'grok2api_base_url', 'grok2api_admin_username', 'grok2api_admin_password'
 )`)
 	if err != nil {
 		return pluginSettings{}, fmt.Errorf("read plugin settings: %w", err)
@@ -1424,6 +1472,14 @@ WHERE setting_key IN (
 			} else {
 				settings.QualityHardTPS = value
 			}
+		case "grok2api_sync_enabled":
+			settings.Grok2apiSyncEnabled = parseSettingBool(rawValue)
+		case "grok2api_base_url":
+			settings.Grok2apiBaseUrl = normalizeGrok2apiBaseURL(rawValue)
+		case "grok2api_admin_username":
+			settings.Grok2apiAdminUsername = strings.TrimSpace(rawValue)
+		case "grok2api_admin_password":
+			settings.Grok2apiAdminPassword = rawValue
 		default:
 			value, parseErr := strconv.Atoi(strings.TrimSpace(rawValue))
 			if parseErr != nil {
@@ -1491,6 +1547,10 @@ func (store *ipStore) setSettings(settings pluginSettings) error {
 		"quality_probe_timeout_seconds": strconv.Itoa(settings.QualityProbeTimeoutSeconds),
 		"quality_soft_tps":              strconv.FormatFloat(settings.QualitySoftTPS, 'f', -1, 64),
 		"quality_hard_tps":              strconv.FormatFloat(settings.QualityHardTPS, 'f', -1, 64),
+		"grok2api_sync_enabled":         formatSettingBool(settings.Grok2apiSyncEnabled),
+		"grok2api_base_url":             normalizeGrok2apiBaseURL(settings.Grok2apiBaseUrl),
+		"grok2api_admin_username":       strings.TrimSpace(settings.Grok2apiAdminUsername),
+		"grok2api_admin_password":       settings.Grok2apiAdminPassword,
 	}
 	for settingKey, settingValue := range settingsToSave {
 		if _, err := transaction.Exec(`

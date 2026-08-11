@@ -277,6 +277,56 @@ func (h *Host) InterceptStreamChunkExcept(ctx context.Context, req pluginapi.Str
 	return current
 }
 
+func (h *Host) callStreamCompletionInterceptor(ctx context.Context, record capabilityRecord, interceptor pluginapi.StreamCompletionInterceptor, req pluginapi.StreamCompletionInterceptRequest) (out pluginapi.StreamCompletionInterceptResponse, ok bool) {
+	if h == nil || interceptor == nil || h.isPluginFused(record.id) || !h.recordCurrent(record) {
+		return pluginapi.StreamCompletionInterceptResponse{}, false
+	}
+	defer func() {
+		if recovered := recover(); recovered != nil {
+			h.fusePlugin(record.id, "StreamCompletionInterceptor.InterceptStreamCompletion", recovered)
+			out = pluginapi.StreamCompletionInterceptResponse{}
+			ok = false
+		}
+	}()
+	resp, errIntercept := interceptor.InterceptStreamCompletion(ctx, req)
+	if errIntercept != nil {
+		log.Warnf("pluginhost: stream completion interceptor %s failed: %v", record.id, errIntercept)
+		return pluginapi.StreamCompletionInterceptResponse{}, false
+	}
+	return resp, true
+}
+
+func (h *Host) InterceptStreamCompletion(ctx context.Context, req pluginapi.StreamCompletionInterceptRequest) pluginapi.StreamCompletionInterceptResponse {
+	if h == nil {
+		return pluginapi.StreamCompletionInterceptResponse{Action: pluginapi.StreamCompletionActionFlush}
+	}
+	for _, record := range h.activeRecords() {
+		interceptor := record.plugin.Capabilities.StreamCompletionInterceptor
+		if h.isPluginFused(record.id) || interceptor == nil {
+			continue
+		}
+		if response, ok := h.callStreamCompletionInterceptor(ctx, record, interceptor, req); ok && response.Action != "" {
+			return response
+		}
+	}
+	return pluginapi.StreamCompletionInterceptResponse{Action: pluginapi.StreamCompletionActionFlush}
+}
+
+func (h *Host) HasStreamCompletionInterceptors() bool {
+	if h == nil {
+		return false
+	}
+	for _, record := range h.activeRecords() {
+		if h.isPluginFused(record.id) {
+			continue
+		}
+		if record.plugin.Capabilities.StreamCompletionInterceptor != nil {
+			return true
+		}
+	}
+	return false
+}
+
 func (h *Host) HasStreamInterceptors() bool {
 	if h == nil {
 		return false

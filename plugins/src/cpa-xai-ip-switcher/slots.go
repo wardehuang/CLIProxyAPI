@@ -192,6 +192,10 @@ func defaultPluginSettings() pluginSettings {
 		QualityProbeTimeoutSeconds: defaultQualityProbeTimeout,
 		QualitySoftTPS:             defaultQualitySoftTPS,
 		QualityHardTPS:             defaultQualityHardTPS,
+		Grok2apiSyncEnabled:        false,
+		Grok2apiBaseUrl:            "",
+		Grok2apiAdminUsername:      "",
+		Grok2apiAdminPassword:      "",
 	}
 }
 
@@ -737,13 +741,21 @@ func (store *ipStore) blockSlotForRound(slotID, roundID int64) error {
 }
 
 func (store *ipStore) listHealthyAuthBindings(nodeID int64) ([]authBinding, error) {
+	return store.listHealthyAuthBindingsBy("bindings.node_id = ?", nodeID)
+}
+
+func (store *ipStore) listHealthyAuthBindingsForSlot(slotID int64) ([]authBinding, error) {
+	return store.listHealthyAuthBindingsBy("bindings.slot_id = ?", slotID)
+}
+
+func (store *ipStore) listHealthyAuthBindingsBy(predicate string, value int64) ([]authBinding, error) {
 	rows, err := store.database.Query(`
 SELECT bindings.slot_id, bindings.node_id, bindings.auth_name, bindings.auth_index, bindings.auth_identity,
        bindings.proxy_url, bindings.sync_status, bindings.sync_error, bindings.verified_at, bindings.updated_at
 FROM ip_slot_auth_bindings AS bindings
 JOIN ip_slots AS slots ON slots.slot_id = bindings.slot_id
-WHERE bindings.node_id = ? AND slots.slot_kind = ?
-ORDER BY bindings.auth_name ASC`, nodeID, statusHealthy)
+WHERE `+predicate+` AND slots.slot_kind = ?
+ORDER BY bindings.auth_name ASC`, value, statusHealthy)
 	if err != nil {
 		return nil, fmt.Errorf("list sqlite auth bindings: %w", err)
 	}

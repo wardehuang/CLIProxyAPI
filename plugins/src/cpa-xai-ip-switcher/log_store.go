@@ -234,7 +234,14 @@ WHERE category = ?
   AND group_id NOT IN (
       SELECT CAST(round_id AS TEXT) FROM keepalive_rounds ORDER BY sequence_number DESC, started_at DESC LIMIT ?
   )`, category, maxGroupedLogSets); err != nil {
-			return fmt.Errorf("prune keepalive sqlite logs: %w", err)
+			return fmt.Errorf("prune grouped sqlite logs: %w", err)
+		}
+	case logCategoryRealtimeGuard:
+		if _, err := transaction.Exec(`
+DELETE FROM plugin_logs
+WHERE category = ?
+  AND id NOT IN (SELECT id FROM plugin_logs WHERE category = ? ORDER BY id DESC LIMIT ?)`, category, category, maxPluginLogs); err != nil {
+			return fmt.Errorf("prune realtime guard sqlite logs: %w", err)
 		}
 	case logCategoryReviveProbe:
 		if _, err := transaction.Exec(`
@@ -256,7 +263,7 @@ func (store *ipStore) pruneStoredLogs() error {
 	}
 	defer transaction.Rollback()
 
-	for _, category := range []string{logCategoryGeneral, logCategoryBatchProbe, logCategoryKeepaliveProbe, logCategoryQualityProbe, logCategoryReviveProbe} {
+	for _, category := range []string{logCategoryGeneral, logCategoryBatchProbe, logCategoryKeepaliveProbe, logCategoryQualityProbe, logCategoryRealtimeGuard, logCategoryReviveProbe} {
 		if err := store.pruneLogs(transaction, category); err != nil {
 			return err
 		}
@@ -267,11 +274,23 @@ func (store *ipStore) pruneStoredLogs() error {
 	return nil
 }
 
+func isGroupedLogCategory(category string) bool {
+	switch category {
+	case logCategoryBatchProbe, logCategoryKeepaliveProbe, logCategoryQualityProbe, logCategoryReviveProbe:
+		return true
+	default:
+		return false
+	}
+}
+
 func (store *ipStore) listLogs(search string) ([]pluginLog, error) {
 	return store.listLogsByFilter(logCategoryGeneral, "", "", search)
 }
 
 func (store *ipStore) listGroupedLogs(category, groupID, logStatus, search string) ([]pluginLog, error) {
+	if !isGroupedLogCategory(category) {
+		return nil, fmt.Errorf("日志分类 %s 不支持批次分组", category)
+	}
 	return store.listLogsByFilter(category, strings.TrimSpace(groupID), strings.TrimSpace(logStatus), search)
 }
 
@@ -312,7 +331,7 @@ WHERE category = ?`
 		}
 	}
 	query += ` ORDER BY id DESC`
-	if category == logCategoryGeneral {
+	if !isGroupedLogCategory(category) {
 		query += ` LIMIT ?`
 		arguments = append(arguments, maxPluginLogs)
 	}

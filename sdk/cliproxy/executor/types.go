@@ -40,6 +40,10 @@ const (
 	SelectedAuthCallbackMetadataKey = "selected_auth_callback"
 	// SelectedAuthIndexMetadataKey stores the stable index of the auth selected by the scheduler.
 	SelectedAuthIndexMetadataKey = "selected_auth_index"
+	// SelectedAuthProxyURLMetadataKey stores the proxy URL on the selected auth.
+	SelectedAuthProxyURLMetadataKey = "selected_auth_proxy_url"
+	// SelectedAuthProviderMetadataKey stores the provider on the selected auth.
+	SelectedAuthProviderMetadataKey = "selected_auth_provider"
 	// SelectedAuthIndexCallbackMetadataKey carries an optional callback invoked with the selected auth index.
 	SelectedAuthIndexCallbackMetadataKey = "selected_auth_index_callback"
 	// ExecutionSessionMetadataKey identifies a long-lived downstream execution session.
@@ -224,6 +228,17 @@ type StreamChunk struct {
 	Err error
 }
 
+// StreamCompletion records terminal upstream stream information that can be
+// lost when an executor translates source SSE events into another protocol.
+type StreamCompletion struct {
+	// Completed reports whether the upstream provider emitted its terminal completion event.
+	Completed bool
+	// Body contains the original terminal SSE event used for completion inspection.
+	Body []byte
+	// Err reports a terminal source-stream read failure.
+	Err error
+}
+
 // StreamResult wraps the streaming response, providing both the chunk channel
 // and the upstream HTTP response headers captured before streaming begins.
 type StreamResult struct {
@@ -231,6 +246,9 @@ type StreamResult struct {
 	Headers http.Header
 	// Chunks is the channel of streaming payload units.
 	Chunks <-chan StreamChunk
+	// Completion receives one terminal source-stream state before Chunks closes.
+	// It is nil when the executor has no source completion state to expose.
+	Completion <-chan StreamCompletion
 }
 
 // StatusError represents an error that carries an HTTP-like status code.

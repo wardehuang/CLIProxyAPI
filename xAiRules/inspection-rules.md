@@ -2,9 +2,9 @@
 
 > 本文记录 `CPA-Manager-Plus` 当前 wXAi 巡检源码的真实行为。
 >
-> 最后核对日期：2026-08-09
+> 最后核对日期：2026-08-10
 >
-> 权威实现目录：`CPA-Manager-Plus/apps/manager-server/internal/service/wxaiinspection`
+> 权威实现目录：`CPA-Manager-Plus/apps/manager-server/internal/service/wxaiinspection`；代理出口、槽位和实时守护规则同时以 `CLIProxyAPI/plugins/src/cpa-xai-ip-switcher` 及 CPA 流式处理链路为准。
 
 ## 1. 文档维护要求
 
@@ -17,6 +17,7 @@
 - timeout、重试、xAI HTTP 直连（不走 CPA `proxy-url`，服务器巡检不再使用探测代理池）、结果落库和 priority 恢复。
 - 独立「降智检测」的流式请求、auth/global `ProxyURL` 优先级、指标、分类、响应展示和不落库规则。
 - xAI 业务请求 HTTP 429 的条件巡检即时触发、并发和 run 复用规则。
+- `cpa-xai-ip-switcher` 的节点槽位、auth JSON 直写、实时流完成守护、重试、日志与页面分类。
 
 若本文与源码冲突，以源码为准，并立即修正文档。
 
@@ -408,8 +409,8 @@ ProxyURL：
 
 保活第二阶段和空槽补槽的智商探测：
 
-1. 通过 Host ABI `host.auth.list`、`host.auth.get` 读取 xAI auth JSON；`host.auth.list` 返回的每个 xAI 条目必须具有 `auth_index`，并且 `host.auth.get` 只用该字段读取。每个智商轮次只构建一次共享 auth 快照；快照失败时记录 `quality.auth_snapshot_unavailable`，本轮所有质量任务不再重复访问 Host Auth，结果为 `unknown/auth_pool_exhausted`，不误伤节点。
-2. 选择顺序为当前节点已绑定 auth、该节点历史成功 auth、全局最近 10 次随机选择排除后的随机 auth。最近 10 次口径只统计 `selection_source='random' AND was_success=0` 的随机领取记录，不把绑定命中、历史命中或成功结果重复计入随机窗口。额度耗尽时把当前 auth 加入本轮已用集合，立即从同一轮快照随机池切换；候选 auth 全部耗尽时结果为 `unknown/auth_pool_exhausted`，不误伤节点。
+1. 通过 Host ABI `host.auth.list` 获取 xAI auth 条目；每个条目必须具有 `auth_index` 和本地文件路径。插件按文件名排序后，直接读取该路径的 JSON，而不调用 `host.auth.get`。每个智商轮次只构建一次共享 auth 快照；快照失败时记录 `quality.auth_snapshot_unavailable`，本轮所有质量任务不再重复访问 Host Auth，结果为 `unknown/auth_pool_exhausted`，不误伤节点。
+2. 直接读取 auth JSON 后必须解析 `priority`、`disabled`、`access_token` 和 `proxy_url`。选择范围仅为 `priority > 0`、未禁用且含 access token 的 auth；选择顺序为当前节点已绑定 auth、该节点历史成功 auth、全局最近 10 次随机选择排除后的随机 auth。最近 10 次口径只统计 `selection_source='random' AND was_success=0` 的随机领取记录，不把绑定命中、历史命中或成功结果重复计入随机窗口。额度耗尽时把当前 auth 加入本轮已用集合，立即从同一轮快照随机池切换；候选 auth 全部耗尽时结果为 `unknown/auth_pool_exhausted`，不误伤节点。
 3. 使用节点自身代理调用 `POST https://cli-chat-proxy.grok.com/v1/responses`，请求体固定为 `grok-4.5`、中文 `17 × 23` 探针、`stream=true`、high/detailed reasoning、`max_output_tokens=96`、`temperature=0`；期望答案 `391` 只作展示信号。
 4. 读取完整 SSE，成功条件为 `response.completed` 或 `[DONE]`；`response.incomplete`、`response.failed`、`error`、网络错误、超时和不完整流均为非 `normal` 结果。按 `output_tokens × 1000 / max(1, total_ms-first_token_ms)` 计算 TPS；`TPS >= hard` 为 `suspected_degradation/hard`，`TPS >= soft` 为 `suspected_degradation/soft`，否则为 `normal/healthy`。
 5. 智商探测不调用 Manager API，不调用 `/v1/chat/completions`，不执行 FREE/SUPER 判断，不修改账号 priority。
@@ -420,10 +421,10 @@ ProxyURL：
 - 保活连通失败：`healthy`、`healthy_candidate`、`connected` 来源改为 `error`，复活目标为 `connected`；`cooldown` 来源改为 `error`，复活目标为 `cooldown`。保活遇到“连接数不足”时保持原状态并记为不可判定。
 - 槽位已有节点时，本轮先对该节点做智商探测。质量结果为 `normal`，槽位保持占用；`soft`、`hard` 或普通请求/SSE 失败时节点改为 `cooldown`，清空槽位并继续领取下一个候选。
 - 空槽新候选质量结果为 `normal` 才正式占槽；`soft`、`hard` 或普通请求/SSE 失败时节点改为 `cooldown`，清空处理租约并继续当前槽位；auth 池耗尽或不可判定时节点恢复 `connected`，槽位保持空并阻塞该槽位到本轮结束。
-- 保底节点：质量阶段优先领取 `healthy_fallback` 节点，先做连通探测，再做智商探测。任一步失败永久删除并继续领取；通过后按槽位类型占槽并保留 `fallback_origin`。下一轮创建后、生成连通候选快照前，先清槽并永久删除上一轮已入槽的保底来源，同时立即重算健康槽位 auth 分配；该保底节点不会再进入下一轮连通探测。当前轮质量阶段结束后，未占槽的溢出 `connected` 节点转为 `healthy_fallback`。
-- 槽位数量变化时，普通占槽节点释放为 `connected`，已入槽保底来源永久删除，绑定表清空，随后按新布局重新执行候选领取和智商探测。
-- 健康槽位 auth 分配：以 Host Auth List 返回的全部 xAI auth 为全集，不过滤 `priority`；按文件名排序，文件序号从 1 开始，使用 `slot=((fileIndex-1)%healthySlotCount)+1`。健康槽位为空时对应 auth 删除根字段 `proxy_url`。每个文件独立读取；读取成功后执行 Host Auth Save 并重新读取验证，逐文件写入 `verified` 或 `failed` 状态；失败不伪造跨文件事务。若列表缺少 `auth_index`，或 Host 返回 `auth_index is required`，立即触发本轮熔断：保留已有绑定，不删除旧记录，不再扫描、写入或验证余下 auth，并记录 `auth_distribution.deferred`。
-- 质量探测配置默认 `quality_worker_count=8`、单次超时 `25` 秒、soft TPS `500`、hard TPS `1000`；hard 必须大于 soft。配置变化先停止当前 worker并等待取消恢复完成，再重建槽位、保存设置、同步 auth 分配并启动新 worker；槽位重建或设置保存失败时按旧配置恢复 worker。
+- `healthy_fallback` 仅允许人工录入。没有人工保底输入时，保底节点数必须为 `0`。溢出的 `connected` 节点不得自动转为 `healthy_fallback`，健康和健康备选的 `50+20` 槽位填满后，本轮智商检测结束。
+- 健康槽位和健康备选槽位始终按配置保留固定数量；默认分别为 `50` 和 `20`。没有合适节点时槽位保持为空，空健康槽位绑定的全部 auth 文件必须写入空 `proxy_url`。
+- 健康槽位 auth 分配：以 Host Auth List 返回的全部 xAI auth 为全集，按文件名排序并按健康槽位循环绑定。仅通过条目提供的本地文件路径直接读取、原子重命名写入和重新读取验证 JSON 的根字段 `proxy_url`；不得调用 Host Auth Save。整批写入或验证失败时回滚已修改文件并返回失败，不能留下部分同步状态。
+- 配置变更只保存，当前探测、保活、复活和智商探测 worker 不得被中断；新配置仅在插件下一次启动后生效。
 - 初次探测 worker、保活连通 worker、智商探测 worker、复活 worker 分别受配置并发数限制；连通探测默认 HTTP 总超时 `25` 秒、拨号/TLS 超时 `15` 秒、空闲轮询 `750` 毫秒；质量探测超时可配置，最大 `600` 秒；单节点重试次数使用 `probe_retry_count`。
 
 ### 13.4 落库、API、UI 与日志
@@ -431,6 +432,16 @@ ProxyURL：
 - SQLite 保存 `ip_nodes`、`ip_batches`、`keepalive_rounds`、`keepalive_round_nodes`、`revive_rounds`、`revive_round_nodes`、`ip_slots`、`ip_slot_auth_bindings`、`quality_probe_attempts`、`auth_selection_history`、`plugin_settings` 和 `plugin_logs`。
 - `ip_nodes` 持久化状态、复活目标、质量延迟标记、出口 IP/国家、失败原因和探测时间；`ip_slots.node_id` 保存正式占槽节点，`claim_node_id` 保存处理中节点，`fallback_origin` 保存保底来源。服务启动时会把中断中的节点探测恢复到 `probe_return_status` 或复活目标状态，并清理遗留槽位租约和 `claim_node_id`。
 - 保活轮次保存连通阶段完成时间、质量阶段开始/完成时间、两阶段计数；轮次只有两阶段结束才记为完成。质量每次 auth 尝试保存 auth、选择来源、代理、HTTP、TTFB、首生成、生成/总耗时、tokens、TPS、分类、阈值结果和错误详情；不保存 token 或完整 auth JSON。
-- 批次日志使用 `batch_probe`，保活连通和保底日志使用 `keepalive_probe`，智商探测的快照、尝试、换号、结果和异常日志使用 `quality_probe`，复活日志使用 `revive_probe`；`quality_probe` 与 `keepalive_probe` 按同一保活轮次分组，页面分别展示。日志记录轮次、阶段、槽位、节点、auth 选择来源、代理、HTTP/SSE、指标、分类、状态转换、换号、保底删除和 auth 同步结果。日志写入不再即时清理；插件启动、每个保活轮次结束及每个复活轮次结束时，单独事务保留通用最新 1000 条、各分组类别最近 10 个轮次/批次。
-- IP 列表提供 `healthy`、`healthy_candidate`、`healthy_fallback`、`quality_probing` 等状态页签及槽位/保底来源展示；处理中节点通过 `claim_node_id` 显示目标槽位。健康、健康备选、健康保底、已连通和冷却中列表可分别按延迟或槽位升/降序排序，未入槽节点在槽位排序中始终排在已入槽节点之后。保活日志批次摘要展示连通阶段与智商阶段的候选、成功和失败计数。`healthy` 节点每行显示“查看绑定 auth”按钮，通过 `GET /nodes/{nodeID}/auth-bindings` 查询当前绑定记录、已验证数和失败数；非健康节点不显示。接口不返回 token 或完整 auth JSON，无绑定时返回“当前无绑定 auth 文件”。
+- 批次日志使用 `batch_probe`，保活连通日志使用 `keepalive_probe`，智商探测的快照、尝试、换号、结果和异常日志使用 `quality_probe`，复活日志使用 `revive_probe`。实时请求守护使用独立分类 `realtime_guard`，保留最新 `1000` 条，并在页面提供“实时守护”页签。该分类记录 request ID、auth ID/index、HTTP、分类、等级、TPS、原节点/代理、替换节点/代理、`flush/retry/fail` 动作、重试次数和错误。
+- IP 列表提供 `healthy`、`healthy_candidate`、`healthy_fallback`、`quality_probing` 等状态页签及槽位/保底来源展示；处理中节点通过 `claim_node_id` 显示目标槽位。健康、健康备选、健康保底、已连通和冷却中列表可分别按延迟或槽位升/降序排序，未入槽节点在槽位排序中始终排在已入槽节点之后。`healthy` 列表必须同时展示每个空健康槽位：节点名字为空，槽位号存在，且仍显示“查看绑定 auth”按钮。已占用健康节点通过 `GET /nodes/{nodeID}/auth-bindings` 查询绑定；空健康槽位通过 `GET /slots/{slotID}/auth-bindings` 查询绑定。弹窗展示每个绑定的 `proxy_url`；空槽对应绑定必须显示空值。接口不返回 token 或完整 auth JSON，无绑定时返回“当前无绑定 auth 文件”。
 - 批次固定保存初次探测完成数和初次已连通数；实时已连通统计按当前 `healthy`、`healthy_candidate`、`connected`、`cooldown` 状态计算。插件不创建或复用 Manager 巡检 run。
+
+### 13.5 xAI 实时降智守护
+
+- CPA 只在 provider 候选中含 `xai`、且已加载流完成拦截器的 **AuthManager 流式路径**启用守护；插件 executor 流式路径当前不接入本守护。CPA 先缓存全量下游流，确认流结束后调用插件 `response.intercept_stream_finish`；插件返回 `flush` 前不得把缓存结果发送给下游。完成回调优先使用已选 auth 的 provider；该 metadata 缺失时，因本路径已确认 provider 候选含 `xai`，回调 provider 使用该 `xai` 候选，避免守护被误判为非 xAI 而直接 `flush`。
+- xAI executor 在将 Responses SSE 转换为 Anthropic、OpenAI 等下游协议前，单独保留仍为 Responses schema 的终止 `response.completed` 事件或 `[DONE]` 及其完成标记；`response.completed` 先经过既有 output 补齐和 reasoning summary 规范化。CPA 守护以该源终止状态认定 xAI 流完成，并将该终止事件传给插件；不得从转换后的下游缓存 body 查找 `response.completed`。没有原始完成状态的 executor 仍按缓存 body 判断。未完成流会带错误 `xAI stream disconnected before response.completed` 进入插件。插件对 HTTP 非 2xx、网络错误、SSE 解析错误和未完成流分类为 `unknown/unknown`。完整 SSE 从 `response.completed.response.usage.output_tokens` 读取 output tokens，以首 payload 至流结束的时长计算 TPS：`TPS >= quality_hard_tps` 为 `suspected_degradation/hard/hard_tps`，`TPS >= quality_soft_tps` 为 `suspected_degradation/soft/soft_tps`，其余为 `normal/healthy/within_threshold`。
+- `normal` 返回 `flush`。其他分类会尝试按本次 `proxy_url` 查找仍绑定该 URL 的 `healthy` 槽位；找不到匹配槽位、节点不是 `healthy` 或守护处理异常时，直接返回 `fail`。找到后原节点转 `cooldown`，原槽位清空。
+- 替换顺序固定：先从未在探测中的 `healthy_candidate` 选择 `latency_ms ASC, id ASC` 最低的节点，清空其备选槽位后提升到原健康槽位。无备选时，从人工 `healthy_fallback` 按 `entered_at ASC, id ASC` 逐个预留；保底节点通过 `GET https://grok.com/` 连通检测和质量探测后才占健康槽位，失败转 `cooldown` 并继续下一节点。无可用替换时健康槽位保持空并返回 `fail`。
+- 守护调用由插件进程内互斥锁串行化。候补提升或保底占槽后，直接重写、读回验证全部 xAI auth JSON 的根字段 `proxy_url`，再更新 `ip_slot_auth_bindings`；写入、验证或绑定落库任一步失败即返回 `fail`。文件系统与 SQLite 没有跨介质原子事务，失败时 auth 文件会回滚，但已提交的节点槽位不自动回滚。
+- 替换成功时 CPA 丢弃本次缓存流并 `retry`；每次 retry 前按 auth ID 从 JSON 文件重载运行态 `proxy_url`。最大重试次数为 `5`。xAI auth 的 `proxy_url` 为空时，禁止请求直连上游：每 `3` 秒重读文件，最长等待 `5` 分钟；等待期间尊重请求取消。
+- 实时守护写入 `plugin_logs`，分类 `realtime_guard`；启动和既有日志清理时保留最新 `1000` 条。插件不创建或复用 Manager 巡检 run，不修改 Manager account priority、FREE/SUPER 或额度冷却；仅维护节点槽位与 auth JSON 的 `proxy_url`。
