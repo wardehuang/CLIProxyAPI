@@ -90,6 +90,7 @@ type pluginSettings struct {
 	Grok2apiBaseUrl            string
 	Grok2apiAdminUsername      string
 	Grok2apiAdminPassword      string
+	ManagerDatabasePath         string
 }
 
 type proxyNode struct {
@@ -390,6 +391,9 @@ INSERT OR IGNORE INTO plugin_settings(setting_key, setting_value) VALUES
 		return err
 	}
 	if err := store.ensureRealtimeGuardMetadata(); err != nil {
+		return err
+	}
+	if err := store.ensureRealtimeDegradationFailureStorage(); err != nil {
 		return err
 	}
 	if err := store.clearAutomaticFallbackNodes(); err != nil {
@@ -746,6 +750,39 @@ UPDATE ip_batches
 SET total_count = ?, duplicate_count = ?, initial_probe_completed_count = ?, initial_connected_count = ?
 WHERE batch_id = ?`, added, duplicates, initialProbeCompletedCount, initialConnectedCount, batchID); err != nil {
 		return batchID, 0, 0, fmt.Errorf("update sqlite batch: %w", err)
+	}
+	if _, err := transaction.Exec(`
+UPDATE ip_slots
+SET node_id = 0,
+    claim_node_id = 0,
+    fallback_origin = 0,
+    fallback_entered_round_id = 0,
+    claim_token = '',
+    claim_stage = '',
+    claim_started_at = 0
+WHERE node_id IN (
+    SELECT id FROM ip_nodes ORDER BY entered_at ASC, id ASC LIMIT -1 OFFSET 1000
+) OR claim_node_id IN (
+    SELECT id FROM ip_nodes ORDER BY entered_at ASC, id ASC LIMIT -1 OFFSET 1000
+)`); err != nil {
+		return batchID, 0, 0, fmt.Errorf("clear slots for trimmed IP records: %w", err)
+	}
+	if _, err := transaction.Exec(`
+DELETE FROM ip_slot_auth_bindings
+WHERE node_id IN (
+    SELECT id FROM ip_nodes ORDER BY entered_at ASC, id ASC LIMIT -1 OFFSET 1000
+)`); err != nil {
+		return batchID, 0, 0, fmt.Errorf("clear auth bindings for trimmed IP records: %w", err)
+	}
+	if _, err := transaction.Exec(`
+DELETE FROM ip_nodes
+WHERE id IN (
+    SELECT id
+    FROM ip_nodes
+    ORDER BY entered_at ASC, id ASC
+    LIMIT -1 OFFSET 1000
+)`); err != nil {
+		return batchID, 0, 0, fmt.Errorf("trim sqlite IP records: %w", err)
 	}
 	if err := transaction.Commit(); err != nil {
 		return batchID, 0, 0, fmt.Errorf("commit sqlite batch insert: %w", err)
@@ -1449,7 +1486,8 @@ WHERE setting_key IN (
     'worker_count', 'refresh_interval_seconds', 'keepalive_worker_count', 'keepalive_interval_seconds',
     'revive_interval_seconds', 'probe_retry_count', 'healthy_slot_count', 'healthy_candidate_slot_count',
     'quality_worker_count', 'quality_probe_timeout_seconds', 'quality_soft_tps', 'quality_hard_tps',
-    'grok2api_sync_enabled', 'grok2api_base_url', 'grok2api_admin_username', 'grok2api_admin_password'
+    'grok2api_sync_enabled', 'grok2api_base_url', 'grok2api_admin_username', 'grok2api_admin_password',
+    'manager_database_path'
 )`)
 	if err != nil {
 		return pluginSettings{}, fmt.Errorf("read plugin settings: %w", err)
@@ -1480,6 +1518,8 @@ WHERE setting_key IN (
 			settings.Grok2apiAdminUsername = strings.TrimSpace(rawValue)
 		case "grok2api_admin_password":
 			settings.Grok2apiAdminPassword = rawValue
+		case "manager_database_path":
+			settings.ManagerDatabasePath = strings.TrimSpace(rawValue)
 		default:
 			value, parseErr := strconv.Atoi(strings.TrimSpace(rawValue))
 			if parseErr != nil {
@@ -1551,6 +1591,7 @@ func (store *ipStore) setSettings(settings pluginSettings) error {
 		"grok2api_base_url":             normalizeGrok2apiBaseURL(settings.Grok2apiBaseUrl),
 		"grok2api_admin_username":       strings.TrimSpace(settings.Grok2apiAdminUsername),
 		"grok2api_admin_password":       settings.Grok2apiAdminPassword,
+		"manager_database_path":          strings.TrimSpace(settings.ManagerDatabasePath),
 	}
 	for settingKey, settingValue := range settingsToSave {
 		if _, err := transaction.Exec(`

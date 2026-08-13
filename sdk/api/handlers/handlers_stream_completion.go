@@ -17,14 +17,10 @@ const maxRealtimeGuardRetries = 5
 
 type streamCompletionHost interface {
 	InterceptStreamCompletion(context.Context, pluginapi.StreamCompletionInterceptRequest) pluginapi.StreamCompletionInterceptResponse
-	HasStreamCompletionInterceptors() bool
+	InterceptStreamCompletionRequired(context.Context, pluginapi.StreamCompletionInterceptRequest) (pluginapi.StreamCompletionInterceptResponse, error)
 }
 
-func streamCompletionGuardEnabled(host PluginInterceptorHost, providers []string) bool {
-	completionHost, ok := host.(streamCompletionHost)
-	if !ok || !completionHost.HasStreamCompletionInterceptors() {
-		return false
-	}
+func streamCompletionGuardEnabled(_ PluginInterceptorHost, providers []string) bool {
 	for _, provider := range providers {
 		if strings.EqualFold(strings.TrimSpace(provider), "xai") {
 			return true
@@ -65,8 +61,15 @@ func (h *BaseAPIHandler) executeBufferedStreamWithGuard(
 		copyHeaderMap(streamHeaders, initialResult.Headers)
 	}
 	interceptorHost := h.interceptorHost()
-	completionHost := interceptorHost.(streamCompletionHost)
+	completionHost, completionGuardAvailable := interceptorHost.(streamCompletionHost)
 	streamInterceptorsActive := streamInterceptorsEnabled(interceptorHost)
+
+	if !completionGuardAvailable {
+		errChan <- &interfaces.ErrorMessage{StatusCode: http.StatusBadGateway, Error: fmt.Errorf("xAI realtime guard host is unavailable")}
+		close(dataChan)
+		close(errChan)
+		return dataChan, streamHeaders, errChan
+	}
 
 	go func() {
 		completionOutcome := pluginapi.RequestCompletionSucceeded
@@ -93,7 +96,15 @@ func (h *BaseAPIHandler) executeBufferedStreamWithGuard(
 			}
 
 			attempt := collectBufferedStreamAttempt(ctx, interceptorHost, streamInterceptorsActive, responseProtocol, normalizedModel, originalRequestedModel, req, opts, currentResult, currentErr, execOptions.SkipInterceptorPluginID)
-			decision := completionHost.InterceptStreamCompletion(ctx, buildStreamCompletionRequest(lifecycle, providers, responseProtocol, normalizedModel, originalRequestedModel, req, opts, attempt, retryCount))
+			decision, guardErr := completionHost.InterceptStreamCompletionRequired(ctx, buildStreamCompletionRequest(lifecycle, providers, responseProtocol, normalizedModel, originalRequestedModel, req, opts, attempt, retryCount))
+			if guardErr != nil {
+				decision = pluginapi.StreamCompletionInterceptResponse{
+					Action:     pluginapi.StreamCompletionActionFail,
+					Reason:     "realtime_guard_unavailable",
+					StatusCode: http.StatusBadGateway,
+					Error:      guardErr.Error(),
+				}
+			}
 			if decision.Action == "" {
 				decision.Action = pluginapi.StreamCompletionActionFail
 			}
@@ -366,12 +377,13 @@ func (h *BaseAPIHandler) reloadSelectedAuthForStreamRetry(ctx context.Context, m
 	if authID == "" {
 		return fmt.Errorf("实时降智守护重试缺少当前 auth")
 	}
-	updatedAuth, errReload := h.AuthManager.ReloadAuthProxyURLFromFile(ctx, authID)
-	if errReload != nil {
+	if _, errReload := h.AuthManager.ReloadAuthRuntimeFromFile(ctx, authID); errReload != nil {
 		return errReload
 	}
-	metadata[coreexecutor.SelectedAuthProxyURLMetadataKey] = strings.TrimSpace(updatedAuth.ProxyURL)
-	metadata[coreexecutor.SelectedAuthProviderMetadataKey] = strings.TrimSpace(updatedAuth.Provider)
+	delete(metadata, coreexecutor.SelectedAuthMetadataKey)
+	delete(metadata, coreexecutor.SelectedAuthIndexMetadataKey)
+	delete(metadata, coreexecutor.SelectedAuthProxyURLMetadataKey)
+	delete(metadata, coreexecutor.SelectedAuthProviderMetadataKey)
 	return nil
 }
 

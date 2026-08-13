@@ -3,6 +3,7 @@ package pluginhost
 import (
 	"bytes"
 	"context"
+	"fmt"
 	"io"
 	"net/http"
 	"net/url"
@@ -116,8 +117,9 @@ func (h *Host) FinalizeRequest(ctx context.Context, req pluginapi.RequestFinaliz
 
 func (h *Host) FinalizeRequestExcept(ctx context.Context, req pluginapi.RequestFinalizeRequest, skipPluginID string) pluginapi.RequestFinalizeResponse {
 	current := pluginapi.RequestFinalizeResponse{
-		Headers: cloneHeader(req.Headers),
-		Body:    bytes.Clone(req.Body),
+		Headers:  cloneHeader(req.Headers),
+		Body:     bytes.Clone(req.Body),
+		Metadata: cloneInterceptorMetadata(req.Metadata),
 	}
 	skipPluginID = strings.TrimSpace(skipPluginID)
 	for _, record := range h.activeRecords() {
@@ -128,9 +130,10 @@ func (h *Host) FinalizeRequestExcept(ctx context.Context, req pluginapi.RequestF
 		nextReq := req
 		nextReq.Headers = cloneHeader(current.Headers)
 		nextReq.Body = bytes.Clone(current.Body)
-		nextReq.Metadata = cloneInterceptorMetadata(req.Metadata)
+		nextReq.Metadata = cloneInterceptorMetadata(current.Metadata)
 		if resp, ok := h.callRequestFinalizer(ctx, record, finalizer, nextReq); ok {
 			current.Headers = mergeHeadersPreserveCase(current.Headers, resp.Headers, resp.ClearHeaders)
+			current.Metadata = mergePluginMetadata(current.Metadata, resp.Metadata, resp.ClearMetadata)
 			if len(resp.Body) > 0 {
 				current.Body = bytes.Clone(resp.Body)
 			}
@@ -325,6 +328,32 @@ func (h *Host) HasStreamCompletionInterceptors() bool {
 		}
 	}
 	return false
+}
+
+// InterceptStreamCompletionRequired runs a completion guard in fail-closed mode.
+// It is reserved for paths where delivering an uninspected stream is unsafe.
+func (h *Host) InterceptStreamCompletionRequired(ctx context.Context, req pluginapi.StreamCompletionInterceptRequest) (pluginapi.StreamCompletionInterceptResponse, error) {
+	if h == nil {
+		return pluginapi.StreamCompletionInterceptResponse{}, fmt.Errorf("stream completion guard host is unavailable")
+	}
+	for _, record := range h.activeRecords() {
+		interceptor := record.plugin.Capabilities.StreamCompletionInterceptor
+		if interceptor == nil {
+			continue
+		}
+		if h.isPluginFused(record.id) {
+			return pluginapi.StreamCompletionInterceptResponse{}, fmt.Errorf("stream completion guard plugin %s is fused", record.id)
+		}
+		response, ok := h.callStreamCompletionInterceptor(ctx, record, interceptor, req)
+		if !ok {
+			return pluginapi.StreamCompletionInterceptResponse{}, fmt.Errorf("stream completion guard plugin %s is unavailable", record.id)
+		}
+		if response.Action == "" {
+			return pluginapi.StreamCompletionInterceptResponse{}, fmt.Errorf("stream completion guard plugin %s returned no action", record.id)
+		}
+		return response, nil
+	}
+	return pluginapi.StreamCompletionInterceptResponse{}, fmt.Errorf("stream completion guard plugin is not registered")
 }
 
 func (h *Host) HasStreamInterceptors() bool {

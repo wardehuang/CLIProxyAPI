@@ -26,14 +26,15 @@ type hostAuthGetResponse struct {
 }
 
 type authFile struct {
-	Index    string
-	Name     string
-	Path     string
-	Email    string
-	Priority int
-	Disabled bool
-	ProxyURL string
-	Raw      map[string]any
+	Index       string
+	Name        string
+	Path        string
+	Email       string
+	Priority    int
+	PrioritySet bool
+	Disabled    bool
+	ProxyURL    string
+	Raw         map[string]any
 }
 
 var errHostAuthIndexUnavailable = errors.New("host auth index is unavailable")
@@ -157,14 +158,15 @@ func getAuthFile(authIndex string) (authFile, error) {
 		index = strings.TrimSpace(authIndex)
 	}
 	return authFile{
-		Index:    index,
-		Name:     name,
-		Path:     response.Path,
-		Email:    stringField(object, "email"),
-		Priority: integerField(object, "priority"),
-		Disabled: boolField(object, "disabled"),
-		ProxyURL: strings.TrimSpace(stringField(object, "proxy_url")),
-		Raw:      object,
+		Index:       index,
+		Name:        name,
+		Path:        response.Path,
+		Email:       stringField(object, "email"),
+		Priority:    integerField(object, "priority"),
+		PrioritySet: hasIntegerField(object, "priority"),
+		Disabled:    boolField(object, "disabled"),
+		ProxyURL:    strings.TrimSpace(stringField(object, "proxy_url")),
+		Raw:         object,
 	}, nil
 }
 
@@ -183,6 +185,7 @@ func loadAuthFileForDirectWrite(auth authFile) (authFile, error) {
 	auth.Raw = object
 	auth.Email = strings.TrimSpace(stringField(object, "email"))
 	auth.Priority = integerField(object, "priority")
+	auth.PrioritySet = hasIntegerField(object, "priority")
 	auth.Disabled = boolField(object, "disabled")
 	auth.ProxyURL = strings.TrimSpace(stringField(object, "proxy_url"))
 	return auth, nil
@@ -295,6 +298,11 @@ func integerField(object map[string]any, key string) int {
 		}
 	}
 	return 0
+}
+
+func hasIntegerField(object map[string]any, key string) bool {
+	_, exists := object[key]
+	return exists
 }
 
 func boolField(object map[string]any, key string) bool {

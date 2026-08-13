@@ -173,6 +173,10 @@ type RequestFinalizeResponse struct {
 	Body []byte
 	// ClearHeaders explicitly removes current request headers before Headers is applied.
 	ClearHeaders []string
+	// Metadata contributes final execution metadata after auth selection.
+	Metadata map[string]any
+	// ClearMetadata removes metadata keys before Metadata is applied.
+	ClearMetadata []string
 }
 
 // Options controls execution behavior for both streaming and non-streaming calls.

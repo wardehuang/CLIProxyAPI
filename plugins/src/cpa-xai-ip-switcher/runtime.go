@@ -3,17 +3,20 @@ package main
 import (
 	"context"
 	"fmt"
+	"strings"
 	"sync"
 )
 
 var pluginRuntime = &runtimeController{}
 
 type runtimeController struct {
-	mutex              sync.RWMutex
-	realtimeGuardMutex sync.Mutex
-	store              *ipStore
-	workerCancel       context.CancelFunc
-	workerGroup        sync.WaitGroup
+	mutex               sync.RWMutex
+	topologyMutex       sync.Mutex
+	realtimeGuardMutex  sync.Mutex
+	store               *ipStore
+	managerDatabasePath string
+	workerCancel        context.CancelFunc
+	workerGroup         sync.WaitGroup
 }
 
 func (controller *runtimeController) configure(config pluginConfig) error {
@@ -32,15 +35,21 @@ func (controller *runtimeController) configureLocked(config pluginConfig) error 
 			_ = controller.store.appendLog(logLevelWarn, "plugin.reconfigure_deferred", 0, "", "插件配置变更将在下次启动时生效", fmt.Sprintf("数据库路径当前 %s；下次启动 %s", controller.store.path, resolvedDatabasePath))
 			return nil
 		}
+		settings, settingsErr := controller.store.settings()
+		if settingsErr != nil {
+			return settingsErr
+		}
+		if configuredManagerDatabasePath := strings.TrimSpace(config.ManagerDatabasePath); configuredManagerDatabasePath != "" {
+			settings.ManagerDatabasePath = configuredManagerDatabasePath
+		}
 		if config.WorkerCount != 0 {
-			settings, settingsErr := controller.store.settings()
-			if settingsErr != nil {
-				return settingsErr
-			}
 			settings.WorkerCount = config.WorkerCount
-			if settingsErr := controller.store.setSettings(settings); settingsErr != nil {
-				return settingsErr
-			}
+		}
+		if err := controller.store.setSettings(settings); err != nil {
+			return err
+		}
+		controller.managerDatabasePath = settings.ManagerDatabasePath
+		if config.WorkerCount != 0 {
 			_ = controller.store.appendLog(logLevelInfo, "plugin.reconfigure_deferred", 0, "", "插件配置已保存，将在下次启动时生效", fmt.Sprintf("探测线程数 %d", config.WorkerCount))
 		}
 		return nil
@@ -57,6 +66,11 @@ func (controller *runtimeController) configureLocked(config pluginConfig) error 
 	}
 	if config.WorkerCount != 0 {
 		settings.WorkerCount = config.WorkerCount
+	}
+	if configuredManagerDatabasePath := strings.TrimSpace(config.ManagerDatabasePath); configuredManagerDatabasePath != "" {
+		settings.ManagerDatabasePath = configuredManagerDatabasePath
+	}
+	if config.WorkerCount != 0 || strings.TrimSpace(config.ManagerDatabasePath) != "" {
 		if err := store.setSettings(settings); err != nil {
 			_ = store.close()
 			return err
@@ -68,6 +82,9 @@ func (controller *runtimeController) configureLocked(config pluginConfig) error 
 	}
 
 	controller.store = store
+	controller.managerDatabasePath = settings.ManagerDatabasePath
+	controller.topologyMutex.Lock()
+	defer controller.topologyMutex.Unlock()
 	if err := refreshHealthyAuthDistribution(store, settings.HealthySlotCount); err != nil {
 		_ = store.appendLog(logLevelError, "auth_distribution.startup_failed", 0, "", "插件启动时同步 xAI auth proxy_url 失败", err.Error())
 	}
@@ -99,7 +116,8 @@ func pluginSettingsEqual(left, right pluginSettings) bool {
 		left.Grok2apiSyncEnabled == right.Grok2apiSyncEnabled &&
 		left.Grok2apiBaseUrl == right.Grok2apiBaseUrl &&
 		left.Grok2apiAdminUsername == right.Grok2apiAdminUsername &&
-		left.Grok2apiAdminPassword == right.Grok2apiAdminPassword
+		left.Grok2apiAdminPassword == right.Grok2apiAdminPassword &&
+		left.ManagerDatabasePath == right.ManagerDatabasePath
 }
 
 func (controller *runtimeController) ensure() error {
@@ -145,6 +163,7 @@ func (controller *runtimeController) updateSettings(store *ipStore, settings plu
 	if err := store.setSettings(settings); err != nil {
 		return false, err
 	}
+	controller.managerDatabasePath = settings.ManagerDatabasePath
 	return true, nil
 }
 

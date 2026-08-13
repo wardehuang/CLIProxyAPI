@@ -479,7 +479,7 @@ func (h *BaseAPIHandler) requestAfterAuthInterceptor(capture *requestAfterAuthCa
 }
 
 func (h *BaseAPIHandler) requestFinalizer(skipPluginID string) coreexecutor.RequestFinalizer {
-	if !requestFinalizersEnabled(h.interceptorHost()) {
+	if h.interceptorHost() == nil {
 		return nil
 	}
 	return func(ctx context.Context, req coreexecutor.RequestFinalizeRequest) coreexecutor.RequestFinalizeResponse {
@@ -489,9 +489,6 @@ func (h *BaseAPIHandler) requestFinalizer(skipPluginID string) coreexecutor.Requ
 
 func (h *BaseAPIHandler) applyRequestFinalizers(ctx context.Context, req coreexecutor.RequestFinalizeRequest, skipPluginID string) coreexecutor.RequestFinalizeResponse {
 	host := h.interceptorHost()
-	if !requestFinalizersEnabled(host) {
-		return coreexecutor.RequestFinalizeResponse{}
-	}
 	finalizerHost, ok := host.(requestFinalizerHost)
 	if !ok || finalizerHost == nil {
 		return coreexecutor.RequestFinalizeResponse{}
@@ -507,9 +504,11 @@ func (h *BaseAPIHandler) applyRequestFinalizers(ctx context.Context, req coreexe
 		Metadata:       req.Metadata,
 	}, skipPluginID)
 	return coreexecutor.RequestFinalizeResponse{
-		Headers:      resp.Headers,
-		Body:         resp.Body,
-		ClearHeaders: resp.ClearHeaders,
+		Headers:       resp.Headers,
+		Body:          resp.Body,
+		ClearHeaders:  resp.ClearHeaders,
+		Metadata:      resp.Metadata,
+		ClearMetadata: resp.ClearMetadata,
 	}
 }
 

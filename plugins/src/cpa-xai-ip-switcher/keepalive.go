@@ -35,6 +35,8 @@ func runKeepaliveScheduler(ctx context.Context, store *ipStore, settings pluginS
 }
 
 func runKeepaliveRound(ctx context.Context, store *ipStore, settings pluginSettings) {
+	pluginRuntime.topologyMutex.Lock()
+	defer pluginRuntime.topologyMutex.Unlock()
 	defer func() {
 		_ = store.pruneStoredLogs()
 	}()

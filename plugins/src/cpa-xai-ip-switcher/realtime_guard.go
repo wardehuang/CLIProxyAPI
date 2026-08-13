@@ -46,8 +46,15 @@ func handleStreamCompletionIntercept(completion pluginapi.StreamCompletionInterc
 	}
 
 	probe := realtimeGuardProbeFromCompletion(completion)
+	snapshot := realtimeGuardSnapshotFromMetadata(completion.Metadata)
+	if snapshot.SlotID > 0 && snapshot.NodeID > 0 && snapshot.ProxyURL != "" {
+		probe.SourceSnapshot = snapshot
+	}
 	decision := classifyRealtimeGuardProbe(probe)
 	if decision.Classification == realtimeGuardClassificationNormal {
+		_, _ = pluginRuntime.withStore(func(store *ipStore) ([]byte, error) {
+			return nil, store.clearRealtimeDegradationFailure(probe.ProxyURL)
+		})
 		return pluginapi.StreamCompletionInterceptResponse{
 			Action:     pluginapi.StreamCompletionAction(decision.Action),
 			Reason:     decision.Reason,
@@ -58,8 +65,32 @@ func handleStreamCompletionIntercept(completion pluginapi.StreamCompletionInterc
 
 	pluginRuntime.realtimeGuardMutex.Lock()
 	defer pluginRuntime.realtimeGuardMutex.Unlock()
+	managerDatabasePath := pluginRuntime.managerDatabase()
+	pluginRuntime.topologyMutex.Lock()
+	defer pluginRuntime.topologyMutex.Unlock()
 
 	_, err := pluginRuntime.withStore(func(store *ipStore) ([]byte, error) {
+		if decision.Classification == realtimeGuardClassificationDegradation {
+			failure, failureErr := store.recordRealtimeDegradationFailure(probe, decision)
+			if failureErr != nil {
+				return nil, failureErr
+			}
+			auth, originalPriority, authErr := markRealtimeGuardAuthDegraded(probe)
+			if authErr != nil {
+				return nil, authErr
+			}
+			originalPriority, originalPriorityErr := store.rememberRealtimeDegradedAuth(auth)
+			if originalPriorityErr != nil {
+				return nil, originalPriorityErr
+			}
+			if managerErr := syncManagerRealtimeDegradation(managerDatabasePath, auth, originalPriority, probe, decision); managerErr != nil {
+				store.logRealtimeManagerDatabaseUnavailable(probe, decision, failure, managerErr)
+			}
+			if failure.ConsecutiveFailureCount < realtimeDegradationReplacementThreshold {
+				store.logRealtimeDegradationRecorded(probe, decision, failure)
+				return nil, nil
+			}
+		}
 		return nil, store.applyRealtimeGuard(context.Background(), probe, &decision)
 	})
 	if err != nil {
@@ -134,9 +165,16 @@ func classifyRealtimeGuardProbeWithSettings(probe realtimeGuardProbe, settings p
 		return realtimeGuardUnknownDecision("sse_incomplete", "SSE 流未完整结束")
 	}
 
-	outputTokens, sseErr := parseRealtimeGuardSSE(probe.Body)
+	outputTokens, thinkingDelta, sseErr := parseRealtimeGuardSSE(probe.Body)
 	if sseErr != nil {
 		return realtimeGuardUnknownDecision("sse_failed", sseErr.Error())
+	}
+	if !thinkingDelta {
+		decision.Action = realtimeGuardActionRetry
+		decision.Classification = realtimeGuardClassificationDegradation
+		decision.QualityLevel = realtimeGuardQualitySoft
+		decision.Reason = "missing_thinking_delta"
+		return decision
 	}
 	generationStartedAt := probe.FirstPayloadAt
 	if generationStartedAt.IsZero() {
@@ -177,11 +215,12 @@ func realtimeGuardUnknownDecision(reason, detail string) realtimeGuardDecision {
 	}
 }
 
-func parseRealtimeGuardSSE(body []byte) (int64, error) {
+func parseRealtimeGuardSSE(body []byte) (int64, bool, error) {
 	if len(body) == 0 {
-		return 0, fmt.Errorf("SSE 响应为空")
+		return 0, false, fmt.Errorf("SSE 响应为空")
 	}
 	var outputTokens int64
+	thinkingDelta := false
 	completed := false
 	for _, event := range strings.Split(string(body), "\n\n") {
 		for _, line := range strings.Split(event, "\n") {
@@ -196,11 +235,17 @@ func parseRealtimeGuardSSE(body []byte) (int64, error) {
 			}
 			var message map[string]any
 			if err := json.Unmarshal([]byte(payload), &message); err != nil {
-				return 0, fmt.Errorf("解析 SSE 事件失败: %w", err)
+				return 0, false, fmt.Errorf("解析 SSE 事件失败: %w", err)
 			}
 			eventType := strings.ToLower(stringField(message, "type"))
 			if strings.Contains(eventType, "failed") || strings.Contains(eventType, "incomplete") || eventType == "error" {
-				return 0, fmt.Errorf("SSE 事件异常: %s", eventType)
+				return 0, false, fmt.Errorf("SSE 事件异常: %s", eventType)
+			}
+			if eventType == "response.reasoning_summary_text.delta" ||
+				eventType == "response.reasoning_text.delta" ||
+				strings.EqualFold(stringField(message, "delta_type"), "thinking_delta") ||
+				qualityDeltaTypeIsThinking(message) {
+				thinkingDelta = true
 			}
 			if eventType != "response.completed" {
 				continue
@@ -219,9 +264,9 @@ func parseRealtimeGuardSSE(body []byte) (int64, error) {
 		}
 	}
 	if !completed {
-		return 0, fmt.Errorf("SSE 流未收到 response.completed 或 [DONE]")
+		return 0, false, fmt.Errorf("SSE 流未收到 response.completed 或 [DONE]")
 	}
-	return outputTokens, nil
+	return outputTokens, thinkingDelta, nil
 }
 
 func (store *ipStore) applyRealtimeGuard(ctx context.Context, probe realtimeGuardProbe, decision *realtimeGuardDecision) error {
@@ -313,7 +358,18 @@ func (store *ipStore) startRealtimeGuardReplacement(probe realtimeGuardProbe, de
 	defer transaction.Rollback()
 
 	var replacement realtimeGuardReplacement
-	if err := scanRealtimeHealthySlot(transaction.QueryRow(`
+	if probe.SourceSnapshot.SlotID > 0 && probe.SourceSnapshot.NodeID > 0 {
+		if err := scanRealtimeHealthySlot(transaction.QueryRow(`
+SELECT slot_id, slot_kind, node_id, claim_node_id, fallback_origin, fallback_entered_round_id,
+       claim_token, claim_stage, claim_started_at, last_processed_round_id, blocked_round_id
+FROM ip_slots
+WHERE slot_id = ? AND node_id = ? AND slot_kind = ?`, probe.SourceSnapshot.SlotID, probe.SourceSnapshot.NodeID, statusHealthy), &replacement.HealthySlot); err != nil {
+			if err == sql.ErrNoRows {
+				return realtimeGuardReplacement{}, fmt.Errorf("实时守护源槽位快照已失效")
+			}
+			return realtimeGuardReplacement{}, err
+		}
+	} else if err := scanRealtimeHealthySlot(transaction.QueryRow(`
 SELECT slots.slot_id, slots.slot_kind, slots.node_id, slots.claim_node_id, slots.fallback_origin, slots.fallback_entered_round_id,
        slots.claim_token, slots.claim_stage, slots.claim_started_at, slots.last_processed_round_id, slots.blocked_round_id
 FROM ip_slots AS slots
@@ -324,6 +380,9 @@ LIMIT 1`, statusHealthy, strings.TrimSpace(probe.ProxyURL)), &replacement.Health
 		if err == sql.ErrNoRows {
 			return realtimeGuardReplacement{}, fmt.Errorf("实时守护未找到 proxy_url 对应的健康槽位")
 		}
+		return realtimeGuardReplacement{}, err
+	}
+	if err := store.validateRealtimeGuardSnapshot(transaction, probe.SourceSnapshot, replacement.HealthySlot); err != nil {
 		return realtimeGuardReplacement{}, err
 	}
 	if err := scanProxyNode(transaction.QueryRow(`
@@ -389,6 +448,27 @@ WHERE id = ? AND status = ?`, statusHealthy, statusHealthy, candidate.ID, status
 		return realtimeGuardReplacement{}, fmt.Errorf("提交实时守护替换事务: %w", err)
 	}
 	return replacement, nil
+}
+
+func (store *ipStore) validateRealtimeGuardSnapshot(transaction *sql.Tx, snapshot realtimeGuardSourceSnapshot, slot slotRecord) error {
+	if snapshot.SlotID == 0 || snapshot.NodeID == 0 {
+		return nil
+	}
+	if snapshot.SlotID != slot.ID || snapshot.NodeID != slot.NodeID {
+		return fmt.Errorf("实时守护源槽位快照不匹配")
+	}
+	var bindingUpdatedAt int64
+	err := transaction.QueryRow(`
+SELECT updated_at
+FROM ip_slot_auth_bindings
+WHERE auth_identity = ? AND slot_id = ? AND node_id = ? AND proxy_url = ?`, snapshot.AuthIdentity, snapshot.SlotID, snapshot.NodeID, snapshot.ProxyURL).Scan(&bindingUpdatedAt)
+	if err != nil {
+		return fmt.Errorf("验证实时守护源 auth 绑定: %w", err)
+	}
+	if bindingUpdatedAt != snapshot.BindingUpdatedAt {
+		return fmt.Errorf("实时守护源 auth 绑定已变更")
+	}
+	return nil
 }
 
 func scanRealtimeHealthySlot(row *sql.Row, slot *slotRecord) error {
@@ -546,6 +626,34 @@ func (store *ipStore) probeRealtimeFallbackQuality(ctx context.Context, node pro
 		}
 		return result, nil
 	}
+}
+
+func (store *ipStore) logRealtimeDegradationRecorded(probe realtimeGuardProbe, decision realtimeGuardDecision, failure realtimeDegradationFailure) {
+	_ = store.appendProbeLog(
+		logCategoryRealtimeGuard,
+		probe.RequestID,
+		logStatusProbing,
+		logLevelWarn,
+		"realtime_guard.degradation_recorded",
+		failure.NodeID,
+		failure.NodeName,
+		"实时守护记录节点首次降智，账号已标记为异常",
+		fmt.Sprintf("request_id=%s；auth_id=%s；auth_index=%s；节点代理=%s；降智次数=%d/%d；原因=%s；等级=%s；TPS=%.2f；动作=仅换号重试", probe.RequestID, probe.AuthID, probe.AuthIndex, failure.ProxyURL, failure.ConsecutiveFailureCount, realtimeDegradationReplacementThreshold, decision.Reason, decision.QualityLevel, decision.TPS),
+	)
+}
+
+func (store *ipStore) logRealtimeManagerDatabaseUnavailable(probe realtimeGuardProbe, decision realtimeGuardDecision, failure realtimeDegradationFailure, managerErr error) {
+	_ = store.appendProbeLog(
+		logCategoryRealtimeGuard,
+		probe.RequestID,
+		logStatusError,
+		logLevelWarn,
+		"realtime_guard.manager_database_unavailable",
+		failure.NodeID,
+		failure.NodeName,
+		"实时守护未能同步 CPA-Manager-Plus 数据库",
+		fmt.Sprintf("request_id=%s；auth_id=%s；auth_index=%s；节点代理=%s；降智次数=%d；原因=%s；错误=%s", probe.RequestID, probe.AuthID, probe.AuthIndex, failure.ProxyURL, failure.ConsecutiveFailureCount, decision.Reason, managerErr.Error()),
+	)
 }
 
 func (store *ipStore) logRealtimeFallbackCheck(probe realtimeGuardProbe, node proxyNode, stage, detail string) {

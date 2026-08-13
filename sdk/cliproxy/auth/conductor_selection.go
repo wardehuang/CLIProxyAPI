@@ -308,6 +308,9 @@ func (m *Manager) availableAuthsForRouteModelWithPriorityMode(ctx context.Contex
 		logXAIAvailabilityDecision(ctx, "legacy_availability_filter", candidate, routeModel, checkModel, blocked, reason, next)
 		if !blocked {
 			priority := authPriority(candidate)
+			if strings.EqualFold(candidate.Provider, "xai") && priority == positionDegradedPriority {
+				continue
+			}
 			availableByPriority[priority] = append(availableByPriority[priority], candidate)
 			continue
 		}

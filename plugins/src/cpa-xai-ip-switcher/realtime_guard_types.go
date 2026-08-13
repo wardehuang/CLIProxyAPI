@@ -43,6 +43,7 @@ type realtimeGuardProbe struct {
 	RetryCount      int
 	MaxRetries      int
 	Metadata        map[string]any
+	SourceSnapshot  realtimeGuardSourceSnapshot
 }
 
 type realtimeGuardDecision struct {

@@ -30,6 +30,7 @@ func applyRequestFinalizer(ctx context.Context, opts cliproxyexecutor.Options, t
 		Metadata:       opts.Metadata,
 	})
 	headers = mergeFinalizerHeaders(headers, resp.Headers, resp.ClearHeaders)
+	mergeFinalizerMetadata(opts.Metadata, resp.Metadata, resp.ClearMetadata)
 	if len(resp.Body) > 0 {
 		body = bytes.Clone(resp.Body)
 	}
@@ -75,6 +76,18 @@ func deleteFinalizerHeader(headers http.Header, key string) {
 		if strings.EqualFold(existing, key) {
 			delete(headers, existing)
 		}
+	}
+}
+
+func mergeFinalizerMetadata(current, updates map[string]any, clear []string) {
+	if current == nil {
+		return
+	}
+	for _, key := range clear {
+		delete(current, key)
+	}
+	for key, value := range updates {
+		current[key] = value
 	}
 }
 

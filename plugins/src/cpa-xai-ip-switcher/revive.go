@@ -337,6 +337,8 @@ func runReviveScheduler(ctx context.Context, store *ipStore, settings pluginSett
 }
 
 func runReviveRound(ctx context.Context, store *ipStore, workerCount, probeRetryCount int) {
+	pluginRuntime.topologyMutex.Lock()
+	defer pluginRuntime.topologyMutex.Unlock()
 	defer func() {
 		_ = store.pruneStoredLogs()
 	}()

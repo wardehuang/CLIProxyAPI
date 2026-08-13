@@ -1146,6 +1146,10 @@ type RequestFinalizeResponse struct {
 	Body []byte
 	// ClearHeaders explicitly removes current request headers before Headers is applied.
 	ClearHeaders []string
+	// Metadata contributes final execution metadata after auth selection.
+	Metadata map[string]any
+	// ClearMetadata removes metadata keys before Metadata is applied.
+	ClearMetadata []string
 }
 
 // RequestMetadataEnricher contributes request-scoped metadata for routing, scheduling, execution, and usage sinks.

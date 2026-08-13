@@ -6,8 +6,14 @@ const (
 	// ABIVersion tracks the native C ABI shape (native plugin exports).
 	ABIVersion uint32 = 1
 	// SchemaVersion tracks the RPC JSON contract exchanged at plugin.register.
-	// Version 3 adds stream completion decisions after full response buffering.
+	// Version 2 adds request lifecycle completion and active request termination.
+	// Version 3 adds stream completion decisions after full response buffering and omits
+	// OriginalRequest/RequestBody on payload stream chunks (ChunkIndex >= 0).
+	// Those fields remain on StreamChunkHeaderInitIndex.
 	SchemaVersion uint32 = 3
+	// SchemaVersionStreamChunkOmitRequestBody is the first schema version that omits
+	// request bodies on payload stream-chunk interceptor calls.
+	SchemaVersionStreamChunkOmitRequestBody uint32 = 3
 )
 
 const (

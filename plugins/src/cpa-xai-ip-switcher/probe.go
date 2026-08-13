@@ -150,10 +150,13 @@ func isSupportedProxyProtocol(protocol string) bool {
 
 func runProbeWorker(ctx context.Context, store *ipStore, probeRetryCount int) {
 	for {
+		pluginRuntime.topologyMutex.Lock()
 		if ctx.Err() != nil {
+			pluginRuntime.topologyMutex.Unlock()
 			return
 		}
 		node, err := store.claimNext()
+		pluginRuntime.topologyMutex.Unlock()
 		if err != nil {
 			_ = store.appendLog(logLevelError, "probe.claim_failed", 0, "", "领取待探测节点失败", err.Error())
 			if !waitForProbePoll(ctx) {

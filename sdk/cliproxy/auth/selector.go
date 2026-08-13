@@ -248,6 +248,10 @@ func preferCodexWebsocketAuths(ctx context.Context, provider string, available [
 	return available
 }
 
+// positionDegradedPriority is excluded from all automatic auth selection.
+// Manager server inspection or manual refresh restores it after a healthy probe.
+const positionDegradedPriority = -8
+
 func collectAvailableByPriority(auths []*Auth, model string, now time.Time) (available map[int][]*Auth, cooldownCount int, earliest time.Time) {
 	available = make(map[int][]*Auth)
 	for i := 0; i < len(auths); i++ {
@@ -255,6 +259,9 @@ func collectAvailableByPriority(auths []*Auth, model string, now time.Time) (ava
 		blocked, reason, next := isAuthBlockedForModel(candidate, model, now)
 		if !blocked {
 			priority := authPriority(candidate)
+			if strings.EqualFold(candidate.Provider, "xai") && priority == positionDegradedPriority {
+				continue
+			}
 			available[priority] = append(available[priority], candidate)
 			continue
 		}

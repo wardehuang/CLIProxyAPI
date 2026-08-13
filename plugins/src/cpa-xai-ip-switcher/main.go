@@ -100,8 +100,9 @@ type lifecycleRequest struct {
 }
 
 type pluginConfig struct {
-	DatabasePath string `yaml:"database_path" json:"database_path"`
-	WorkerCount  int    `yaml:"worker_count" json:"worker_count"`
+	DatabasePath        string `yaml:"database_path" json:"database_path"`
+	ManagerDatabasePath string `yaml:"manager_database_path" json:"manager_database_path"`
+	WorkerCount         int    `yaml:"worker_count" json:"worker_count"`
 }
 
 type registration struct {
@@ -112,6 +113,7 @@ type registration struct {
 
 type registrationCapabilities struct {
 	ManagementAPI               bool `json:"management_api"`
+	RequestFinalizer            bool `json:"request_finalizer"`
 	StreamCompletionInterceptor bool `json:"response_stream_completion_interceptor"`
 }
 
@@ -281,6 +283,18 @@ func handleMethod(method string, request []byte) ([]byte, error) {
 		})
 	case pluginabi.MethodManagementHandle:
 		return handleManagement(request)
+	case pluginabi.MethodRequestFinalize:
+		var finalizeRequest pluginapi.RequestFinalizeRequest
+		if len(request) > 0 {
+			if err := json.Unmarshal(request, &finalizeRequest); err != nil {
+				return nil, fmt.Errorf("decode request finalizer request: %w", err)
+			}
+		}
+		response, err := finalizeRealtimeGuardRequest(finalizeRequest)
+		if err != nil {
+			return nil, err
+		}
+		return okEnvelope(response)
 	case pluginabi.MethodResponseInterceptStreamFinish:
 		var completion pluginapi.StreamCompletionInterceptRequest
 		if len(request) > 0 {
@@ -331,6 +345,11 @@ func pluginRegistration() registration {
 					Description: "插件 SQLite 数据库路径，默认 /opt/cli-proxy-api/plugin-data/cpa-xai-ip-switcher/ip-switcher.sqlite3。",
 				},
 				{
+					Name:        "manager_database_path",
+					Type:        pluginapi.ConfigFieldTypeString,
+					Description: "CPA-Manager-Plus SQLite 数据库路径；配置后实时降智会同步 priority=-8、priority adjustment 和最近服务器巡检记录。容器默认路径为 /data/usage.sqlite。",
+				},
+				{
 					Name:        "worker_count",
 					Type:        pluginapi.ConfigFieldTypeInteger,
 					Description: "启动时的探测线程数；0 表示使用 SQLite 中保存的界面设置。",
@@ -339,6 +358,7 @@ func pluginRegistration() registration {
 		},
 		Capabilities: registrationCapabilities{
 			ManagementAPI:               true,
+			RequestFinalizer:            true,
 			StreamCompletionInterceptor: true,
 		},
 	}
@@ -414,6 +434,9 @@ func dispatchAPI(method, path string, query url.Values, body json.RawMessage) ([
 	if normalizedPath == "/settings" && (method == http.MethodPut || method == http.MethodPost) {
 		return updatePluginSettings(body)
 	}
+	if normalizedPath == "/manager/inspection/latest-run" && method == http.MethodPost {
+		return checkLatestManagerInspectionRun(body)
+	}
 	return pluginRuntime.withStore(func(store *ipStore) ([]byte, error) {
 		return dispatchAPIWithStore(store, method, path, query, body)
 	})
@@ -450,6 +473,20 @@ func updatePluginSettings(body json.RawMessage) ([]byte, error) {
 	return managementJSON(http.StatusOK, map[string]any{"data": publicSettings(settings)})
 }
 
+func checkLatestManagerInspectionRun(body json.RawMessage) ([]byte, error) {
+	var payload struct {
+		ManagerDatabasePath string `json:"managerDatabasePath"`
+	}
+	if err := json.Unmarshal(body, &payload); err != nil {
+		return managementJSON(http.StatusBadRequest, errorMessage("invalidBody", "invalid body"))
+	}
+	latestRunID, err := latestManagerScheduledInspectionRunID(payload.ManagerDatabasePath)
+	if err != nil {
+		return managementJSON(http.StatusBadRequest, errorMessage("managerInspectionCheckFailed", err.Error()))
+	}
+	return managementJSON(http.StatusOK, map[string]any{"data": map[string]any{"runId": latestRunID}})
+}
+
 func settingsFromPayload(payload map[string]any) (pluginSettings, error) {
 	workerCount, workerOK := integerValue(firstValue(payload, "workerCount", "worker_count"))
 	refreshIntervalSeconds, refreshOK := integerValue(firstValue(payload, "refreshIntervalSeconds", "refresh_interval_seconds"))
@@ -467,10 +504,11 @@ func settingsFromPayload(payload map[string]any) (pluginSettings, error) {
 	grok2apiBaseUrl, grok2apiBaseUrlOK := stringValue(firstValue(payload, "grok2apiBaseUrl", "grok2api_base_url"))
 	grok2apiAdminUsername, grok2apiAdminUsernameOK := stringValue(firstValue(payload, "grok2apiAdminUsername", "grok2api_admin_username"))
 	grok2apiAdminPassword, grok2apiAdminPasswordOK := stringValue(firstValue(payload, "grok2apiAdminPassword", "grok2api_admin_password"))
+	managerDatabasePath, managerDatabasePathOK := stringValue(firstValue(payload, "managerDatabasePath", "manager_database_path"))
 	if !workerOK || !refreshOK || !keepaliveWorkersOK || !keepaliveIntervalOK || !reviveIntervalOK || !retryOK ||
 		!healthySlotOK || !healthyCandidateSlotOK || !qualityWorkerOK || !qualityTimeoutOK || !softTPSOK || !hardTPSOK ||
-		!grok2apiSyncEnabledOK || !grok2apiBaseUrlOK || !grok2apiAdminUsernameOK || !grok2apiAdminPasswordOK {
-		return pluginSettings{}, fmt.Errorf("必须同时提供基础调度、健康槽位、智商探测和 grok2api 同步配置")
+		!grok2apiSyncEnabledOK || !grok2apiBaseUrlOK || !grok2apiAdminUsernameOK || !grok2apiAdminPasswordOK || !managerDatabasePathOK {
+		return pluginSettings{}, fmt.Errorf("必须同时提供基础调度、健康槽位、智商探测、grok2api 同步和 Manager 数据库配置")
 	}
 	settings := pluginSettings{
 		WorkerCount:                workerCount,
@@ -489,6 +527,7 @@ func settingsFromPayload(payload map[string]any) (pluginSettings, error) {
 		Grok2apiBaseUrl:            normalizeGrok2apiBaseURL(grok2apiBaseUrl),
 		Grok2apiAdminUsername:      strings.TrimSpace(grok2apiAdminUsername),
 		Grok2apiAdminPassword:      grok2apiAdminPassword,
+		ManagerDatabasePath:         strings.TrimSpace(managerDatabasePath),
 	}
 	if settings.Grok2apiBaseUrl != "" {
 		if err := validateGrok2apiBaseURLOnly(settings.Grok2apiBaseUrl); err != nil {
@@ -587,6 +626,7 @@ func publicSettings(settings pluginSettings) map[string]any {
 		"grok2apiBaseUrl":            settings.Grok2apiBaseUrl,
 		"grok2apiAdminUsername":      settings.Grok2apiAdminUsername,
 		"grok2apiAdminPassword":      settings.Grok2apiAdminPassword,
+		"managerDatabasePath":         settings.ManagerDatabasePath,
 	}
 }
 
