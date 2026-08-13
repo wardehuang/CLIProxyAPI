@@ -49,6 +49,7 @@ func handleStreamCompletionIntercept(completion pluginapi.StreamCompletionInterc
 	snapshot := realtimeGuardSnapshotFromMetadata(completion.Metadata)
 	if snapshot.SlotID > 0 && snapshot.NodeID > 0 && snapshot.ProxyURL != "" {
 		probe.SourceSnapshot = snapshot
+		probe.ProxyURL = snapshot.ProxyURL
 	}
 	decision := classifyRealtimeGuardProbe(probe)
 	if decision.Classification == realtimeGuardClassificationNormal {
@@ -62,15 +63,26 @@ func handleStreamCompletionIntercept(completion pluginapi.StreamCompletionInterc
 			Error:      decision.Error,
 		}, nil
 	}
+	if decision.Classification == realtimeGuardClassificationUnknown {
+		return pluginapi.StreamCompletionInterceptResponse{
+			Action:     pluginapi.StreamCompletionActionFail,
+			Reason:     decision.Reason,
+			StatusCode: http.StatusBadGateway,
+			Error:      decision.Error,
+		}, nil
+	}
 
 	pluginRuntime.realtimeGuardMutex.Lock()
 	defer pluginRuntime.realtimeGuardMutex.Unlock()
-	managerDatabasePath := pluginRuntime.managerDatabase()
+	managerBaseURL, managerManagementKey := pluginRuntime.managerAPISettings()
 	pluginRuntime.topologyMutex.Lock()
 	defer pluginRuntime.topologyMutex.Unlock()
 
 	_, err := pluginRuntime.withStore(func(store *ipStore) ([]byte, error) {
 		if decision.Classification == realtimeGuardClassificationDegradation {
+			if logErr := store.logRealtimeDegradationDetected(probe, decision); logErr != nil {
+				return nil, logErr
+			}
 			failure, failureErr := store.recordRealtimeDegradationFailure(probe, decision)
 			if failureErr != nil {
 				return nil, failureErr
@@ -83,15 +95,27 @@ func handleStreamCompletionIntercept(completion pluginapi.StreamCompletionInterc
 			if originalPriorityErr != nil {
 				return nil, originalPriorityErr
 			}
-			if managerErr := syncManagerRealtimeDegradation(managerDatabasePath, auth, originalPriority, probe, decision); managerErr != nil {
-				store.logRealtimeManagerDatabaseUnavailable(probe, decision, failure, managerErr)
+			if managerErr := syncManagerRealtimeDegradation(managerBaseURL, managerManagementKey, auth, originalPriority, probe, decision); managerErr != nil {
+				store.logRealtimeManagerAPIUnavailable(probe, decision, failure, managerErr)
+				return nil, managerErr
 			}
 			if failure.ConsecutiveFailureCount < realtimeDegradationReplacementThreshold {
+				if retryErr := ensureRealtimeGuardReplacementAuth(probe.AuthIndex); retryErr != nil {
+					return nil, retryErr
+				}
 				store.logRealtimeDegradationRecorded(probe, decision, failure)
 				return nil, nil
 			}
 		}
-		return nil, store.applyRealtimeGuard(context.Background(), probe, &decision)
+		if applyErr := store.applyRealtimeGuard(context.Background(), probe, &decision); applyErr != nil {
+			return nil, applyErr
+		}
+		if decision.Action == realtimeGuardActionRetry {
+			if retryErr := ensureRealtimeGuardReplacementAuth(probe.AuthIndex); retryErr != nil {
+				return nil, retryErr
+			}
+		}
+		return nil, nil
 	})
 	if err != nil {
 		return pluginapi.StreamCompletionInterceptResponse{
@@ -118,6 +142,7 @@ func realtimeGuardProbeFromCompletion(completion pluginapi.StreamCompletionInter
 		RequestedModel:  completion.RequestedModel,
 		AuthID:          completion.AuthID,
 		AuthIndex:       completion.AuthIndex,
+		AuthFileName:    completion.AuthFileName,
 		ProxyURL:        completion.ProxyURL,
 		RequestHeaders:  completion.RequestHeaders,
 		ResponseHeaders: completion.ResponseHeaders,
@@ -169,13 +194,6 @@ func classifyRealtimeGuardProbeWithSettings(probe realtimeGuardProbe, settings p
 	if sseErr != nil {
 		return realtimeGuardUnknownDecision("sse_failed", sseErr.Error())
 	}
-	if !thinkingDelta {
-		decision.Action = realtimeGuardActionRetry
-		decision.Classification = realtimeGuardClassificationDegradation
-		decision.QualityLevel = realtimeGuardQualitySoft
-		decision.Reason = "missing_thinking_delta"
-		return decision
-	}
 	generationStartedAt := probe.FirstPayloadAt
 	if generationStartedAt.IsZero() {
 		generationStartedAt = probe.StartedAt
@@ -196,18 +214,18 @@ func classifyRealtimeGuardProbeWithSettings(probe realtimeGuardProbe, settings p
 		decision.Reason = "hard_tps"
 		return decision
 	}
-	if decision.TPS >= settings.QualitySoftTPS {
+	if decision.TPS >= settings.QualitySoftTPS && !thinkingDelta {
 		decision.Action = realtimeGuardActionRetry
 		decision.Classification = realtimeGuardClassificationDegradation
 		decision.QualityLevel = realtimeGuardQualitySoft
-		decision.Reason = "soft_tps"
+		decision.Reason = "soft_tps_missing_thinking_delta"
 	}
 	return decision
 }
 
 func realtimeGuardUnknownDecision(reason, detail string) realtimeGuardDecision {
 	return realtimeGuardDecision{
-		Action:         realtimeGuardActionRetry,
+		Action:         realtimeGuardActionFail,
 		Reason:         reason,
 		Classification: realtimeGuardClassificationUnknown,
 		QualityLevel:   realtimeGuardQualityUnknown,
@@ -628,6 +646,34 @@ func (store *ipStore) probeRealtimeFallbackQuality(ctx context.Context, node pro
 	}
 }
 
+func ensureRealtimeGuardReplacementAuth(degradedAuthIndex string) error {
+	authFiles, err := listAuthFiles()
+	if err != nil {
+		return fmt.Errorf("读取可重试 xAI auth: %w", err)
+	}
+	for _, auth := range authFiles {
+		if auth.Index == degradedAuthIndex || auth.Disabled || auth.AccessToken() == "" || auth.Priority == managerAccountAbnormalPriority {
+			continue
+		}
+		return nil
+	}
+	return fmt.Errorf("实时守护没有可用的新 xAI auth，拒绝重试")
+}
+
+func (store *ipStore) logRealtimeDegradationDetected(probe realtimeGuardProbe, decision realtimeGuardDecision) error {
+	return store.appendProbeLog(
+		logCategoryRealtimeGuard,
+		probe.RequestID,
+		logStatusProbing,
+		logLevelWarn,
+		"realtime_guard.degradation_detected",
+		probe.SourceSnapshot.NodeID,
+		"",
+		fmt.Sprintf("【检测到降智】auth:%s，节点:%s，原因:%s", probe.AuthFileName, probe.ProxyURL, decision.Reason),
+		fmt.Sprintf("request_id=%s；auth_file=%s；auth_index=%s；节点代理=%s；HTTP=%d；等级=%s；TPS=%.2f", probe.RequestID, probe.AuthFileName, probe.AuthIndex, probe.ProxyURL, probe.StatusCode, decision.QualityLevel, decision.TPS),
+	)
+}
+
 func (store *ipStore) logRealtimeDegradationRecorded(probe realtimeGuardProbe, decision realtimeGuardDecision, failure realtimeDegradationFailure) {
 	_ = store.appendProbeLog(
 		logCategoryRealtimeGuard,
@@ -642,16 +688,16 @@ func (store *ipStore) logRealtimeDegradationRecorded(probe realtimeGuardProbe, d
 	)
 }
 
-func (store *ipStore) logRealtimeManagerDatabaseUnavailable(probe realtimeGuardProbe, decision realtimeGuardDecision, failure realtimeDegradationFailure, managerErr error) {
+func (store *ipStore) logRealtimeManagerAPIUnavailable(probe realtimeGuardProbe, decision realtimeGuardDecision, failure realtimeDegradationFailure, managerErr error) {
 	_ = store.appendProbeLog(
 		logCategoryRealtimeGuard,
 		probe.RequestID,
 		logStatusError,
 		logLevelWarn,
-		"realtime_guard.manager_database_unavailable",
+		"realtime_guard.manager_api_unavailable",
 		failure.NodeID,
 		failure.NodeName,
-		"实时守护未能同步 CPA-Manager-Plus 数据库",
+		"实时守护未能调用 CPA-Manager-Plus API",
 		fmt.Sprintf("request_id=%s；auth_id=%s；auth_index=%s；节点代理=%s；降智次数=%d；原因=%s；错误=%s", probe.RequestID, probe.AuthID, probe.AuthIndex, failure.ProxyURL, failure.ConsecutiveFailureCount, decision.Reason, managerErr.Error()),
 	)
 }

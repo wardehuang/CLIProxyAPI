@@ -679,6 +679,9 @@ func (m *Manager) executeStreamMixedOnce(ctx context.Context, providers []string
 			pooled = false
 		}
 		streamResult, errStream := m.executeStreamWithModelPool(execCtx, executor, auth, provider, execReq, execOpts, routeModel, streamExecutionModel, models, pooled, aliasResult, routing, !homeMode || selection != nil, selection != nil, unauthorizedRefreshTried)
+		if streamResult != nil {
+			streamResult.Metadata = cloneAuthSelectionMetadata(execOpts.Metadata)
+		}
 		if errStream != nil {
 			if selection != nil {
 				releaseAttempt()
@@ -705,6 +708,19 @@ func (m *Manager) executeStreamMixedOnce(ctx context.Context, providers []string
 			return wrapHomeStream(ctx, streamResult, selection, releaseAttempt), nil
 		}
 		return streamResult, nil
+	}
+}
+
+func cloneAuthSelectionMetadata(metadata map[string]any) map[string]any {
+	if metadata == nil {
+		return nil
+	}
+	return map[string]any{
+		cliproxyexecutor.SelectedAuthMetadataKey:         metadata[cliproxyexecutor.SelectedAuthMetadataKey],
+		cliproxyexecutor.SelectedAuthIndexMetadataKey:    metadata[cliproxyexecutor.SelectedAuthIndexMetadataKey],
+		cliproxyexecutor.SelectedAuthProxyURLMetadataKey: metadata[cliproxyexecutor.SelectedAuthProxyURLMetadataKey],
+		cliproxyexecutor.SelectedAuthProviderMetadataKey: metadata[cliproxyexecutor.SelectedAuthProviderMetadataKey],
+		cliproxyexecutor.SelectedAuthFileNameMetadataKey: metadata[cliproxyexecutor.SelectedAuthFileNameMetadataKey],
 	}
 }
 
@@ -1069,7 +1085,7 @@ func isFreeCodexAuth(auth *Auth) bool {
 }
 
 func publishSelectedAuthMetadata(meta map[string]any, auth *Auth) {
-	if len(meta) == 0 || auth == nil {
+	if meta == nil || auth == nil {
 		return
 	}
 	if authID := strings.TrimSpace(auth.ID); authID != "" {
@@ -1086,6 +1102,7 @@ func publishSelectedAuthMetadata(meta map[string]any, auth *Auth) {
 	}
 	meta[cliproxyexecutor.SelectedAuthProxyURLMetadataKey] = strings.TrimSpace(auth.ProxyURL)
 	meta[cliproxyexecutor.SelectedAuthProviderMetadataKey] = strings.TrimSpace(auth.Provider)
+	meta[cliproxyexecutor.SelectedAuthFileNameMetadataKey] = filepath.Base(strings.TrimSpace(auth.FileName))
 }
 
 func (m *Manager) executorFor(provider string) ProviderExecutor {

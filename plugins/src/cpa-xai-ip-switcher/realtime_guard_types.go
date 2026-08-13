@@ -30,6 +30,7 @@ type realtimeGuardProbe struct {
 	RequestedModel  string
 	AuthID          string
 	AuthIndex       string
+	AuthFileName    string
 	ProxyURL        string
 	RequestHeaders  http.Header
 	ResponseHeaders http.Header

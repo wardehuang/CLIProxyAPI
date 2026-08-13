@@ -90,7 +90,8 @@ type pluginSettings struct {
 	Grok2apiBaseUrl            string
 	Grok2apiAdminUsername      string
 	Grok2apiAdminPassword      string
-	ManagerDatabasePath         string
+	ManagerBaseURL             string
+	ManagerManagementKey       string
 }
 
 type proxyNode struct {
@@ -1487,7 +1488,7 @@ WHERE setting_key IN (
     'revive_interval_seconds', 'probe_retry_count', 'healthy_slot_count', 'healthy_candidate_slot_count',
     'quality_worker_count', 'quality_probe_timeout_seconds', 'quality_soft_tps', 'quality_hard_tps',
     'grok2api_sync_enabled', 'grok2api_base_url', 'grok2api_admin_username', 'grok2api_admin_password',
-    'manager_database_path'
+    'manager_base_url', 'manager_management_key', 'manager_database_path'
 )`)
 	if err != nil {
 		return pluginSettings{}, fmt.Errorf("read plugin settings: %w", err)
@@ -1518,8 +1519,10 @@ WHERE setting_key IN (
 			settings.Grok2apiAdminUsername = strings.TrimSpace(rawValue)
 		case "grok2api_admin_password":
 			settings.Grok2apiAdminPassword = rawValue
-		case "manager_database_path":
-			settings.ManagerDatabasePath = strings.TrimSpace(rawValue)
+		case "manager_base_url":
+			settings.ManagerBaseURL = strings.TrimRight(strings.TrimSpace(rawValue), "/")
+		case "manager_management_key":
+			settings.ManagerManagementKey = rawValue
 		default:
 			value, parseErr := strconv.Atoi(strings.TrimSpace(rawValue))
 			if parseErr != nil {
@@ -1591,7 +1594,8 @@ func (store *ipStore) setSettings(settings pluginSettings) error {
 		"grok2api_base_url":             normalizeGrok2apiBaseURL(settings.Grok2apiBaseUrl),
 		"grok2api_admin_username":       strings.TrimSpace(settings.Grok2apiAdminUsername),
 		"grok2api_admin_password":       settings.Grok2apiAdminPassword,
-		"manager_database_path":          strings.TrimSpace(settings.ManagerDatabasePath),
+		"manager_base_url":              strings.TrimRight(strings.TrimSpace(settings.ManagerBaseURL), "/"),
+		"manager_management_key":        settings.ManagerManagementKey,
 	}
 	for settingKey, settingValue := range settingsToSave {
 		if _, err := transaction.Exec(`

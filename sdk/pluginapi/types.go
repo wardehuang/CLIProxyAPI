@@ -15,6 +15,9 @@ type Plugin struct {
 	Metadata Metadata
 	// Capabilities declares the optional integration points implemented by the plugin.
 	Capabilities Capabilities
+	// SchemaVersion is the plugin contract version negotiated at registration.
+	// Zero means unset (treated as legacy by the host).
+	SchemaVersion uint32
 }
 
 // Metadata describes a plugin for registry, logging, and diagnostics.
@@ -986,6 +989,7 @@ type StreamCompletionInterceptRequest struct {
 	RequestedModel  string
 	AuthID          string
 	AuthIndex       string
+	AuthFileName    string
 	ProxyURL        string
 	RequestHeaders  http.Header
 	ResponseHeaders http.Header

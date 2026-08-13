@@ -44,6 +44,8 @@ const (
 	SelectedAuthProxyURLMetadataKey = "selected_auth_proxy_url"
 	// SelectedAuthProviderMetadataKey stores the provider on the selected auth.
 	SelectedAuthProviderMetadataKey = "selected_auth_provider"
+	// SelectedAuthFileNameMetadataKey stores the selected auth backing file name.
+	SelectedAuthFileNameMetadataKey = "selected_auth_file_name"
 	// SelectedAuthIndexCallbackMetadataKey carries an optional callback invoked with the selected auth index.
 	SelectedAuthIndexCallbackMetadataKey = "selected_auth_index_callback"
 	// ExecutionSessionMetadataKey identifies a long-lived downstream execution session.
@@ -248,6 +250,8 @@ type StreamCompletion struct {
 type StreamResult struct {
 	// Headers carries upstream HTTP response headers from the initial connection.
 	Headers http.Header
+	// Metadata identifies the auth and request state used for this stream attempt.
+	Metadata map[string]any
 	// Chunks is the channel of streaming payload units.
 	Chunks <-chan StreamChunk
 	// Completion receives one terminal source-stream state before Chunks closes.

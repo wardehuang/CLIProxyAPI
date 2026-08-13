@@ -100,9 +100,10 @@ type lifecycleRequest struct {
 }
 
 type pluginConfig struct {
-	DatabasePath        string `yaml:"database_path" json:"database_path"`
-	ManagerDatabasePath string `yaml:"manager_database_path" json:"manager_database_path"`
-	WorkerCount         int    `yaml:"worker_count" json:"worker_count"`
+	DatabasePath         string `yaml:"database_path" json:"database_path"`
+	ManagerBaseURL       string `yaml:"manager_base_url" json:"manager_base_url"`
+	ManagerManagementKey string `yaml:"manager_management_key" json:"manager_management_key"`
+	WorkerCount          int    `yaml:"worker_count" json:"worker_count"`
 }
 
 type registration struct {
@@ -345,9 +346,14 @@ func pluginRegistration() registration {
 					Description: "插件 SQLite 数据库路径，默认 /opt/cli-proxy-api/plugin-data/cpa-xai-ip-switcher/ip-switcher.sqlite3。",
 				},
 				{
-					Name:        "manager_database_path",
+					Name:        "manager_base_url",
 					Type:        pluginapi.ConfigFieldTypeString,
-					Description: "CPA-Manager-Plus SQLite 数据库路径；配置后实时降智会同步 priority=-8、priority adjustment 和最近服务器巡检记录。容器默认路径为 /data/usage.sqlite。",
+					Description: "CPA-Manager-Plus 地址，例如 http://127.0.0.1:18317。",
+				},
+				{
+					Name:        "manager_management_key",
+					Type:        pluginapi.ConfigFieldTypeString,
+					Description: "CPA-Manager-Plus 管理密钥；实时降智同步使用 Bearer 鉴权调用 Manager API。",
 				},
 				{
 					Name:        "worker_count",
@@ -457,6 +463,13 @@ func updatePluginSettings(body json.RawMessage) ([]byte, error) {
 	if store == nil {
 		return managementJSON(http.StatusInternalServerError, errorMessage("settingsFailed", "plugin store is not initialized"))
 	}
+	currentSettings, err := store.settings()
+	if err != nil {
+		return managementJSON(http.StatusInternalServerError, errorMessage("settingsFailed", err.Error()))
+	}
+	if strings.TrimSpace(settings.ManagerManagementKey) == "" {
+		settings.ManagerManagementKey = currentSettings.ManagerManagementKey
+	}
 	settingsSaved, err := pluginRuntime.updateSettings(store, settings)
 	if err != nil {
 		_ = store.appendLog(logLevelError, "settings.update_failed", 0, "", "更新插件配置失败", err.Error())
@@ -475,12 +488,13 @@ func updatePluginSettings(body json.RawMessage) ([]byte, error) {
 
 func checkLatestManagerInspectionRun(body json.RawMessage) ([]byte, error) {
 	var payload struct {
-		ManagerDatabasePath string `json:"managerDatabasePath"`
+		ManagerBaseURL       string `json:"managerBaseUrl"`
+		ManagerManagementKey string `json:"managerManagementKey"`
 	}
 	if err := json.Unmarshal(body, &payload); err != nil {
 		return managementJSON(http.StatusBadRequest, errorMessage("invalidBody", "invalid body"))
 	}
-	latestRunID, err := latestManagerScheduledInspectionRunID(payload.ManagerDatabasePath)
+	latestRunID, err := latestManagerScheduledInspectionRunID(payload.ManagerBaseURL, payload.ManagerManagementKey)
 	if err != nil {
 		return managementJSON(http.StatusBadRequest, errorMessage("managerInspectionCheckFailed", err.Error()))
 	}
@@ -504,11 +518,12 @@ func settingsFromPayload(payload map[string]any) (pluginSettings, error) {
 	grok2apiBaseUrl, grok2apiBaseUrlOK := stringValue(firstValue(payload, "grok2apiBaseUrl", "grok2api_base_url"))
 	grok2apiAdminUsername, grok2apiAdminUsernameOK := stringValue(firstValue(payload, "grok2apiAdminUsername", "grok2api_admin_username"))
 	grok2apiAdminPassword, grok2apiAdminPasswordOK := stringValue(firstValue(payload, "grok2apiAdminPassword", "grok2api_admin_password"))
-	managerDatabasePath, managerDatabasePathOK := stringValue(firstValue(payload, "managerDatabasePath", "manager_database_path"))
+	managerBaseURL, managerBaseURLOK := stringValue(firstValue(payload, "managerBaseUrl", "manager_base_url"))
+	managerManagementKey, managerManagementKeyOK := stringValue(firstValue(payload, "managerManagementKey", "manager_management_key"))
 	if !workerOK || !refreshOK || !keepaliveWorkersOK || !keepaliveIntervalOK || !reviveIntervalOK || !retryOK ||
 		!healthySlotOK || !healthyCandidateSlotOK || !qualityWorkerOK || !qualityTimeoutOK || !softTPSOK || !hardTPSOK ||
-		!grok2apiSyncEnabledOK || !grok2apiBaseUrlOK || !grok2apiAdminUsernameOK || !grok2apiAdminPasswordOK || !managerDatabasePathOK {
-		return pluginSettings{}, fmt.Errorf("必须同时提供基础调度、健康槽位、智商探测、grok2api 同步和 Manager 数据库配置")
+		!grok2apiSyncEnabledOK || !grok2apiBaseUrlOK || !grok2apiAdminUsernameOK || !grok2apiAdminPasswordOK || !managerBaseURLOK || !managerManagementKeyOK {
+		return pluginSettings{}, fmt.Errorf("必须同时提供基础调度、健康槽位、智商探测、grok2api 同步和 Manager API 配置")
 	}
 	settings := pluginSettings{
 		WorkerCount:                workerCount,
@@ -527,7 +542,8 @@ func settingsFromPayload(payload map[string]any) (pluginSettings, error) {
 		Grok2apiBaseUrl:            normalizeGrok2apiBaseURL(grok2apiBaseUrl),
 		Grok2apiAdminUsername:      strings.TrimSpace(grok2apiAdminUsername),
 		Grok2apiAdminPassword:      grok2apiAdminPassword,
-		ManagerDatabasePath:         strings.TrimSpace(managerDatabasePath),
+		ManagerBaseURL:             strings.TrimRight(strings.TrimSpace(managerBaseURL), "/"),
+		ManagerManagementKey:       managerManagementKey,
 	}
 	if settings.Grok2apiBaseUrl != "" {
 		if err := validateGrok2apiBaseURLOnly(settings.Grok2apiBaseUrl); err != nil {
@@ -626,7 +642,8 @@ func publicSettings(settings pluginSettings) map[string]any {
 		"grok2apiBaseUrl":            settings.Grok2apiBaseUrl,
 		"grok2apiAdminUsername":      settings.Grok2apiAdminUsername,
 		"grok2apiAdminPassword":      settings.Grok2apiAdminPassword,
-		"managerDatabasePath":         settings.ManagerDatabasePath,
+		"managerBaseUrl":             settings.ManagerBaseURL,
+		"managerManagementKey":       settings.ManagerManagementKey,
 	}
 }
 

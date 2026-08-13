@@ -13,7 +13,7 @@ import (
 	"golang.org/x/net/context"
 )
 
-const maxRealtimeGuardRetries = 5
+const maxRealtimeGuardDegradedAccounts = 5
 
 type streamCompletionHost interface {
 	InterceptStreamCompletion(context.Context, pluginapi.StreamCompletionInterceptRequest) pluginapi.StreamCompletionInterceptResponse
@@ -94,6 +94,7 @@ func (h *BaseAPIHandler) executeBufferedStreamWithGuard(
 			if currentErr == nil && currentResult == nil {
 				currentResult, currentErr = h.AuthManager.ExecuteStream(ctx, providers, req, opts)
 			}
+			mergeStreamAttemptAuthMetadata(opts.Metadata, currentResult)
 
 			attempt := collectBufferedStreamAttempt(ctx, interceptorHost, streamInterceptorsActive, responseProtocol, normalizedModel, originalRequestedModel, req, opts, currentResult, currentErr, execOptions.SkipInterceptorPluginID)
 			decision, guardErr := completionHost.InterceptStreamCompletionRequired(ctx, buildStreamCompletionRequest(lifecycle, providers, responseProtocol, normalizedModel, originalRequestedModel, req, opts, attempt, retryCount))
@@ -128,8 +129,9 @@ func (h *BaseAPIHandler) executeBufferedStreamWithGuard(
 				}
 				return
 			case pluginapi.StreamCompletionActionRetry:
-				if retryCount >= maxRealtimeGuardRetries {
-					failure := realtimeGuardFailure(decision, "实时降智守护重试次数已达到 5 次")
+				degradedAccountCount := retryCount + 1
+				if degradedAccountCount >= maxRealtimeGuardDegradedAccounts {
+					failure := realtimeGuardFailure(decision, "实时降智守护已处理 5 个降智账号")
 					completionOutcome = pluginapi.RequestCompletionFailed
 					completionStatus = failure.StatusCode
 					completionErr = failure.Error
@@ -354,6 +356,7 @@ func buildStreamCompletionRequest(
 		RequestedModel:  originalRequestedModel,
 		AuthID:          metadataString(opts.Metadata, coreexecutor.SelectedAuthMetadataKey),
 		AuthIndex:       metadataString(opts.Metadata, coreexecutor.SelectedAuthIndexMetadataKey),
+		AuthFileName:    metadataString(opts.Metadata, coreexecutor.SelectedAuthFileNameMetadataKey),
 		ProxyURL:        metadataString(opts.Metadata, coreexecutor.SelectedAuthProxyURLMetadataKey),
 		RequestHeaders:  cloneHeader(opts.Headers),
 		ResponseHeaders: cloneHeader(attempt.DownstreamHeaders),
@@ -367,8 +370,25 @@ func buildStreamCompletionRequest(
 		FirstPayloadAt:  attempt.FirstPayloadAt,
 		FinishedAt:      attempt.FinishedAt,
 		RetryCount:      retryCount,
-		MaxRetries:      maxRealtimeGuardRetries,
+		MaxRetries:      maxRealtimeGuardDegradedAccounts,
 		Metadata:        opts.Metadata,
+	}
+}
+
+func mergeStreamAttemptAuthMetadata(metadata map[string]any, streamResult *coreexecutor.StreamResult) {
+	if metadata == nil || streamResult == nil {
+		return
+	}
+	for _, key := range []string{
+		coreexecutor.SelectedAuthMetadataKey,
+		coreexecutor.SelectedAuthIndexMetadataKey,
+		coreexecutor.SelectedAuthProxyURLMetadataKey,
+		coreexecutor.SelectedAuthProviderMetadataKey,
+		coreexecutor.SelectedAuthFileNameMetadataKey,
+	} {
+		if value, exists := streamResult.Metadata[key]; exists {
+			metadata[key] = value
+		}
 	}
 }
 

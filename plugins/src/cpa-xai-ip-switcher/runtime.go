@@ -10,13 +10,14 @@ import (
 var pluginRuntime = &runtimeController{}
 
 type runtimeController struct {
-	mutex               sync.RWMutex
-	topologyMutex       sync.Mutex
-	realtimeGuardMutex  sync.Mutex
-	store               *ipStore
-	managerDatabasePath string
-	workerCancel        context.CancelFunc
-	workerGroup         sync.WaitGroup
+	mutex                sync.RWMutex
+	topologyMutex        sync.Mutex
+	realtimeGuardMutex   sync.Mutex
+	store                *ipStore
+	managerBaseURL       string
+	managerManagementKey string
+	workerCancel         context.CancelFunc
+	workerGroup          sync.WaitGroup
 }
 
 func (controller *runtimeController) configure(config pluginConfig) error {
@@ -39,8 +40,11 @@ func (controller *runtimeController) configureLocked(config pluginConfig) error 
 		if settingsErr != nil {
 			return settingsErr
 		}
-		if configuredManagerDatabasePath := strings.TrimSpace(config.ManagerDatabasePath); configuredManagerDatabasePath != "" {
-			settings.ManagerDatabasePath = configuredManagerDatabasePath
+		if configuredManagerBaseURL := strings.TrimSpace(config.ManagerBaseURL); configuredManagerBaseURL != "" {
+			settings.ManagerBaseURL = strings.TrimRight(configuredManagerBaseURL, "/")
+		}
+		if configuredManagerManagementKey := strings.TrimSpace(config.ManagerManagementKey); configuredManagerManagementKey != "" {
+			settings.ManagerManagementKey = configuredManagerManagementKey
 		}
 		if config.WorkerCount != 0 {
 			settings.WorkerCount = config.WorkerCount
@@ -48,7 +52,8 @@ func (controller *runtimeController) configureLocked(config pluginConfig) error 
 		if err := controller.store.setSettings(settings); err != nil {
 			return err
 		}
-		controller.managerDatabasePath = settings.ManagerDatabasePath
+		controller.managerBaseURL = settings.ManagerBaseURL
+		controller.managerManagementKey = settings.ManagerManagementKey
 		if config.WorkerCount != 0 {
 			_ = controller.store.appendLog(logLevelInfo, "plugin.reconfigure_deferred", 0, "", "插件配置已保存，将在下次启动时生效", fmt.Sprintf("探测线程数 %d", config.WorkerCount))
 		}
@@ -67,10 +72,13 @@ func (controller *runtimeController) configureLocked(config pluginConfig) error 
 	if config.WorkerCount != 0 {
 		settings.WorkerCount = config.WorkerCount
 	}
-	if configuredManagerDatabasePath := strings.TrimSpace(config.ManagerDatabasePath); configuredManagerDatabasePath != "" {
-		settings.ManagerDatabasePath = configuredManagerDatabasePath
+	if configuredManagerBaseURL := strings.TrimSpace(config.ManagerBaseURL); configuredManagerBaseURL != "" {
+		settings.ManagerBaseURL = strings.TrimRight(configuredManagerBaseURL, "/")
 	}
-	if config.WorkerCount != 0 || strings.TrimSpace(config.ManagerDatabasePath) != "" {
+	if configuredManagerManagementKey := strings.TrimSpace(config.ManagerManagementKey); configuredManagerManagementKey != "" {
+		settings.ManagerManagementKey = configuredManagerManagementKey
+	}
+	if config.WorkerCount != 0 || strings.TrimSpace(config.ManagerBaseURL) != "" || strings.TrimSpace(config.ManagerManagementKey) != "" {
 		if err := store.setSettings(settings); err != nil {
 			_ = store.close()
 			return err
@@ -82,7 +90,8 @@ func (controller *runtimeController) configureLocked(config pluginConfig) error 
 	}
 
 	controller.store = store
-	controller.managerDatabasePath = settings.ManagerDatabasePath
+	controller.managerBaseURL = settings.ManagerBaseURL
+	controller.managerManagementKey = settings.ManagerManagementKey
 	controller.topologyMutex.Lock()
 	defer controller.topologyMutex.Unlock()
 	if err := refreshHealthyAuthDistribution(store, settings.HealthySlotCount); err != nil {
@@ -117,7 +126,8 @@ func pluginSettingsEqual(left, right pluginSettings) bool {
 		left.Grok2apiBaseUrl == right.Grok2apiBaseUrl &&
 		left.Grok2apiAdminUsername == right.Grok2apiAdminUsername &&
 		left.Grok2apiAdminPassword == right.Grok2apiAdminPassword &&
-		left.ManagerDatabasePath == right.ManagerDatabasePath
+		left.ManagerBaseURL == right.ManagerBaseURL &&
+		left.ManagerManagementKey == right.ManagerManagementKey
 }
 
 func (controller *runtimeController) ensure() error {
@@ -163,7 +173,8 @@ func (controller *runtimeController) updateSettings(store *ipStore, settings plu
 	if err := store.setSettings(settings); err != nil {
 		return false, err
 	}
-	controller.managerDatabasePath = settings.ManagerDatabasePath
+	controller.managerBaseURL = settings.ManagerBaseURL
+	controller.managerManagementKey = settings.ManagerManagementKey
 	return true, nil
 }
 

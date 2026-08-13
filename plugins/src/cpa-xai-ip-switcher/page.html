@@ -445,16 +445,21 @@ socks5h://username:pass@ip:port
               <h4 id="settings-manager-title" class="settings-card-title">CPA Manager 巡检</h4>
               <span class="settings-card-badge live">立即生效</span>
             </div>
-            <p class="settings-card-help">配置 CPA-Manager-Plus `usage.sqlite` 路径。点击检查只读查询最近完成的 xAi 服务器巡检 run。</p>
+            <p class="settings-card-help">配置 CPA-Manager-Plus 地址与管理密钥。检查会查询最近完成的 xAi 服务器巡检 run；实时守护通过鉴权 API 写入 priority adjustment、结果和日志。</p>
             <div class="settings-grid">
-              <label class="settings-field span-3" for="manager-database-path">
-                Manager 数据库路径
-                <input id="manager-database-path" type="text" placeholder="/data/usage.sqlite" autocomplete="off">
-                <span class="settings-help">SQLite 文件路径；保存后实时守护同步立即使用。</span>
+              <label class="settings-field span-3" for="manager-base-url">
+                Manager 地址
+                <input id="manager-base-url" type="url" placeholder="http://127.0.0.1:18317" autocomplete="off">
+                <span class="settings-help">http(s) 绝对 URL；当前环境填 `http://127.0.0.1:18317`。</span>
+              </label>
+              <label class="settings-field span-3" for="manager-management-key">
+                Manager 管理密钥
+                <input id="manager-management-key" type="password" autocomplete="off">
+                <span class="settings-help">Manager 面板使用的管理密钥；仅保存于插件 SQLite。</span>
               </label>
             </div>
             <div class="modal-actions">
-              <button id="check-manager-database-button" class="button" type="button">检查</button>
+              <button id="check-manager-api-button" class="button" type="button">检查</button>
               <span id="manager-inspection-run-result" class="settings-help" aria-live="polite"></span>
             </div>
           </section>
@@ -582,9 +587,10 @@ socks5h://username:pass@ip:port
         grok2apiBaseUrl: document.getElementById("grok2api-base-url"),
         grok2apiAdminUsername: document.getElementById("grok2api-admin-username"),
         grok2apiAdminPassword: document.getElementById("grok2api-admin-password"),
-        managerDatabasePath: document.getElementById("manager-database-path"),
+        managerBaseUrl: document.getElementById("manager-base-url"),
+        managerManagementKey: document.getElementById("manager-management-key"),
         managerInspectionRunResult: document.getElementById("manager-inspection-run-result"),
-        checkManagerDatabaseButton: document.getElementById("check-manager-database-button"),
+        checkManagerAPIButton: document.getElementById("check-manager-api-button"),
         saveSettingsButton: document.getElementById("save-settings-button"),
         syncGrok2apiButton: document.getElementById("sync-grok2api-button"),
         addModal: document.getElementById("add-modal"),
@@ -682,7 +688,8 @@ socks5h://username:pass@ip:port
           elements.grok2apiBaseUrl.value = settings.grok2apiBaseUrl || "";
           elements.grok2apiAdminUsername.value = settings.grok2apiAdminUsername || "";
           elements.grok2apiAdminPassword.value = settings.grok2apiAdminPassword || "";
-          elements.managerDatabasePath.value = settings.managerDatabasePath || "";
+          elements.managerBaseUrl.value = settings.managerBaseUrl || "";
+          elements.managerManagementKey.value = settings.managerManagementKey || "";
           elements.managerInspectionRunResult.textContent = "";
         }
         if (applyRefreshInterval && state.refreshIntervalSeconds !== settings.refreshIntervalSeconds) {
@@ -1165,14 +1172,15 @@ socks5h://username:pass@ip:port
           grok2apiBaseUrl: elements.grok2apiBaseUrl.value.trim().replace(/\/+$/, ""),
           grok2apiAdminUsername: elements.grok2apiAdminUsername.value.trim(),
           grok2apiAdminPassword: elements.grok2apiAdminPassword.value,
-          managerDatabasePath: elements.managerDatabasePath.value.trim()
+          managerBaseUrl: elements.managerBaseUrl.value.trim().replace(/\/+$/, ""),
+          managerManagementKey: elements.managerManagementKey.value
         };
         if (!Number.isInteger(settings.workerCount) || settings.workerCount < 1 || settings.workerCount > 64 || !Number.isInteger(settings.refreshIntervalSeconds) || settings.refreshIntervalSeconds < minimumRefreshIntervalSeconds || settings.refreshIntervalSeconds > maximumRefreshIntervalSeconds || !Number.isInteger(settings.keepaliveWorkerCount) || settings.keepaliveWorkerCount < 1 || settings.keepaliveWorkerCount > 64 || !Number.isInteger(settings.keepaliveIntervalSeconds) || settings.keepaliveIntervalSeconds < 1 || settings.keepaliveIntervalSeconds > 86400 || !Number.isInteger(settings.reviveIntervalSeconds) || settings.reviveIntervalSeconds < 1 || settings.reviveIntervalSeconds > 86400 || !Number.isInteger(settings.probeRetryCount) || settings.probeRetryCount < 1 || settings.probeRetryCount > 10 || !Number.isInteger(settings.healthySlotCount) || settings.healthySlotCount < 1 || settings.healthySlotCount > 1000 || !Number.isInteger(settings.healthyCandidateSlotCount) || settings.healthyCandidateSlotCount < 0 || settings.healthySlotCount + settings.healthyCandidateSlotCount > 1000 || !Number.isInteger(settings.qualityWorkerCount) || settings.qualityWorkerCount < 1 || settings.qualityWorkerCount > 64 || !Number.isInteger(settings.qualityProbeTimeoutSeconds) || settings.qualityProbeTimeoutSeconds < 1 || settings.qualityProbeTimeoutSeconds > 600 || !Number.isFinite(settings.qualitySoftTPS) || settings.qualitySoftTPS <= 0 || !Number.isFinite(settings.qualityHardTPS) || settings.qualityHardTPS <= settings.qualitySoftTPS) {
           setNotice("配置范围无效：基础线程 1–64，页面刷新 5–3600 秒，保活和复活间隔 1–86400 秒，探测重试 1–10 次，总槽位 1–1000，智商线程 1–64，智商超时 1–600 秒，hard TPS 必须高于 soft TPS。", "error");
           return;
         }
-        if (settings.grok2apiBaseUrl && !/^https?:\/\//i.test(settings.grok2apiBaseUrl)) {
-          setNotice("grok2api 远端地址必须以 http:// 或 https:// 开头。", "error");
+        if (settings.managerBaseUrl && !/^https?:\/\//i.test(settings.managerBaseUrl)) {
+          setNotice("Manager 地址必须以 http:// 或 https:// 开头。", "error");
           return;
         }
         elements.saveSettingsButton.disabled = true;
@@ -1188,21 +1196,22 @@ socks5h://username:pass@ip:port
         }
       }
 
-      async function checkManagerDatabase() {
-        const managerDatabasePath = elements.managerDatabasePath.value.trim();
-        if (!managerDatabasePath) {
-          elements.managerInspectionRunResult.textContent = "先输入 Manager 数据库路径。";
+      async function checkManagerAPI() {
+        const managerBaseUrl = elements.managerBaseUrl.value.trim().replace(/\/+$/, "");
+        const managerManagementKey = elements.managerManagementKey.value;
+        if (!managerBaseUrl || !managerManagementKey) {
+          elements.managerInspectionRunResult.textContent = "先输入 Manager 地址和管理密钥。";
           return;
         }
-        elements.checkManagerDatabaseButton.disabled = true;
+        elements.checkManagerAPIButton.disabled = true;
         elements.managerInspectionRunResult.textContent = "检查中…";
         try {
-          const result = await callAPI("POST", "/manager/inspection/latest-run", { managerDatabasePath });
+          const result = await callAPI("POST", "/manager/inspection/latest-run", { managerBaseUrl, managerManagementKey });
           elements.managerInspectionRunResult.textContent = `xAi 最近服务器巡检 run ID：${result.runId}`;
         } catch (error) {
           elements.managerInspectionRunResult.textContent = error instanceof Error ? error.message : String(error);
         } finally {
-          elements.checkManagerDatabaseButton.disabled = false;
+          elements.checkManagerAPIButton.disabled = false;
         }
       }
 
@@ -1277,7 +1286,7 @@ socks5h://username:pass@ip:port
       document.getElementById("submit-ip-button").addEventListener("click", submitIPs);
       elements.settingsButton.addEventListener("click", openSettingsModal);
       elements.saveSettingsButton.addEventListener("click", saveSettings);
-      elements.checkManagerDatabaseButton.addEventListener("click", checkManagerDatabase);
+      elements.checkManagerAPIButton.addEventListener("click", checkManagerAPI);
       elements.syncGrok2apiButton.addEventListener("click", syncGrok2apiNow);
       elements.refreshButton.addEventListener("click", () => refresh());
       document.querySelector(".main-tabs").addEventListener("click", (event) => {

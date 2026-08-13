@@ -328,22 +328,16 @@ func readQualitySSE(reader io.Reader, result qualityProbeResult, settings plugin
 	}
 	result.OutputTokensPerSecond = float64(result.OutputTokens) * 1000 / float64(result.GenerationMs)
 	result.AnswerMatched = strings.Contains(modelAnswer.String(), "391")
-	if !result.ThinkingDelta {
-		result.Classification = qualityClassificationDegraded
-		result.QualityLevel = qualityLevelSoft
-		result.ClassificationReason = "missing_thinking_delta"
-		return result
-	}
 	if result.OutputTokensPerSecond >= settings.QualityHardTPS {
 		result.Classification = qualityClassificationDegraded
 		result.QualityLevel = qualityLevelHard
 		result.ClassificationReason = "hard_tps"
 		return result
 	}
-	if result.OutputTokensPerSecond >= settings.QualitySoftTPS {
+	if result.OutputTokensPerSecond >= settings.QualitySoftTPS && !result.ThinkingDelta {
 		result.Classification = qualityClassificationDegraded
 		result.QualityLevel = qualityLevelSoft
-		result.ClassificationReason = "soft_tps"
+		result.ClassificationReason = "soft_tps_missing_thinking_delta"
 		return result
 	}
 	result.Classification = qualityClassificationNormal
