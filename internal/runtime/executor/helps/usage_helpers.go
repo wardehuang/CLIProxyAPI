@@ -211,6 +211,23 @@ func (r *UsageReporter) MarkFirstResponseByte() {
 	r.setTTFT(time.Since(start))
 }
 
+func (r *UsageReporter) PublishWithGeneration(ctx context.Context, detail usage.Detail, firstPayloadAt, finishedAt time.Time) {
+	if r == nil {
+		return
+	}
+	detail = normalizeUsageDetailTotal(detail, r.provider, r.executorType)
+	r.once.Do(func() {
+		record := r.buildRecord(detail, false, usage.Failure{})
+		if !firstPayloadAt.IsZero() && !finishedAt.Before(firstPayloadAt) {
+			if record.Metadata == nil {
+				record.Metadata = map[string]any{}
+			}
+			record.Metadata["generation_ms"] = finishedAt.Sub(firstPayloadAt).Milliseconds()
+		}
+		r.publishRecord(ctx, record)
+	})
+}
+
 func (r *UsageReporter) buildAdditionalModelRecord(model string, detail usage.Detail) (usage.Record, bool) {
 	if r == nil {
 		return usage.Record{}, false

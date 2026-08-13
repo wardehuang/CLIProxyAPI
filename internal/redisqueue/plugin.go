@@ -84,10 +84,18 @@ func (p *usageQueuePlugin) HandleUsage(ctx context.Context, record coreusage.Rec
 	}
 	fail := resolveFail(ctx, record, failed)
 
+	generationMilliseconds := recordGenerationMilliseconds(record.Metadata)
+	latency := record.Latency
+	timeToFirstToken := record.TTFT
+	if generationMilliseconds > 0 {
+		latency = time.Duration(generationMilliseconds) * time.Millisecond
+		timeToFirstToken = 0
+	}
 	detail := requestDetail{
 		Timestamp:       timestamp,
-		LatencyMs:       record.Latency.Milliseconds(),
-		TTFTMs:          record.TTFT.Milliseconds(),
+		LatencyMs:       latency.Milliseconds(),
+		TTFTMs:          timeToFirstToken.Milliseconds(),
+		GenerationMs:    generationMilliseconds,
 		Source:          record.Source,
 		AuthIndex:       record.AuthIndex,
 		AccessTokenHash: record.AccessTokenSHA256,
@@ -146,6 +154,7 @@ type requestDetail struct {
 	Timestamp       time.Time   `json:"timestamp"`
 	LatencyMs       int64       `json:"latency_ms"`
 	TTFTMs          int64       `json:"ttft_ms"`
+	GenerationMs    int64       `json:"generation_ms,omitempty"`
 	Source          string      `json:"source"`
 	AuthIndex       string      `json:"auth_index"`
 	AccessTokenHash string      `json:"access_token_sha256,omitempty"`
@@ -173,6 +182,14 @@ type tokenStats struct {
 type failDetail struct {
 	StatusCode int    `json:"status_code"`
 	Body       string `json:"body"`
+}
+
+func recordGenerationMilliseconds(metadata map[string]any) int64 {
+	generationMilliseconds, ok := metadata["generation_ms"].(int64)
+	if !ok || generationMilliseconds < 1 {
+		return 0
+	}
+	return generationMilliseconds
 }
 
 func resolveFail(ctx context.Context, record coreusage.Record, failed bool) failDetail {

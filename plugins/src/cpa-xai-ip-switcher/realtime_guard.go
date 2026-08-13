@@ -190,7 +190,7 @@ func classifyRealtimeGuardProbeWithSettings(probe realtimeGuardProbe, settings p
 		return realtimeGuardUnknownDecision("sse_incomplete", "SSE 流未完整结束")
 	}
 
-	outputTokens, thinkingDelta, sseErr := parseRealtimeGuardSSE(probe.Body)
+	outputTokens, reasoningTokens, thinkingDelta, sseErr := parseRealtimeGuardSSE(probe.Body)
 	if sseErr != nil {
 		return realtimeGuardUnknownDecision("sse_failed", sseErr.Error())
 	}
@@ -203,10 +203,11 @@ func classifyRealtimeGuardProbeWithSettings(probe realtimeGuardProbe, settings p
 		generationFinishedAt = time.Now()
 	}
 	generationDuration := generationFinishedAt.Sub(generationStartedAt)
+	generationDuration = time.Duration(generationDuration.Milliseconds()) * time.Millisecond
 	if generationDuration < time.Millisecond {
 		generationDuration = time.Millisecond
 	}
-	decision.TPS = float64(outputTokens) / generationDuration.Seconds()
+	decision.TPS = float64(outputTokens+reasoningTokens) / generationDuration.Seconds()
 	if decision.TPS >= settings.QualityHardTPS {
 		decision.Action = realtimeGuardActionRetry
 		decision.Classification = realtimeGuardClassificationDegradation
@@ -233,11 +234,12 @@ func realtimeGuardUnknownDecision(reason, detail string) realtimeGuardDecision {
 	}
 }
 
-func parseRealtimeGuardSSE(body []byte) (int64, bool, error) {
+func parseRealtimeGuardSSE(body []byte) (int64, int64, bool, error) {
 	if len(body) == 0 {
-		return 0, false, fmt.Errorf("SSE 响应为空")
+		return 0, 0, false, fmt.Errorf("SSE 响应为空")
 	}
 	var outputTokens int64
+	var reasoningTokens int64
 	thinkingDelta := false
 	completed := false
 	for _, event := range strings.Split(string(body), "\n\n") {
@@ -253,11 +255,11 @@ func parseRealtimeGuardSSE(body []byte) (int64, bool, error) {
 			}
 			var message map[string]any
 			if err := json.Unmarshal([]byte(payload), &message); err != nil {
-				return 0, false, fmt.Errorf("解析 SSE 事件失败: %w", err)
+				return 0, 0, false, fmt.Errorf("解析 SSE 事件失败: %w", err)
 			}
 			eventType := strings.ToLower(stringField(message, "type"))
 			if strings.Contains(eventType, "failed") || strings.Contains(eventType, "incomplete") || eventType == "error" {
-				return 0, false, fmt.Errorf("SSE 事件异常: %s", eventType)
+				return 0, 0, false, fmt.Errorf("SSE 事件异常: %s", eventType)
 			}
 			if eventType == "response.reasoning_summary_text.delta" ||
 				eventType == "response.reasoning_text.delta" ||
@@ -278,13 +280,16 @@ func parseRealtimeGuardSSE(body []byte) (int64, bool, error) {
 			}
 			if usage != nil {
 				outputTokens = int64(integerField(usage, "output_tokens"))
+				if outputDetails, ok := usage["output_tokens_details"].(map[string]any); ok {
+					reasoningTokens = int64(integerField(outputDetails, "reasoning_tokens"))
+				}
 			}
 		}
 	}
 	if !completed {
-		return 0, false, fmt.Errorf("SSE 流未收到 response.completed 或 [DONE]")
+		return 0, 0, false, fmt.Errorf("SSE 流未收到 response.completed 或 [DONE]")
 	}
-	return outputTokens, thinkingDelta, nil
+	return outputTokens, reasoningTokens, thinkingDelta, nil
 }
 
 func (store *ipStore) applyRealtimeGuard(ctx context.Context, probe realtimeGuardProbe, decision *realtimeGuardDecision) error {

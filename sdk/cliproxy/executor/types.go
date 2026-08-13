@@ -4,6 +4,7 @@ import (
 	"context"
 	"net/http"
 	"net/url"
+	"time"
 
 	sdktranslator "github.com/router-for-me/CLIProxyAPI/v7/sdk/translator"
 )
@@ -243,6 +244,10 @@ type StreamCompletion struct {
 	Body []byte
 	// Err reports a terminal source-stream read failure.
 	Err error
+	// FirstPayloadAt is the timestamp of the first payload emitted from this upstream stream.
+	FirstPayloadAt time.Time
+	// FinishedAt is the timestamp when the upstream stream reader reached its terminal state.
+	FinishedAt time.Time
 }
 
 // StreamResult wraps the streaming response, providing both the chunk channel

@@ -326,7 +326,7 @@ func readQualitySSE(reader io.Reader, result qualityProbeResult, settings plugin
 	if result.GenerationMs < 1 {
 		result.GenerationMs = 1
 	}
-	result.OutputTokensPerSecond = float64(result.OutputTokens) * 1000 / float64(result.GenerationMs)
+	result.OutputTokensPerSecond = float64(result.OutputTokens+result.ReasoningTokens) * 1000 / float64(result.GenerationMs)
 	result.AnswerMatched = strings.Contains(modelAnswer.String(), "391")
 	if result.OutputTokensPerSecond >= settings.QualityHardTPS {
 		result.Classification = qualityClassificationDegraded

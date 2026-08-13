@@ -315,6 +315,12 @@ func collectBufferedStreamAttempt(
 			attempt.StatusCode = http.StatusBadGateway
 		} else {
 			attempt.Completed = sourceCompletion.Completed
+			if !sourceCompletion.FirstPayloadAt.IsZero() {
+				attempt.FirstPayloadAt = sourceCompletion.FirstPayloadAt
+			}
+			if !sourceCompletion.FinishedAt.IsZero() {
+				attempt.FinishedAt = sourceCompletion.FinishedAt
+			}
 			attempt.GuardBody = cloneBytes(sourceCompletion.Body)
 			if sourceCompletion.Err != nil && attempt.Err == nil {
 				attempt.Err = sourceCompletion.Err

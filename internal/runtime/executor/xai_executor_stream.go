@@ -7,10 +7,12 @@ import (
 	"io"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/runtime/executor/helps"
 	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
 	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/executor"
+	cliproxyusage "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/usage"
 	log "github.com/sirupsen/logrus"
 	"github.com/tidwall/gjson"
 )
@@ -77,7 +79,15 @@ func (e *XAIExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Auth
 	completion := make(chan cliproxyexecutor.StreamCompletion, 1)
 	go func() {
 		completionState := cliproxyexecutor.StreamCompletion{}
+		var completedUsage cliproxyusage.Detail
+		hasCompletedUsage := false
 		defer func() {
+			if completionState.FinishedAt.IsZero() {
+				completionState.FinishedAt = time.Now()
+			}
+			if hasCompletedUsage {
+				reporter.PublishWithGeneration(ctx, completedUsage, completionState.FirstPayloadAt, completionState.FinishedAt)
+			}
 			completion <- completionState
 			close(completion)
 			close(out)
@@ -98,6 +108,9 @@ func (e *XAIExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Auth
 		emitTranslatedLine := func(translatedLine []byte) bool {
 			chunks := helps.TranslateStreamWithClaudeInputTokens(ctx, prepared.to, prepared.responseFormat, req.Model, prepared.originalPayload, prepared.body, translatedLine, &param, claudeInputTokens)
 			for i := range chunks {
+				if completionState.FirstPayloadAt.IsZero() {
+					completionState.FirstPayloadAt = time.Now()
+				}
 				select {
 				case out <- cliproxyexecutor.StreamChunk{Payload: chunks[i]}:
 				case <-ctx.Done():
@@ -140,7 +153,8 @@ func (e *XAIExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Auth
 						xaiCollectOutputItemDone(eventData, outputItemsByIndex, &outputItemsFallback)
 					case "response.completed":
 						if detail, ok := helps.ParseCodexUsage(eventData); ok {
-							reporter.Publish(ctx, detail)
+							completedUsage = detail
+							hasCompletedUsage = true
 						}
 						eventData = xaiPatchCompletedOutput(eventData, outputItemsByIndex, outputItemsFallback)
 						eventData = xaiNormalizeReasoningSummaryData(eventData)
