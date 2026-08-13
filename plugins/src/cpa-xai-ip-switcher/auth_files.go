@@ -63,7 +63,7 @@ func listXAIAuthEntries() ([]pluginapi.HostAuthFileEntry, error) {
 		entries = append(entries, entry)
 	}
 	sort.SliceStable(entries, func(leftIndex, rightIndex int) bool {
-		return strings.ToLower(authEntryName(entries[leftIndex])) < strings.ToLower(authEntryName(entries[rightIndex]))
+		return authEntryName(entries[leftIndex]) < authEntryName(entries[rightIndex])
 	})
 	return entries, nil
 }

@@ -21,10 +21,10 @@
 | `-5` | 停用 | 服务器/条件巡检跳过；手动刷新仍探测，成功不恢复 |
 | `-6` | JWT 或 SSO bot 标记 | 服务器/条件巡检跳过；手动刷新检查后保持 `-6` |
 | `-7` | SSO 检查失败 | 需要重新登录更新 SSO；服务器、条件、手动刷新均继续检查，成功时自动恢复 |
-| `-8` | 实时守护判定位置降智的账号异常 | 仅服务器巡检和手动刷新探测；条件巡检跳过；服务器巡检健康后恢复为记录的原始 priority |
+| `-8` | 实时守护判定位置降智的账号异常 | 仅服务器巡检和手动刷新探测；条件巡检跳过；健康后恢复为 `1` |
 | 其他值或空值 | 正常账号 | 按候选规则探测 |
 
-托管 priority 为 `-1/-2/-3/-4/-7/-8`。`-7` 不保存恢复 adjustment，重新登录更新 SSO 且后续探测健康时按账号类型恢复。`-8` 的原 priority 保存在 `wxai_priority_adjustments`；服务器巡检确认健康后恢复该值，未记录原值则保持 `-8` 并让恢复失败显式暴露。
+托管 priority 为 `-1/-2/-3/-4/-7/-8`。`-7` 不保存恢复 adjustment，重新登录更新 SSO 且后续探测健康时恢复为 `1`。`-8` 的原 priority 保存在 `wxai_priority_adjustments`，但健康后同样恢复为 `1`；未记录原值不阻止恢复。任何 `priority<0` 且已有 `original_priority` 记录的 adjustment，都会把该原值规范化为 `1`。
 
 ## 3. FREE/SUPER 与 billing
 
@@ -34,12 +34,12 @@
 2. 已知 `SUPER`：调用月度 billing 与 credits；可并发。
 3. 类型未知：先调用月度 billing；`monthlyLimit > 0` 判为 `SUPER`，否则判为 `FREE`，随后落盘。
 4. 新判为 `SUPER` 后调用 credits。
-5. responses 返回 `free-usage-exhausted` 且类型未知时，直接落盘为 `FREE`。
-6. billing 或 credits 失败：按探测失败处理；手动刷新不再调用 responses。
+5. billing 或 credits 失败：按探测失败处理。
+6. 服务器巡检、条件巡检和手动刷新均不调用 responses；已冷却结束的 `priority=-1` FREE 账号完成 JWT/SSO 和 credits 检查后，credits 健康即恢复 priority。
 
-billing、credits 与 responses 使用同一轮 xAI HTTP client。billing/credits 使用下载 auth JSON 的 `access_token`，带 `X-XAI-Token-Auth`、billing 固定 client version、`User-Agent`；有 user ID 时带 `x-userid`。
+billing/credits 使用同一轮 xAI HTTP client，使用下载 auth JSON 的 `access_token`，带 `X-XAI-Token-Auth`、billing 固定 client version、`User-Agent`；有 user ID 时带 `x-userid`。
 
-## 4. JWT 与 SSO bot 标记、responses
+## 4. JWT 与 SSO bot 标记
 
 下载 auth JSON 后，服务器巡检、条件巡检、手动刷新均按以下顺序检查 bot 标记：
 
@@ -48,25 +48,20 @@ billing、credits 与 responses 使用同一轮 xAI HTTP client。billing/credit
 3. JWT 未命中后执行 SSO 检查。auth JSON 的 `sso` 字段缺失或空白时，不发 HTTP 请求，直接判定 `sso_expired`（priority `-7`）。`sso` 非空时，使用 auth JSON 的 `proxy_url`、`proxyUrl` 或 `proxy-url` 发起 SSO 检查；不读取或使用 CPA 全局 `proxy-url`。auth 未配置代理时，SSO 检查使用显式直连 transport，不使用进程环境代理。
 4. SSO 检查对 `GET https://grok.com/` 设置 `sso` 与 `sso-rw` Cookie，允许重定向，timeout 固定 20 秒，`User-Agent` 为 Chrome 138。
 5. SSO 页面 HTTP 200 后将 RSC HTML 中的转义字段还原，解析 `botFlagSource` 和 `botFlagDetails`。`botFlagSource=1/2`，或 `botFlagDetails` 的 `policy=deny` 且 `event=$registration`，均命中；其他值不命中。
-6. `sso` 缺失/空白、SSO 网络错误、非 200、响应过大或页面没有 botFlag 字段均判定 `sso_expired`：设置 priority `-7`、写入诊断详情并结束当前账号，不调用后续 billing、credits、responses。更新 auth JSON 的 SSO 后，后续服务器巡检、条件巡检或手动刷新检查成功，会按正常 priority 恢复规则自动恢复。SSO 请求不写入 `wxai_inspection_http_responses`，仅命中结果或诊断日志落库。
-7. JWT 或 SSO bot 标记命中都设置 priority `-6`，写入命中来源和完整详情到巡检结果/账号状态详情/日志，结束当前账号，不再调用 billing、credits、responses 或 chat completions。
+6. `sso` 缺失/空白、SSO 网络错误、非 200、响应过大或页面没有 botFlag 字段均判定 `sso_expired`：设置 priority `-7`、写入诊断详情并结束当前账号，不调用后续 billing 或 credits。更新 auth JSON 的 SSO 后，后续服务器巡检、条件巡检或手动刷新检查成功，会按正常 priority 恢复规则自动恢复。SSO 请求不写入 `wxai_inspection_http_responses`，仅命中结果或诊断日志落库。
+7. JWT 或 SSO bot 标记命中都设置 priority `-6`，写入命中来源和完整详情到巡检结果/账号状态详情/日志，结束当前账号，不再调用 billing 或 credits。
 
-- `POST https://cli-chat-proxy.grok.com/v1/responses` body 为 `{"model":"grok-4.5","input":"ping","stream":false}`。
-- 手动刷新在 billing/credits 成功后调用 responses，并以其结果判定健康。
-- 服务器/条件巡检仅在 FREE 账号额度恢复探测时调用 responses。
-- 当前巡检不调用 `/v1/chat/completions`，没有 responses fallback。
-
-responses 分类：HTTP 2xx 健康；401 映射 `-4`；`free-usage-exhausted`、`used all the included free usage`、`included free usage has been exhausted` 映射 `-1`；其他 429、402、403 和其他异常映射 `-2`。
+服务器巡检、条件巡检和手动刷新均不调用 `/v1/responses` 或 `/v1/chat/completions`。这些巡检以 JWT/SSO 检查和 billing/credits 的健康结果判定账号；billing/credits 均通过后恢复可恢复 priority。独立降智检测仍调用 `/v1/responses`，不属于这三类巡检。
 
 ## 5. 超时与重试
 
-每个 xAI HTTP 请求使用巡检配置的单次 timeout。timeout 时等待 400ms 后原请求重试一次；非 timeout 网络错误和已取消上下文不重试。规则适用于 responses、billing、credits。
+每个巡检 xAI HTTP 请求使用巡检配置的单次 timeout。timeout 时等待 400ms 后原请求重试一次；非 timeout 网络错误和已取消上下文不重试。规则适用于 billing、credits。独立降智检测的 responses 请求不适用此巡检规则。
 
 ## 6. 额度冷却与 usage event
 
 额度恢复时间保存于 `wxai_priority_adjustments.recover_at_ms`。恢复时间依次从 `Retry-After`、`X-RateLimit-Reset`、响应 JSON 恢复字段解析；无有效值时为当前时间加 24 小时再加 1 分钟。
 
-- 明确额度耗尽 usage event：无论定时服务器巡检或条件巡检是否启用，均直接进入快速路径，不创建 run，不下载 auth JSON，不读取 client version，不发送 responses、billing 或 credits；匹配账号后设置 `-1`，写 adjustment、账号类型和可复用 run 的结果/状态/日志。仅要求 wXAi priority-only 模式配置有效。
+- 明确额度耗尽 usage event：无论定时服务器巡检或条件巡检是否启用，均直接进入快速路径，不创建 run，不下载 auth JSON，不发送 billing 或 credits；匹配账号后设置 `-1`，写 adjustment、账号类型和可复用 run 的结果/状态/日志。仅要求 wXAi priority-only 模式配置有效。
 - SUPER 且 usage event 没有有效冷却时间时，快速路径下载 auth JSON，并通过该账号 auth `proxy_url` 创建 client 请求 credits 以补充恢复时间。
 - 普通 HTTP 429 不直接修改 priority，触发条件巡检。
 - 冷却期间服务器巡检跳过；条件巡检在候选生成后过滤；手动刷新不跳过。
@@ -84,13 +79,13 @@ responses 分类：HTTP 2xx 健康；401 映射 `-4`；`free-usage-exhausted`、
 
 并发规则：并发上限为 `settings.Workers`，最小为 1，不超过候选数。worker 启动按 `workerStartStaggerMs` 错峰，取账号按 `accountTakeStaggerMs` 全局错峰；两个字段缺失或非法时均为 10000ms，`0` 表示不限制。条件巡检复用相同逻辑。
 
-调用顺序：读取 CPA `xai-client-version`；下载 auth JSON；先检查 JWT bot 标记，JWT 未命中后执行 SSO 检查（`sso` 缺失/空白直接 `-7`，有 `sso` 时走 auth 代理 grok.com 检查）；按 auth JSON 的 `proxy_url`/`proxyUrl`/`proxy-url` 创建该账号 HTTP client；执行 billing/credits；仅 FREE 额度恢复时执行 responses；调整或恢复 priority；保存结果、状态详情、原始响应和窗口花费。
+调用顺序：下载 auth JSON；先检查 JWT bot 标记，JWT 未命中后执行 SSO 检查（`sso` 缺失/空白直接 `-7`，有 `sso` 时走 auth 代理 grok.com 检查）；按 auth JSON 的 `proxy_url`/`proxyUrl`/`proxy-url` 创建该账号 HTTP client；按 FREE/SUPER 执行 billing/credits；两者需要的请求都健康后调整或恢复 priority；保存结果、状态详情、原始响应和窗口花费。
 
 ## 8. 条件巡检
 
 条件巡检 worker 启动后立即检查一次，之后每 30 秒检查一次。新 usage event 为 xAI 且 `failed=true`、`fail_status_code=429`、但不能明确判定额度耗尽时，也立即触发一次。
 
-候选查询最近 10 分钟 `usage_events`，要求 `calls > 0` 且 provider 为 xAI。匹配顺序：`accountKey`、`fileName + authIndex`、`provider + accountID`、唯一 `fileName`、唯一 `authIndex`。排除 `priority=-5/-6/-1/-8`，`priority=-7` 保留以复检新 SSO，按账号去重，候选原因为 `active_recent`，再统一过滤冷却账号。
+候选查询最近 10 分钟 `usage_events`，要求 `calls > 0` 且 provider 为 xAI。匹配顺序：`accountKey`、`fileName + authIndex`、`provider + accountID`、唯一 `fileName`、唯一 `authIndex`。排除 `priority=-5/-6/-8`，保留 `-1` 以便冷却结束后通过 JWT/SSO 与 billing/credits 复检恢复，保留 `priority=-7` 以复检新 SSO；按账号去重，候选原因为 `active_recent`，再统一过滤仍在冷却期的账号。
 
 条件巡检复用最近一次非 running 的 run，不创建新 run。普通 429 即时触发与定时 worker 共用本地运行锁和全局巡检锁；已有服务器或条件巡检运行时跳过，不排队、不重试。单账号手动刷新不占用该锁。
 
@@ -100,28 +95,27 @@ responses 分类：HTTP 2xx 健康；401 映射 `-4`；`free-usage-exhausted`、
 
 手动刷新不占用全局巡检锁，必须复用最近一次服务器巡检 run；没有 run 时返回 HTTP 400 `至少有过一次服务器巡检`，不探测、不落库。只处理指定单账号，不跳过 `-5` 或 `-1`。
 
-调用顺序：读取 CPA `xai-client-version`；下载 auth JSON；先检查 JWT bot 标记，JWT 未命中后执行 SSO 检查（`sso` 缺失/空白直接 `-7`，有 `sso` 时走 auth 代理 grok.com 检查）；按 auth JSON 的 `proxy_url`/`proxyUrl`/`proxy-url` 创建该账号 HTTP client；按 FREE/SUPER 调用 billing/credits；成功后调用 responses；根据结果调整或恢复 priority；写入结果、状态详情、窗口花费和 `【wXAi 手动刷新】` 日志。
+调用顺序：下载 auth JSON；先检查 JWT bot 标记，JWT 未命中后执行 SSO 检查（`sso` 缺失/空白直接 `-7`，有 `sso` 时走 auth 代理 grok.com 检查）；按 auth JSON 的 `proxy_url`/`proxyUrl`/`proxy-url` 创建该账号 HTTP client；按 FREE/SUPER 调用 billing/credits；两者需要的请求都成功后调整或恢复 priority；写入结果、状态详情、窗口花费和 `【wXAi 手动刷新】` 日志。
 
-成功恢复 `-1/-2/-3/-4/-7`；`-5` 保持停用。失败映射为额度耗尽 `-1`、401 `-4`、其他 `-2`。
+成功恢复 `-1/-2/-3/-4/-7/-8` 时统一写为 `1`；`-5` 保持停用，`-6` 保持 bot 标记。失败映射为额度耗尽 `-1`、401 `-4`、其他 `-2`。
 
 ## 10. xAI HTTP 代理
 
-服务器巡检、条件巡检、手动刷新和 SUPER 额度恢复 credits 请求，统一使用**当前账号 auth JSON** 的 `proxy_url` / `proxyUrl` / `proxy-url`，不使用 CPA 全局 `proxy-url`。
+服务器巡检、条件巡检、手动刷新和 SUPER usage event 恢复时间补充的 credits 请求，统一使用**当前账号 auth JSON** 的 `proxy_url` / `proxyUrl` / `proxy-url`，不使用 CPA 全局 `proxy-url`。
 
-1. 批次开始时读取 CPA `GET /v0/management/xai-client-version`（仅 client version，不读全局代理）。
-2. 每个账号下载 auth JSON 并完成 JWT/SSO 检查后，用该账号 `proxy_url` 创建独立 HTTP client；支持 `http`、`https`、`socks5`、`socks5h` 和既有 legacy SOCKS5 格式。
-3. transport 显式禁用进程 `HTTP_PROXY` / `HTTPS_PROXY`；只使用 auth `proxy_url`。
-4. auth `proxy_url` 缺失、为空、为 `direct`/`none` 或无法解析时，该账号 fail-fast 记为请求失败，不直连，不发送 responses、billing 或 credits；其他账号继续。
-5. 不经 CPA `/v0/management/api-call` 代发 xAI 请求。
-6. auth-files 下载、priority patch 和 client version 读取仍直接访问 CPA Management API。
-7. 每个账号创建 client 后写 `wXAi HTTP 客户端已创建（auth 代理）`，记录 `proxyConfigured=true`、`proxyMode=auth_proxy_url`、脱敏后的 `proxyURL`。
-8. billing/credits 写 `wXAi billing 代理请求诊断`、`wXAi billing 代理响应诊断`、`wXAi billing 代理请求失败`，记录 `transport=proxy`、`viaCPAApiCall=false`、`proxyConfigured=true`、endpoint 和阶段。
+1. 每个账号下载 auth JSON 并完成 JWT/SSO 检查后，用该账号 `proxy_url` 创建独立 HTTP client；支持 `http`、`https`、`socks5`、`socks5h` 和既有 legacy SOCKS5 格式。
+2. transport 显式禁用进程 `HTTP_PROXY` / `HTTPS_PROXY`；只使用 auth `proxy_url`。
+3. auth `proxy_url` 缺失、为空、为 `direct`/`none` 或无法解析时，该账号 fail-fast 记为请求失败，不直连，不发送 billing 或 credits；其他账号继续。
+4. 不经 CPA `/v0/management/api-call` 代发 xAI 请求。
+5. auth-files 下载和 priority patch 仍直接访问 CPA Management API。
+6. 每个账号创建 client 后写 `wXAi HTTP 客户端已创建（auth 代理）`，记录 `proxyConfigured=true`、`proxyMode=auth_proxy_url`、脱敏后的 `proxyURL`。
+7. billing/credits 写 `wXAi billing 代理请求诊断`、`wXAi billing 代理响应诊断`、`wXAi billing 代理请求失败`，记录 `transport=proxy`、`viaCPAApiCall=false`、`proxyConfigured=true`、endpoint 和阶段。
 
 SSO bot 检查同样使用 auth `proxy_url`；auth 未配置代理时 SSO 使用显式直连 transport。
 
 ## 11. priority 恢复与落库
 
-健康结果会恢复被巡检托管的 priority。`-1/-2/-3/-4/-7` 按账号类型恢复；`-8` 恢复 `wxai_priority_adjustments.original_priority`。priority adjustment 保存原 priority。responses、billing、credits 响应追加保存到 `wxai_inspection_http_responses`；timeout 没有 HTTP 响应时不写记录。服务器巡检写新 run；条件巡检和手动刷新复用 run；明确额度快速路径仅在可复用 run 存在时写结果和巡检日志。
+JWT/SSO 检查以及所需 billing/credits 请求均健康时，将可恢复的巡检托管 priority 统一恢复为 `1`：不再按 FREE/SUPER 或 Gmail 域名区分，`-8` 也不再恢复 `wxai_priority_adjustments.original_priority`；`-5` 停用和 `-6` bot 标记仍不走健康恢复。priority adjustment 对 `priority<0` 且有原始记录的账号保存 `original_priority=1`。billing、credits 响应追加保存到 `wxai_inspection_http_responses`；timeout 没有 HTTP 响应时不写记录。服务器巡检写新 run；条件巡检和手动刷新复用 run；明确额度快速路径仅在可复用 run 存在时写结果和巡检日志。
 
 账号状态页 `Latest()` 读取最近一次 run 的 `wxai_inspection_results` 左联 `wxai_account_status_details`。同一 `fileName + authIndex` 若存在多行（历史实时守护曾用未归一化 UUID `account_key` 追加到同一 scheduled run），只保留 `result_created_at_ms`、`id` 最新的一行。展示用的 `account_key` 回写为同组以 `fileName|` 开头的巡检 key，再按该 key 关联 `wxai_priority_adjustments` 和窗口花费。最新行缺少 `priority` 或额度详情时，从同组有详情的较新行补齐。去重后总账号等于唯一 `fileName + authIndex` 数，与当前 xAI auth JSON 数一致；【已启用】+【额度耗尽】+【已停用】+【账号异常】等于总账号。
 
@@ -145,4 +139,9 @@ SSO bot 检查同样使用 auth `proxy_url`；auth 未配置代理时 SSO 使用
 - 实时守护确认降智时，立即将当前 auth JSON `priority` 设为 `-8`。单个下游请求最多处理 5 个被判降智的账号：前 4 个账号完成标记、节点处理后重载 auth 并换号重试；第 5 个账号仍判降智时不再重试，向调用方返回 `502`。每次重试均重载该 auth 的 `priority` 和 `proxy_url`、清除 session-affinity，并重新选 auth；所有自动调度也排除 `-8`。
 - 插件 SQLite 的 `realtime_degradation_failures` 以 `proxy_url` 唯一持久化节点连续降智次数，最多保留最近更新的 1000 行；同节点任一完整正常流将次数清零。第 1 次降智仅记录、标记账号并重试换号；第 2 次连续降智才执行原健康节点替换、保底节点探测和 retry / `502` fail-closed。
 - 插件在运行配置保存 `manager_base_url` 和 `manager_management_key`，例如 `http://127.0.0.1:18317`；两项从插件 SQLite 设置读取，并在保存后立即更新当前进程、重启后继续生效。插件不再读取或写入 Manager SQLite。点击检查调用 `GET /v0/management/wxai-inspection/scheduled/latest-completed`，使用 `Authorization: Bearer <manager_management_key>`，返回最近完成的 `scheduled` run ID。
-- 实时守护确认降智后，先将当前 auth JSON `priority` 设为 `-8`，再调用 `POST /v0/management/wxai-inspection/realtime-degradation`。Manager 先读取当前 CPA xAI auth files，以与服务器巡检相同的账号匹配顺序（`accountKey`、`fileName + authIndex`、`provider + accountID`、唯一 `fileName`、唯一 `authIndex`）归一化为服务端 `account_key`；账号未匹配时请求失败，不写入任何巡检或 adjustment 数据。匹配成功后才使用该 `account_key` upsert `wxai_priority_adjustments`，保留已有的 `original_priority`；随后查找最近完成的 `scheduled` run，存在时更新该账号原有的 `wxai_account_status_details.priority` 为 `-8`、保留既有额度和账号类型，再对同一 `account_key` upsert `wxai_inspection_results` 和巡检日志。没有完成的服务器 run 时，仅写 adjustment。该归一化确保实时守护不会因插件与巡检读取到的 `account_id` 字段不同而在同一 run 新增第二条账号状态详情。归一化上线前已写入的 UUID `account_key` 脏行仍留在旧 scheduled run 中；账号状态页 `Latest()` 按 `fileName + authIndex` 折叠这些重复行，不单独清库。Manager 地址、管理密钥、HTTP 调用或落库失败时，插件写 `realtime_guard.manager_api_unavailable`，不阻止账号标记、节点计数或后续替换。
+- 实时守护确认降智后，先将当前 auth JSON `priority` 设为 `-8`，再调用 `POST /v0/management/wxai-inspection/realtime-degradation`。Manager 先读取当前 CPA xAI auth files，以与服务器巡检相同的账号匹配顺序（`accountKey`、`fileName + authIndex`、`provider + accountID`、唯一 `fileName`、唯一 `authIndex`）归一化为服务端 `account_key`；账号未匹配时请求失败，不写入任何巡检或 adjustment 数据。匹配成功后才使用该 `account_key` upsert `wxai_priority_adjustments`；有 `original_priority` 时始终规范化为 `1`。随后查找最近完成的 `scheduled` run，存在时更新该账号原有的 `wxai_account_status_details.priority` 为 `-8`、保留既有额度和账号类型，再对同一 `account_key` upsert `wxai_inspection_results` 和巡检日志。没有完成的服务器 run 时，仅写 adjustment。该归一化确保实时守护不会因插件与巡检读取到的 `account_id` 字段不同而在同一 run 新增第二条账号状态详情。归一化上线前已写入的 UUID `account_key` 脏行仍留在旧 scheduled run 中；账号状态页 `Latest()` 按 `fileName + authIndex` 折叠这些重复行，不单独清库。Manager 地址、管理密钥、HTTP 调用或落库失败时，插件写 `realtime_guard.manager_api_unavailable`，不阻止账号标记、节点计数或后续替换。
+
+### 13.2 健康槽位 auth 分配顺序
+
+- 插件从 Host auth 列表筛出 xAI auth 后，按原始 `fileName` 使用 Go 字符串 `<` 比较进行稳定升序排序；不转小写、不使用 locale 比较，因此 ASCII 大写字母通常排在小写字母前。同名 auth 保留 Host 返回的相对顺序。
+- 排序结果依次循环分配至健康槽位：第 `N` 个 auth 的槽位为 `((N - 1) % healthySlotCount) + 1`。`auth_index` 用于读写与绑定标识，不参与排序。

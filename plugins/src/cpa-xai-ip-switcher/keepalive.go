@@ -45,6 +45,17 @@ func runKeepaliveRound(ctx context.Context, store *ipStore, settings pluginSetti
 		_ = store.appendLog(logLevelError, "keepalive.round_create_failed", 0, "", "创建保活探测轮次失败", err.Error())
 		return
 	}
+	expiredCount, err := store.expireStaleHealthySlots(roundID, settings.HealthySlotMaxAgeMinutes)
+	if err != nil {
+		_ = store.finishKeepaliveRound(roundID, groupStatusCompleted, 0, 0, 0)
+		_ = store.appendProbeLog(logCategoryKeepaliveProbe, keepaliveGroupID(roundID), logStatusError, logLevelError, "keepalive.slot_expire_failed", 0, "", "健康槽位超时清槽失败", err.Error())
+		return
+	}
+	if expiredCount > 0 {
+		if err := refreshHealthyAuthDistribution(store, settings.HealthySlotCount); err != nil {
+			_ = store.appendLog(logLevelError, "auth_distribution.expire_failed", 0, "", "健康槽位超时清槽后重分配 auth 失败", err.Error())
+		}
+	}
 	candidateCount, err := store.snapshotKeepaliveRound(roundID)
 	if err != nil {
 		_ = store.finishKeepaliveRound(roundID, groupStatusCompleted, 0, 0, 0)

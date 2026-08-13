@@ -118,6 +118,7 @@ func pluginSettingsEqual(left, right pluginSettings) bool {
 		left.ProbeRetryCount == right.ProbeRetryCount &&
 		left.HealthySlotCount == right.HealthySlotCount &&
 		left.HealthyCandidateSlotCount == right.HealthyCandidateSlotCount &&
+		left.HealthySlotMaxAgeMinutes == right.HealthySlotMaxAgeMinutes &&
 		left.QualityWorkerCount == right.QualityWorkerCount &&
 		left.QualityProbeTimeoutSeconds == right.QualityProbeTimeoutSeconds &&
 		left.QualitySoftTPS == right.QualitySoftTPS &&

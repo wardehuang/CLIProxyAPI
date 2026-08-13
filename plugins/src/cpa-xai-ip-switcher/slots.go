@@ -19,6 +19,7 @@ type slotRecord struct {
 	ClaimStartedAt         int64
 	LastProcessedRoundID   int64
 	BlockedRoundID         int64
+	RefreshAt              int64
 }
 
 type qualityWork struct {
@@ -75,7 +76,8 @@ CREATE TABLE IF NOT EXISTS ip_slots (
     claim_stage TEXT NOT NULL DEFAULT '',
     claim_started_at INTEGER NOT NULL DEFAULT 0,
     last_processed_round_id INTEGER NOT NULL DEFAULT 0,
-    blocked_round_id INTEGER NOT NULL DEFAULT 0
+    blocked_round_id INTEGER NOT NULL DEFAULT 0,
+    refresh_at INTEGER NOT NULL DEFAULT 0
 );
 CREATE INDEX IF NOT EXISTS idx_ip_slots_node_id ON ip_slots(node_id);
 CREATE INDEX IF NOT EXISTS idx_ip_slots_claim ON ip_slots(claim_token, slot_id);
@@ -148,7 +150,26 @@ INSERT OR IGNORE INTO ip_node_statuses(status, display_name, sort_order) VALUES 
 	if err := ensureSQLiteColumn(store.database, "quality_probe_attempts", "ttfb_ms", "INTEGER NOT NULL DEFAULT 0"); err != nil {
 		return err
 	}
+	if err := ensureSQLiteColumn(store.database, "ip_slots", "refresh_at", "INTEGER NOT NULL DEFAULT 0"); err != nil {
+		return err
+	}
+	if _, err := store.database.Exec(`
+UPDATE ip_slots
+SET refresh_at = ?
+WHERE slot_kind = ? AND node_id > 0 AND refresh_at = 0`, time.Now().UnixMilli(), statusHealthy); err != nil {
+		return fmt.Errorf("backfill sqlite healthy slot refresh_at: %w", err)
+	}
 	return nil
+}
+
+const slotRefreshAtAssignment = `refresh_at = CASE WHEN ? = 0 THEN 0 WHEN node_id <> ? THEN ? ELSE refresh_at END`
+
+func slotNodeIDAssignment() string {
+	return `node_id = ?, ` + slotRefreshAtAssignment
+}
+
+func slotNodeIDArgs(newNodeID int64, extra ...any) []any {
+	return append([]any{newNodeID, newNodeID, newNodeID, time.Now().UnixMilli()}, extra...)
 }
 
 func ensureSQLiteColumn(database *sql.DB, tableName, columnName, columnDefinition string) error {
@@ -188,6 +209,7 @@ func defaultPluginSettings() pluginSettings {
 		ProbeRetryCount:            defaultProbeRetryCount,
 		HealthySlotCount:           defaultHealthySlotCount,
 		HealthyCandidateSlotCount:  defaultHealthyCandidateCount,
+		HealthySlotMaxAgeMinutes:   defaultHealthySlotMaxAgeMinutes,
 		QualityWorkerCount:         defaultQualityWorkerCount,
 		QualityProbeTimeoutSeconds: defaultQualityProbeTimeout,
 		QualitySoftTPS:             defaultQualitySoftTPS,
@@ -230,9 +252,9 @@ WHERE slot_id IN (SELECT slot_id FROM ip_slots WHERE fallback_origin = 1)`); err
 	}
 	if _, err := transaction.Exec(`
 UPDATE ip_slots
-SET node_id = 0, claim_node_id = 0, fallback_origin = 0, fallback_entered_round_id = 0,
+SET `+slotNodeIDAssignment()+`, claim_node_id = 0, fallback_origin = 0, fallback_entered_round_id = 0,
     claim_token = '', claim_stage = '', claim_started_at = 0, last_processed_round_id = 0, blocked_round_id = 0
-WHERE fallback_origin = 1`); err != nil {
+WHERE fallback_origin = 1`, slotNodeIDArgs(0)...); err != nil {
 		return fmt.Errorf("clear sqlite automatic fallback slots: %w", err)
 	}
 	if err := transaction.Commit(); err != nil {
@@ -366,6 +388,9 @@ func validateSlotSettings(settings pluginSettings) error {
 	if settings.QualitySoftTPS <= 0 || settings.QualityHardTPS <= settings.QualitySoftTPS {
 		return fmt.Errorf("quality hard TPS must be greater than quality soft TPS")
 	}
+	if settings.HealthySlotMaxAgeMinutes < 1 || settings.HealthySlotMaxAgeMinutes > maxHealthySlotMaxAgeMinutes {
+		return fmt.Errorf("healthy slot max age must be between 1 and %d minutes", maxHealthySlotMaxAgeMinutes)
+	}
 	return nil
 }
 
@@ -382,7 +407,7 @@ func (store *ipStore) claimNextQualityWork(roundID int64) (*qualityWork, error) 
 	var slot slotRecord
 	err = transaction.QueryRow(`
 SELECT slot_id, slot_kind, node_id, claim_node_id, fallback_origin, fallback_entered_round_id, claim_token, claim_stage,
-       claim_started_at, last_processed_round_id, blocked_round_id
+       claim_started_at, last_processed_round_id, blocked_round_id, refresh_at
 FROM ip_slots AS slots
 WHERE slots.claim_token = ''
   AND slots.last_processed_round_id <> ?
@@ -406,6 +431,7 @@ LIMIT 1`, roundID, roundID, statusConnected, roundID).Scan(
 		&slot.ClaimStartedAt,
 		&slot.LastProcessedRoundID,
 		&slot.BlockedRoundID,
+		&slot.RefreshAt,
 	)
 	if err == sql.ErrNoRows {
 		return nil, nil
@@ -526,9 +552,9 @@ WHERE id = ? AND status = ? AND probe_kind = ?`, work.PreviousStatus, work.Node.
 	}
 	if _, err := transaction.Exec(`
 UPDATE ip_slots
-SET node_id = ?, claim_node_id = 0, fallback_origin = ?, fallback_entered_round_id = ?, claim_token = '', claim_stage = '',
+SET `+slotNodeIDAssignment()+`, claim_node_id = 0, fallback_origin = ?, fallback_entered_round_id = ?, claim_token = '', claim_stage = '',
     claim_started_at = ?, last_processed_round_id = ?, blocked_round_id = ?
-WHERE slot_id = ? AND claim_token = ?`, work.Slot.NodeID, boolInteger(work.Slot.FallbackOrigin), work.Slot.FallbackEnteredRoundID, work.Slot.ClaimStartedAt, work.Slot.LastProcessedRoundID, work.Slot.BlockedRoundID, work.Slot.ID, work.ClaimToken); err != nil {
+WHERE slot_id = ? AND claim_token = ?`, slotNodeIDArgs(work.Slot.NodeID, boolInteger(work.Slot.FallbackOrigin), work.Slot.FallbackEnteredRoundID, work.Slot.ClaimStartedAt, work.Slot.LastProcessedRoundID, work.Slot.BlockedRoundID, work.Slot.ID, work.ClaimToken)...); err != nil {
 		return fmt.Errorf("reset sqlite quality slot %d: %w", work.Slot.ID, err)
 	}
 	if err := transaction.Commit(); err != nil {
@@ -546,11 +572,11 @@ func (store *ipStore) completeQualityWork(work qualityWork, result qualityProbeR
 	var currentSlot slotRecord
 	if err := transaction.QueryRow(`
 SELECT slot_id, slot_kind, node_id, claim_node_id, fallback_origin, fallback_entered_round_id, claim_token, claim_stage,
-       claim_started_at, last_processed_round_id, blocked_round_id
+       claim_started_at, last_processed_round_id, blocked_round_id, refresh_at
 FROM ip_slots WHERE slot_id = ?`, work.Slot.ID).Scan(
 		&currentSlot.ID, &currentSlot.Kind, &currentSlot.NodeID, &currentSlot.ClaimNodeID, &currentSlot.FallbackOrigin,
 		&currentSlot.FallbackEnteredRoundID, &currentSlot.ClaimToken, &currentSlot.ClaimStage,
-		&currentSlot.ClaimStartedAt, &currentSlot.LastProcessedRoundID, &currentSlot.BlockedRoundID,
+		&currentSlot.ClaimStartedAt, &currentSlot.LastProcessedRoundID, &currentSlot.BlockedRoundID, &currentSlot.RefreshAt,
 	); err != nil {
 		return fmt.Errorf("read sqlite quality slot %d: %w", work.Slot.ID, err)
 	}
@@ -598,8 +624,8 @@ WHERE id = ? AND status = ? AND probe_kind = ?`, currentSlot.Kind, time.Now().Un
 		}
 		if _, err := transaction.Exec(`
 UPDATE ip_slots
-SET node_id = ?, fallback_origin = ?, fallback_entered_round_id = ?, `+markProcessed+`
-WHERE slot_id = ? AND claim_token = ?`, work.Node.ID, boolInteger(work.FallbackOrigin), fallbackEnteredRoundID, work.RoundID, work.Slot.ID, work.ClaimToken); err != nil {
+SET `+slotNodeIDAssignment()+`, fallback_origin = ?, fallback_entered_round_id = ?, `+markProcessed+`
+WHERE slot_id = ? AND claim_token = ?`, slotNodeIDArgs(work.Node.ID, boolInteger(work.FallbackOrigin), fallbackEnteredRoundID, work.RoundID, work.Slot.ID, work.ClaimToken)...); err != nil {
 			return fmt.Errorf("save sqlite healthy quality slot %d: %w", work.Slot.ID, err)
 		}
 	} else {
@@ -617,8 +643,8 @@ WHERE id = ? AND status = ? AND probe_kind = ?`, statusCooldown, time.Now().Unix
 		}
 		if _, err := transaction.Exec(`
 UPDATE ip_slots
-SET node_id = 0, fallback_origin = 0, fallback_entered_round_id = 0, `+clearClaim+`
-WHERE slot_id = ? AND claim_token = ?`, work.Slot.ID, work.ClaimToken); err != nil {
+SET `+slotNodeIDAssignment()+`, fallback_origin = 0, fallback_entered_round_id = 0, `+clearClaim+`
+WHERE slot_id = ? AND claim_token = ?`, slotNodeIDArgs(0, work.Slot.ID, work.ClaimToken)...); err != nil {
 			return fmt.Errorf("clear sqlite failed quality slot %d: %w", work.Slot.ID, err)
 		}
 	}
@@ -718,10 +744,10 @@ func (store *ipStore) findSlotForNode(nodeID int64) (slotRecord, bool, error) {
 	var slot slotRecord
 	err := store.database.QueryRow(`
 SELECT slot_id, slot_kind, node_id, claim_node_id, fallback_origin, fallback_entered_round_id, claim_token, claim_stage,
-       claim_started_at, last_processed_round_id, blocked_round_id
+       claim_started_at, last_processed_round_id, blocked_round_id, refresh_at
 FROM ip_slots WHERE node_id = ?`, nodeID).Scan(
 		&slot.ID, &slot.Kind, &slot.NodeID, &slot.ClaimNodeID, &slot.FallbackOrigin, &slot.FallbackEnteredRoundID,
-		&slot.ClaimToken, &slot.ClaimStage, &slot.ClaimStartedAt, &slot.LastProcessedRoundID, &slot.BlockedRoundID,
+		&slot.ClaimToken, &slot.ClaimStage, &slot.ClaimStartedAt, &slot.LastProcessedRoundID, &slot.BlockedRoundID, &slot.RefreshAt,
 	)
 	if err == sql.ErrNoRows {
 		return slotRecord{}, false, nil
@@ -851,10 +877,10 @@ func (store *ipStore) findSlotByID(slotID int64) (slotRecord, bool, error) {
 	var slot slotRecord
 	err := store.database.QueryRow(`
 SELECT slot_id, slot_kind, node_id, claim_node_id, fallback_origin, fallback_entered_round_id, claim_token, claim_stage,
-       claim_started_at, last_processed_round_id, blocked_round_id
+       claim_started_at, last_processed_round_id, blocked_round_id, refresh_at
 FROM ip_slots WHERE slot_id = ?`, slotID).Scan(
 		&slot.ID, &slot.Kind, &slot.NodeID, &slot.ClaimNodeID, &slot.FallbackOrigin, &slot.FallbackEnteredRoundID,
-		&slot.ClaimToken, &slot.ClaimStage, &slot.ClaimStartedAt, &slot.LastProcessedRoundID, &slot.BlockedRoundID,
+		&slot.ClaimToken, &slot.ClaimStage, &slot.ClaimStartedAt, &slot.LastProcessedRoundID, &slot.BlockedRoundID, &slot.RefreshAt,
 	)
 	if err == sql.ErrNoRows {
 		return slotRecord{}, false, nil
@@ -863,4 +889,108 @@ FROM ip_slots WHERE slot_id = ?`, slotID).Scan(
 		return slotRecord{}, false, fmt.Errorf("find sqlite slot %d: %w", slotID, err)
 	}
 	return slot, true, nil
+}
+
+type staleHealthySlot struct {
+	SlotID    int64
+	NodeID    int64
+	RefreshAt int64
+	NodeName  string
+	ProxyURL  string
+}
+
+func (store *ipStore) expireStaleHealthySlots(roundID int64, maxAgeMinutes int) (int, error) {
+	nowMs := time.Now().UnixMilli()
+	maxAgeMs := int64(maxAgeMinutes) * 60 * 1000
+	rows, err := store.database.Query(`
+SELECT slots.slot_id, slots.node_id, slots.refresh_at, nodes.node_name, nodes.proxy_url
+FROM ip_slots AS slots
+JOIN ip_nodes AS nodes ON nodes.id = slots.node_id
+WHERE slots.slot_kind = ? AND slots.node_id > 0 AND slots.refresh_at > 0 AND (? - slots.refresh_at) >= ?
+ORDER BY slots.slot_id ASC`, statusHealthy, nowMs, maxAgeMs)
+	if err != nil {
+		return 0, fmt.Errorf("list stale healthy slots: %w", err)
+	}
+	staleSlots := make([]staleHealthySlot, 0)
+	for rows.Next() {
+		var item staleHealthySlot
+		if err := rows.Scan(&item.SlotID, &item.NodeID, &item.RefreshAt, &item.NodeName, &item.ProxyURL); err != nil {
+			_ = rows.Close()
+			return 0, fmt.Errorf("scan stale healthy slot: %w", err)
+		}
+		staleSlots = append(staleSlots, item)
+	}
+	if err := rows.Err(); err != nil {
+		_ = rows.Close()
+		return 0, fmt.Errorf("iterate stale healthy slots: %w", err)
+	}
+	if err := rows.Close(); err != nil {
+		return 0, fmt.Errorf("close stale healthy slots: %w", err)
+	}
+	expiredCount := 0
+	for _, item := range staleSlots {
+		expired, err := store.expireStaleHealthySlot(roundID, maxAgeMinutes, nowMs, item)
+		if err != nil {
+			return expiredCount, err
+		}
+		if expired {
+			expiredCount++
+		}
+	}
+	return expiredCount, nil
+}
+
+func (store *ipStore) expireStaleHealthySlot(roundID int64, maxAgeMinutes int, nowMs int64, item staleHealthySlot) (bool, error) {
+	transaction, err := store.database.Begin()
+	if err != nil {
+		return false, fmt.Errorf("begin sqlite stale healthy slot %d: %w", item.SlotID, err)
+	}
+	defer transaction.Rollback()
+	occupiedMinutes := (nowMs - item.RefreshAt) / 60000
+	errorDetail := fmt.Sprintf("槽位=%d；节点=%d；占用分钟=%d；阈值分钟=%d；refresh_at=%d", item.SlotID, item.NodeID, occupiedMinutes, maxAgeMinutes, item.RefreshAt)
+	nodeUpdate, err := transaction.Exec(`
+UPDATE ip_nodes
+SET status = ?, probe_started_at = 0, probe_kind = '', probe_return_status = '',
+    error_reason = ?, error_detail = ?, revive_target_status = ?
+WHERE id = ? AND status = ?`, statusCooldown, "健康槽位占用超时", errorDetail, statusCooldown, item.NodeID, statusHealthy)
+	if err != nil {
+		return false, fmt.Errorf("move stale healthy node %d to cooldown: %w", item.NodeID, err)
+	}
+	nodeRows, err := nodeUpdate.RowsAffected()
+	if err != nil {
+		return false, fmt.Errorf("read stale healthy node %d update: %w", item.NodeID, err)
+	}
+	if nodeRows != 1 {
+		return false, nil
+	}
+	slotUpdate, err := transaction.Exec(`
+UPDATE ip_slots
+SET `+slotNodeIDAssignment()+`, claim_node_id = 0, fallback_origin = 0, fallback_entered_round_id = 0,
+    claim_token = '', claim_stage = '', claim_started_at = 0
+WHERE slot_id = ? AND node_id = ? AND slot_kind = ?`, slotNodeIDArgs(0, item.SlotID, item.NodeID, statusHealthy)...)
+	if err != nil {
+		return false, fmt.Errorf("clear stale healthy slot %d: %w", item.SlotID, err)
+	}
+	slotRows, err := slotUpdate.RowsAffected()
+	if err != nil {
+		return false, fmt.Errorf("read stale healthy slot %d update: %w", item.SlotID, err)
+	}
+	if slotRows != 1 {
+		return false, nil
+	}
+	if err := transaction.Commit(); err != nil {
+		return false, fmt.Errorf("commit stale healthy slot %d: %w", item.SlotID, err)
+	}
+	_ = store.appendProbeLog(
+		logCategoryKeepaliveProbe,
+		keepaliveGroupID(roundID),
+		logStatusProbing,
+		logLevelInfo,
+		"keepalive.slot_expired",
+		item.NodeID,
+		displayProxyNodeName(item.ProxyURL, item.NodeName),
+		fmt.Sprintf("健康槽位 %d 占用超时，节点已移入冷却", item.SlotID),
+		errorDetail,
+	)
+	return true, nil
 }

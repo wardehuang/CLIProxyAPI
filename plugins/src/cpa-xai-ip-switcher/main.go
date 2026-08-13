@@ -510,6 +510,7 @@ func settingsFromPayload(payload map[string]any) (pluginSettings, error) {
 	probeRetryCount, retryOK := integerValue(firstValue(payload, "probeRetryCount", "probe_retry_count"))
 	healthySlotCount, healthySlotOK := integerValue(firstValue(payload, "healthySlotCount", "healthy_slot_count"))
 	healthyCandidateSlotCount, healthyCandidateSlotOK := integerValue(firstValue(payload, "healthyCandidateSlotCount", "healthy_candidate_slot_count"))
+	healthySlotMaxAgeMinutes, healthySlotMaxAgeOK := integerValue(firstValue(payload, "healthySlotMaxAgeMinutes", "healthy_slot_max_age_minutes"))
 	qualityWorkerCount, qualityWorkerOK := integerValue(firstValue(payload, "qualityWorkerCount", "quality_worker_count"))
 	qualityProbeTimeoutSeconds, qualityTimeoutOK := integerValue(firstValue(payload, "qualityProbeTimeoutSeconds", "quality_probe_timeout_seconds"))
 	qualitySoftTPS, softTPSOK := floatValue(firstValue(payload, "qualitySoftTPS", "quality_soft_tps"))
@@ -521,7 +522,7 @@ func settingsFromPayload(payload map[string]any) (pluginSettings, error) {
 	managerBaseURL, managerBaseURLOK := stringValue(firstValue(payload, "managerBaseUrl", "manager_base_url"))
 	managerManagementKey, managerManagementKeyOK := stringValue(firstValue(payload, "managerManagementKey", "manager_management_key"))
 	if !workerOK || !refreshOK || !keepaliveWorkersOK || !keepaliveIntervalOK || !reviveIntervalOK || !retryOK ||
-		!healthySlotOK || !healthyCandidateSlotOK || !qualityWorkerOK || !qualityTimeoutOK || !softTPSOK || !hardTPSOK ||
+		!healthySlotOK || !healthyCandidateSlotOK || !healthySlotMaxAgeOK || !qualityWorkerOK || !qualityTimeoutOK || !softTPSOK || !hardTPSOK ||
 		!grok2apiSyncEnabledOK || !grok2apiBaseUrlOK || !grok2apiAdminUsernameOK || !grok2apiAdminPasswordOK || !managerBaseURLOK || !managerManagementKeyOK {
 		return pluginSettings{}, fmt.Errorf("必须同时提供基础调度、健康槽位、智商探测、grok2api 同步和 Manager API 配置")
 	}
@@ -534,6 +535,7 @@ func settingsFromPayload(payload map[string]any) (pluginSettings, error) {
 		ProbeRetryCount:            probeRetryCount,
 		HealthySlotCount:           healthySlotCount,
 		HealthyCandidateSlotCount:  healthyCandidateSlotCount,
+		HealthySlotMaxAgeMinutes:   healthySlotMaxAgeMinutes,
 		QualityWorkerCount:         qualityWorkerCount,
 		QualityProbeTimeoutSeconds: qualityProbeTimeoutSeconds,
 		QualitySoftTPS:             qualitySoftTPS,
@@ -634,6 +636,7 @@ func publicSettings(settings pluginSettings) map[string]any {
 		"probeRetryCount":            settings.ProbeRetryCount,
 		"healthySlotCount":           settings.HealthySlotCount,
 		"healthyCandidateSlotCount":  settings.HealthyCandidateSlotCount,
+		"healthySlotMaxAgeMinutes":   settings.HealthySlotMaxAgeMinutes,
 		"qualityWorkerCount":         settings.QualityWorkerCount,
 		"qualityProbeTimeoutSeconds": settings.QualityProbeTimeoutSeconds,
 		"qualitySoftTPS":             settings.QualitySoftTPS,
@@ -993,6 +996,7 @@ func publicNodes(nodes []proxyNode) []map[string]any {
 			"exitCountry":        node.ExitCountry,
 			"reviveFailureCount": node.ReviveFailureCount,
 			"slotId":             node.SlotID,
+			"slotRefreshAt":      node.SlotRefreshAt,
 			"fallbackOrigin":     node.FallbackOrigin,
 			"emptySlot":          node.EmptySlot,
 			"errorReason":        node.ErrorReason,

@@ -37,8 +37,8 @@ WHERE id = ? AND status = ? AND probe_kind = ? AND keepalive_round_id = ?`,
 	if node.ProbeReturnStatus == statusHealthy || node.ProbeReturnStatus == statusHealthyCandidate {
 		if _, err := transaction.Exec(`
 UPDATE ip_slots
-SET node_id = 0, claim_node_id = 0, fallback_origin = 0, fallback_entered_round_id = 0, claim_token = '', claim_stage = '', claim_started_at = 0
-WHERE node_id = ?`, node.ID); err != nil {
+SET `+slotNodeIDAssignment()+`, claim_node_id = 0, fallback_origin = 0, fallback_entered_round_id = 0, claim_token = '', claim_stage = '', claim_started_at = 0
+WHERE node_id = ?`, slotNodeIDArgs(0, node.ID)...); err != nil {
 			return fmt.Errorf("clear sqlite failed healthy slot node %d: %w", node.ID, err)
 		}
 	}

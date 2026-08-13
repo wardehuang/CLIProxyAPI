@@ -384,7 +384,7 @@ func (store *ipStore) startRealtimeGuardReplacement(probe realtimeGuardProbe, de
 	if probe.SourceSnapshot.SlotID > 0 && probe.SourceSnapshot.NodeID > 0 {
 		if err := scanRealtimeHealthySlot(transaction.QueryRow(`
 SELECT slot_id, slot_kind, node_id, claim_node_id, fallback_origin, fallback_entered_round_id,
-       claim_token, claim_stage, claim_started_at, last_processed_round_id, blocked_round_id
+       claim_token, claim_stage, claim_started_at, last_processed_round_id, blocked_round_id, refresh_at
 FROM ip_slots
 WHERE slot_id = ? AND node_id = ? AND slot_kind = ?`, probe.SourceSnapshot.SlotID, probe.SourceSnapshot.NodeID, statusHealthy), &replacement.HealthySlot); err != nil {
 			if err == sql.ErrNoRows {
@@ -394,7 +394,7 @@ WHERE slot_id = ? AND node_id = ? AND slot_kind = ?`, probe.SourceSnapshot.SlotI
 		}
 	} else if err := scanRealtimeHealthySlot(transaction.QueryRow(`
 SELECT slots.slot_id, slots.slot_kind, slots.node_id, slots.claim_node_id, slots.fallback_origin, slots.fallback_entered_round_id,
-       slots.claim_token, slots.claim_stage, slots.claim_started_at, slots.last_processed_round_id, slots.blocked_round_id
+       slots.claim_token, slots.claim_stage, slots.claim_started_at, slots.last_processed_round_id, slots.blocked_round_id, slots.refresh_at
 FROM ip_slots AS slots
 JOIN ip_nodes AS nodes ON nodes.id = slots.node_id
 WHERE slots.slot_kind = ? AND nodes.proxy_url = ?
@@ -429,9 +429,9 @@ WHERE id = ? AND status = ?`, statusCooldown, decision.Reason, decision.Error, s
 	}
 	if _, err := transaction.Exec(`
 UPDATE ip_slots
-SET node_id = 0, claim_node_id = 0, fallback_origin = 0, fallback_entered_round_id = 0,
+SET `+slotNodeIDAssignment()+`, claim_node_id = 0, fallback_origin = 0, fallback_entered_round_id = 0,
     claim_token = '', claim_stage = '', claim_started_at = 0
-WHERE slot_id = ? AND node_id = ?`, replacement.HealthySlot.ID, replacement.OriginalNode.ID); err != nil {
+WHERE slot_id = ? AND node_id = ?`, slotNodeIDArgs(0, replacement.HealthySlot.ID, replacement.OriginalNode.ID)...); err != nil {
 		return realtimeGuardReplacement{}, fmt.Errorf("清空实时守护健康槽位: %w", err)
 	}
 
@@ -440,7 +440,7 @@ WHERE slot_id = ? AND node_id = ?`, replacement.HealthySlot.ID, replacement.Orig
 		return realtimeGuardReplacement{}, err
 	}
 	if candidateFound {
-		if _, err := transaction.Exec(`UPDATE ip_slots SET node_id = 0 WHERE slot_id = ? AND node_id = ?`, candidateSlot.ID, candidate.ID); err != nil {
+		if _, err := transaction.Exec(`UPDATE ip_slots SET `+slotNodeIDAssignment()+` WHERE slot_id = ? AND node_id = ?`, slotNodeIDArgs(0, candidateSlot.ID, candidate.ID)...); err != nil {
 			return realtimeGuardReplacement{}, fmt.Errorf("清空实时守护健康备选槽位: %w", err)
 		}
 		if _, err := transaction.Exec(`
@@ -449,7 +449,7 @@ SET status = ?, error_reason = '', error_detail = '', revive_target_status = ?
 WHERE id = ? AND status = ?`, statusHealthy, statusHealthy, candidate.ID, statusHealthyCandidate); err != nil {
 			return realtimeGuardReplacement{}, fmt.Errorf("提升实时守护健康备选节点: %w", err)
 		}
-		if _, err := transaction.Exec(`UPDATE ip_slots SET node_id = ? WHERE slot_id = ? AND node_id = 0`, candidate.ID, replacement.HealthySlot.ID); err != nil {
+		if _, err := transaction.Exec(`UPDATE ip_slots SET `+slotNodeIDAssignment()+` WHERE slot_id = ? AND node_id = 0`, slotNodeIDArgs(candidate.ID, replacement.HealthySlot.ID)...); err != nil {
 			return realtimeGuardReplacement{}, fmt.Errorf("写入实时守护健康替换槽位: %w", err)
 		}
 		replacement.ReplacementNode = candidate
@@ -497,7 +497,7 @@ WHERE auth_identity = ? AND slot_id = ? AND node_id = ? AND proxy_url = ?`, snap
 func scanRealtimeHealthySlot(row *sql.Row, slot *slotRecord) error {
 	return row.Scan(
 		&slot.ID, &slot.Kind, &slot.NodeID, &slot.ClaimNodeID, &slot.FallbackOrigin, &slot.FallbackEnteredRoundID,
-		&slot.ClaimToken, &slot.ClaimStage, &slot.ClaimStartedAt, &slot.LastProcessedRoundID, &slot.BlockedRoundID,
+		&slot.ClaimToken, &slot.ClaimStage, &slot.ClaimStartedAt, &slot.LastProcessedRoundID, &slot.BlockedRoundID, &slot.RefreshAt,
 	)
 }
 
@@ -506,7 +506,7 @@ func findRealtimeCandidate(transaction *sql.Tx) (proxyNode, slotRecord, bool, er
 	var slot slotRecord
 	err := transaction.QueryRow(`
 SELECT slots.slot_id, slots.slot_kind, slots.node_id, slots.claim_node_id, slots.fallback_origin, slots.fallback_entered_round_id,
-       slots.claim_token, slots.claim_stage, slots.claim_started_at, slots.last_processed_round_id, slots.blocked_round_id,
+       slots.claim_token, slots.claim_stage, slots.claim_started_at, slots.last_processed_round_id, slots.blocked_round_id, slots.refresh_at,
        nodes.id, nodes.node_name, nodes.proxy_url, nodes.host, nodes.input_ip, nodes.port, nodes.protocol, nodes.domain,
        nodes.batch_id, nodes.status, nodes.initial_connected, nodes.probe_kind, nodes.probe_return_status,
        nodes.keepalive_round_id, nodes.revive_round_id, nodes.revive_failure_count, nodes.latency_ms, nodes.entered_at,
@@ -518,7 +518,7 @@ WHERE slots.slot_kind = ? AND nodes.status = ? AND nodes.probe_kind = ''
 ORDER BY nodes.latency_ms ASC, nodes.id ASC
 LIMIT 1`, statusHealthyCandidate, statusHealthyCandidate).Scan(
 		&slot.ID, &slot.Kind, &slot.NodeID, &slot.ClaimNodeID, &slot.FallbackOrigin, &slot.FallbackEnteredRoundID,
-		&slot.ClaimToken, &slot.ClaimStage, &slot.ClaimStartedAt, &slot.LastProcessedRoundID, &slot.BlockedRoundID,
+		&slot.ClaimToken, &slot.ClaimStage, &slot.ClaimStartedAt, &slot.LastProcessedRoundID, &slot.BlockedRoundID, &slot.RefreshAt,
 		&candidate.ID, &candidate.Name, &candidate.ProxyURL, &candidate.Host, &candidate.InputIP, &candidate.Port, &candidate.Protocol,
 		&candidate.Domain, &candidate.BatchID, &candidate.Status, &candidate.InitialConnected, &candidate.ProbeKind,
 		&candidate.ProbeReturnStatus, &candidate.KeepaliveRoundID, &candidate.ReviveRoundID, &candidate.ReviveFailureCount,
@@ -611,7 +611,7 @@ SET status = ?, latency_ms = ?, probe_time = ?, probe_started_at = 0, probe_kind
 WHERE id = ? AND status = ? AND probe_kind = ?`, statusHealthy, connectivity.LatencyMs, time.Now().UnixMilli(), statusHealthy, node.ID, statusProbing, probeKindRealtimeGuard); err != nil {
 		return fmt.Errorf("保存实时守护保底健康节点: %w", err)
 	}
-	if _, err := transaction.Exec(`UPDATE ip_slots SET node_id = ? WHERE slot_id = ? AND slot_kind = ? AND node_id = 0`, node.ID, slot.ID, statusHealthy); err != nil {
+	if _, err := transaction.Exec(`UPDATE ip_slots SET `+slotNodeIDAssignment()+` WHERE slot_id = ? AND slot_kind = ? AND node_id = 0`, slotNodeIDArgs(node.ID, slot.ID, statusHealthy)...); err != nil {
 		return fmt.Errorf("写入实时守护保底健康槽位: %w", err)
 	}
 	if err := transaction.Commit(); err != nil {

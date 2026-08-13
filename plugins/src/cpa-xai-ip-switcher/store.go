@@ -22,6 +22,8 @@ const (
 	defaultProbeRetryCount          = 3
 	defaultHealthySlotCount         = 50
 	defaultHealthyCandidateCount    = 20
+	defaultHealthySlotMaxAgeMinutes = 350
+	maxHealthySlotMaxAgeMinutes     = 10080
 	defaultQualityWorkerCount       = 8
 	defaultQualityProbeTimeout      = 25
 	defaultQualitySoftTPS           = 500.0
@@ -82,6 +84,7 @@ type pluginSettings struct {
 	ProbeRetryCount            int
 	HealthySlotCount           int
 	HealthyCandidateSlotCount  int
+	HealthySlotMaxAgeMinutes   int
 	QualityWorkerCount         int
 	QualityProbeTimeoutSeconds int
 	QualitySoftTPS             float64
@@ -121,6 +124,7 @@ type proxyNode struct {
 	ErrorDetail        string
 	ReviveTargetStatus string
 	SlotID             int64
+	SlotRefreshAt      int64
 	FallbackOrigin     bool
 	EmptySlot          bool
 }
@@ -356,6 +360,7 @@ INSERT OR IGNORE INTO plugin_settings(setting_key, setting_value) VALUES
     ('probe_retry_count', '3'),
     ('healthy_slot_count', '50'),
     ('healthy_candidate_slot_count', '20'),
+    ('healthy_slot_max_age_minutes', '350'),
     ('quality_worker_count', '8'),
     ('quality_probe_timeout_seconds', '25'),
     ('quality_soft_tps', '500'),
@@ -752,39 +757,6 @@ SET total_count = ?, duplicate_count = ?, initial_probe_completed_count = ?, ini
 WHERE batch_id = ?`, added, duplicates, initialProbeCompletedCount, initialConnectedCount, batchID); err != nil {
 		return batchID, 0, 0, fmt.Errorf("update sqlite batch: %w", err)
 	}
-	if _, err := transaction.Exec(`
-UPDATE ip_slots
-SET node_id = 0,
-    claim_node_id = 0,
-    fallback_origin = 0,
-    fallback_entered_round_id = 0,
-    claim_token = '',
-    claim_stage = '',
-    claim_started_at = 0
-WHERE node_id IN (
-    SELECT id FROM ip_nodes ORDER BY entered_at ASC, id ASC LIMIT -1 OFFSET 1000
-) OR claim_node_id IN (
-    SELECT id FROM ip_nodes ORDER BY entered_at ASC, id ASC LIMIT -1 OFFSET 1000
-)`); err != nil {
-		return batchID, 0, 0, fmt.Errorf("clear slots for trimmed IP records: %w", err)
-	}
-	if _, err := transaction.Exec(`
-DELETE FROM ip_slot_auth_bindings
-WHERE node_id IN (
-    SELECT id FROM ip_nodes ORDER BY entered_at ASC, id ASC LIMIT -1 OFFSET 1000
-)`); err != nil {
-		return batchID, 0, 0, fmt.Errorf("clear auth bindings for trimmed IP records: %w", err)
-	}
-	if _, err := transaction.Exec(`
-DELETE FROM ip_nodes
-WHERE id IN (
-    SELECT id
-    FROM ip_nodes
-    ORDER BY entered_at ASC, id ASC
-    LIMIT -1 OFFSET 1000
-)`); err != nil {
-		return batchID, 0, 0, fmt.Errorf("trim sqlite IP records: %w", err)
-	}
 	if err := transaction.Commit(); err != nil {
 		return batchID, 0, 0, fmt.Errorf("commit sqlite batch insert: %w", err)
 	}
@@ -801,7 +773,7 @@ func (store *ipStore) listNodes(status string) ([]proxyNode, error) {
 SELECT nodes.id, nodes.node_name, nodes.proxy_url, nodes.batch_id, nodes.protocol, nodes.status, nodes.initial_connected,
        nodes.latency_ms, nodes.entered_at, nodes.probe_started_at, nodes.probe_time, nodes.exit_ip, nodes.exit_country,
        nodes.revive_failure_count, nodes.error_reason, nodes.error_detail,
-       COALESCE(slots.slot_id, 0), COALESCE(slots.fallback_origin, 0)
+       COALESCE(slots.slot_id, 0), COALESCE(slots.fallback_origin, 0), COALESCE(slots.refresh_at, 0)
 FROM ip_nodes AS nodes
 LEFT JOIN ip_slots AS slots ON slots.node_id = nodes.id OR slots.claim_node_id = nodes.id
 ORDER BY nodes.id DESC`)
@@ -810,7 +782,7 @@ ORDER BY nodes.id DESC`)
 SELECT nodes.id, nodes.node_name, nodes.proxy_url, nodes.batch_id, nodes.protocol, nodes.status, nodes.initial_connected,
        nodes.latency_ms, nodes.entered_at, nodes.probe_started_at, nodes.probe_time, nodes.exit_ip, nodes.exit_country,
        nodes.revive_failure_count, nodes.error_reason, nodes.error_detail,
-       COALESCE(slots.slot_id, 0), COALESCE(slots.fallback_origin, 0)
+       COALESCE(slots.slot_id, 0), COALESCE(slots.fallback_origin, 0), COALESCE(slots.refresh_at, 0)
 FROM ip_nodes AS nodes
 LEFT JOIN ip_slots AS slots ON slots.node_id = nodes.id OR slots.claim_node_id = nodes.id
 WHERE nodes.status = ? ORDER BY nodes.id DESC`, status)
@@ -842,6 +814,7 @@ WHERE nodes.status = ? ORDER BY nodes.id DESC`, status)
 			&node.ErrorDetail,
 			&node.SlotID,
 			&node.FallbackOrigin,
+			&node.SlotRefreshAt,
 		); err != nil {
 			return nil, fmt.Errorf("scan sqlite node: %w", err)
 		}
@@ -974,7 +947,7 @@ func (store *ipStore) listNodesByBatch(batchID string) ([]proxyNode, error) {
 SELECT nodes.id, nodes.node_name, nodes.proxy_url, nodes.batch_id, nodes.protocol, nodes.status, nodes.initial_connected,
        nodes.latency_ms, nodes.entered_at, nodes.probe_started_at, nodes.probe_time, nodes.exit_ip, nodes.exit_country,
        nodes.revive_failure_count, nodes.error_reason, nodes.error_detail,
-       COALESCE(slots.slot_id, 0), COALESCE(slots.fallback_origin, 0)
+       COALESCE(slots.slot_id, 0), COALESCE(slots.fallback_origin, 0), COALESCE(slots.refresh_at, 0)
 FROM ip_nodes AS nodes
 LEFT JOIN ip_slots AS slots ON slots.node_id = nodes.id OR slots.claim_node_id = nodes.id
 WHERE nodes.batch_id = ? ORDER BY nodes.id DESC`, batchID)
@@ -1005,6 +978,7 @@ WHERE nodes.batch_id = ? ORDER BY nodes.id DESC`, batchID)
 			&node.ErrorDetail,
 			&node.SlotID,
 			&node.FallbackOrigin,
+			&node.SlotRefreshAt,
 		); err != nil {
 			return nil, fmt.Errorf("scan sqlite batch node: %w", err)
 		}
@@ -1047,7 +1021,7 @@ func (store *ipStore) getNode(id int64) (proxyNode, bool, error) {
 SELECT nodes.id, nodes.node_name, nodes.proxy_url, nodes.batch_id, nodes.protocol, nodes.status, nodes.initial_connected,
        nodes.latency_ms, nodes.entered_at, nodes.probe_started_at, nodes.probe_time, nodes.exit_ip, nodes.exit_country,
        nodes.revive_failure_count, nodes.error_reason, nodes.error_detail,
-       COALESCE(slots.slot_id, 0), COALESCE(slots.fallback_origin, 0)
+       COALESCE(slots.slot_id, 0), COALESCE(slots.fallback_origin, 0), COALESCE(slots.refresh_at, 0)
 FROM ip_nodes AS nodes
 LEFT JOIN ip_slots AS slots ON slots.node_id = nodes.id OR slots.claim_node_id = nodes.id
 WHERE nodes.id = ?`, id).Scan(
@@ -1069,6 +1043,7 @@ WHERE nodes.id = ?`, id).Scan(
 		&node.ErrorDetail,
 		&node.SlotID,
 		&node.FallbackOrigin,
+		&node.SlotRefreshAt,
 	)
 	if err == sql.ErrNoRows {
 		return proxyNode{}, false, nil
@@ -1486,6 +1461,7 @@ FROM plugin_settings
 WHERE setting_key IN (
     'worker_count', 'refresh_interval_seconds', 'keepalive_worker_count', 'keepalive_interval_seconds',
     'revive_interval_seconds', 'probe_retry_count', 'healthy_slot_count', 'healthy_candidate_slot_count',
+    'healthy_slot_max_age_minutes',
     'quality_worker_count', 'quality_probe_timeout_seconds', 'quality_soft_tps', 'quality_hard_tps',
     'grok2api_sync_enabled', 'grok2api_base_url', 'grok2api_admin_username', 'grok2api_admin_password',
     'manager_base_url', 'manager_management_key', 'manager_database_path'
@@ -1545,6 +1521,8 @@ WHERE setting_key IN (
 				settings.HealthySlotCount = value
 			case "healthy_candidate_slot_count":
 				settings.HealthyCandidateSlotCount = value
+			case "healthy_slot_max_age_minutes":
+				settings.HealthySlotMaxAgeMinutes = value
 			case "quality_worker_count":
 				settings.QualityWorkerCount = value
 			case "quality_probe_timeout_seconds":
@@ -1586,6 +1564,7 @@ func (store *ipStore) setSettings(settings pluginSettings) error {
 		"probe_retry_count":             strconv.Itoa(settings.ProbeRetryCount),
 		"healthy_slot_count":            strconv.Itoa(settings.HealthySlotCount),
 		"healthy_candidate_slot_count":  strconv.Itoa(settings.HealthyCandidateSlotCount),
+		"healthy_slot_max_age_minutes":  strconv.Itoa(settings.HealthySlotMaxAgeMinutes),
 		"quality_worker_count":          strconv.Itoa(settings.QualityWorkerCount),
 		"quality_probe_timeout_seconds": strconv.Itoa(settings.QualityProbeTimeoutSeconds),
 		"quality_soft_tps":              strconv.FormatFloat(settings.QualitySoftTPS, 'f', -1, 64),

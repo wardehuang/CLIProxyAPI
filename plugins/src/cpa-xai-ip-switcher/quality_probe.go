@@ -14,7 +14,7 @@ import (
 
 const (
 	qualityProbeEndpoint          = "https://cli-chat-proxy.grok.com/v1/responses"
-	qualityProbeModel             = "grok-4.5"
+	qualityProbeModel             = "grok-4.6"
 	qualityProbePrompt            = "用中文回答：17 × 23 等于多少？只输出计算过程和答案。"
 	qualityClassificationQuota    = "quota_exhausted"
 	qualityClassificationUnknown  = "unknown"

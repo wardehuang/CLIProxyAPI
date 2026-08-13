@@ -407,6 +407,11 @@ socks5h://username:pass@ip:port
                 <input id="healthy-candidate-slot-count" type="number" min="0" max="1000" step="1" value="20" title="【健康备选】槽位数；与健康合计 ≤ 1000">
                 <span class="settings-help">【健康备选】 · 与健康合计 ≤ 1000</span>
               </label>
+              <label class="settings-field" for="healthy-slot-max-age-minutes">
+                最大占用（分钟）
+                <input id="healthy-slot-max-age-minutes" type="number" min="1" max="10080" step="1" value="350" title="健康槽占用超过该时长后，下次保活会清槽并丢冷却；默认 350">
+                <span class="settings-help">超时清槽 · 默认 350</span>
+              </label>
             </div>
           </section>
 
@@ -579,6 +584,7 @@ socks5h://username:pass@ip:port
         probeRetryCount: document.getElementById("probe-retry-count"),
         healthySlotCount: document.getElementById("healthy-slot-count"),
         healthyCandidateSlotCount: document.getElementById("healthy-candidate-slot-count"),
+        healthySlotMaxAgeMinutes: document.getElementById("healthy-slot-max-age-minutes"),
         qualityWorkerCount: document.getElementById("quality-worker-count"),
         qualityProbeTimeout: document.getElementById("quality-probe-timeout"),
         qualitySoftTPS: document.getElementById("quality-soft-tps"),
@@ -680,6 +686,7 @@ socks5h://username:pass@ip:port
           elements.probeRetryCount.value = String(settings.probeRetryCount);
           elements.healthySlotCount.value = String(settings.healthySlotCount);
           elements.healthyCandidateSlotCount.value = String(settings.healthyCandidateSlotCount);
+          elements.healthySlotMaxAgeMinutes.value = String(settings.healthySlotMaxAgeMinutes);
           elements.qualityWorkerCount.value = String(settings.qualityWorkerCount);
           elements.qualityProbeTimeout.value = String(settings.qualityProbeTimeoutSeconds);
           elements.qualitySoftTPS.value = String(settings.qualitySoftTPS);
@@ -797,6 +804,9 @@ socks5h://username:pass@ip:port
         if (sortKey === "slotId") {
           return Number(node.slotId) > 0 ? Number(node.slotId) : null;
         }
+        if (sortKey === "slotRefreshAt") {
+          return Number(node.slotRefreshAt) > 0 ? Number(node.slotRefreshAt) : null;
+        }
         return null;
       }
 
@@ -841,6 +851,11 @@ socks5h://username:pass@ip:port
         return `<button class="button" type="button" data-auth-bindings-id="${escapeHTML(node.id)}">查看绑定 auth</button>`;
       }
 
+      function renderSlotRefreshAt(node) {
+        if (node.status !== "healthy" || node.emptySlot || !node.slotRefreshAt) return "-";
+        return escapeHTML(formatTime(node.slotRefreshAt));
+      }
+
       function renderTable() {
         const status = state.activeStatus;
         const rows = getVisibleNodes(status);
@@ -849,7 +864,7 @@ socks5h://username:pass@ip:port
           return;
         }
         if (status === "healthy" || status === "healthy_candidate" || status === "healthy_fallback" || status === "connected" || status === "cooldown") {
-          elements.table.innerHTML = `<table><thead><tr><th>节点名字</th><th>${renderNodeSortHeader("延迟", "latencyMs")}</th><th>${renderNodeSortHeader("槽位", "slotId")}</th><th>探测时间</th><th>操作</th></tr></thead><tbody>${rows.map((node) => `<tr><td class="node-name">${escapeHTML(formatNodeName(node))}</td><td class="mono">${node.latencyMs ? escapeHTML(node.latencyMs) + " ms" : "-"}</td><td>${renderNodeSlot(node)}</td><td>${escapeHTML(formatTime(node.probeTime))}</td><td>${renderNodeActions(node)}</td></tr>`).join("")}</tbody></table>`;
+          elements.table.innerHTML = `<table><thead><tr><th>节点名字</th><th>${renderNodeSortHeader("延迟", "latencyMs")}</th><th>${renderNodeSortHeader("槽位", "slotId")}</th><th>${renderNodeSortHeader("刷新时间", "slotRefreshAt")}</th><th>探测时间</th><th>操作</th></tr></thead><tbody>${rows.map((node) => `<tr><td class="node-name">${escapeHTML(formatNodeName(node))}</td><td class="mono">${node.latencyMs ? escapeHTML(node.latencyMs) + " ms" : "-"}</td><td>${renderNodeSlot(node)}</td><td>${renderSlotRefreshAt(node)}</td><td>${escapeHTML(formatTime(node.probeTime))}</td><td>${renderNodeActions(node)}</td></tr>`).join("")}</tbody></table>`;
           return;
         }
         if (status === "probing" || status === "keepalive_probing" || status === "quality_probing" || status === "revive_probing") {
@@ -1164,6 +1179,7 @@ socks5h://username:pass@ip:port
           probeRetryCount: Number(elements.probeRetryCount.value),
           healthySlotCount: Number(elements.healthySlotCount.value),
           healthyCandidateSlotCount: Number(elements.healthyCandidateSlotCount.value),
+          healthySlotMaxAgeMinutes: Number(elements.healthySlotMaxAgeMinutes.value),
           qualityWorkerCount: Number(elements.qualityWorkerCount.value),
           qualityProbeTimeoutSeconds: Number(elements.qualityProbeTimeout.value),
           qualitySoftTPS: Number(elements.qualitySoftTPS.value),
@@ -1175,8 +1191,8 @@ socks5h://username:pass@ip:port
           managerBaseUrl: elements.managerBaseUrl.value.trim().replace(/\/+$/, ""),
           managerManagementKey: elements.managerManagementKey.value
         };
-        if (!Number.isInteger(settings.workerCount) || settings.workerCount < 1 || settings.workerCount > 64 || !Number.isInteger(settings.refreshIntervalSeconds) || settings.refreshIntervalSeconds < minimumRefreshIntervalSeconds || settings.refreshIntervalSeconds > maximumRefreshIntervalSeconds || !Number.isInteger(settings.keepaliveWorkerCount) || settings.keepaliveWorkerCount < 1 || settings.keepaliveWorkerCount > 64 || !Number.isInteger(settings.keepaliveIntervalSeconds) || settings.keepaliveIntervalSeconds < 1 || settings.keepaliveIntervalSeconds > 86400 || !Number.isInteger(settings.reviveIntervalSeconds) || settings.reviveIntervalSeconds < 1 || settings.reviveIntervalSeconds > 86400 || !Number.isInteger(settings.probeRetryCount) || settings.probeRetryCount < 1 || settings.probeRetryCount > 10 || !Number.isInteger(settings.healthySlotCount) || settings.healthySlotCount < 1 || settings.healthySlotCount > 1000 || !Number.isInteger(settings.healthyCandidateSlotCount) || settings.healthyCandidateSlotCount < 0 || settings.healthySlotCount + settings.healthyCandidateSlotCount > 1000 || !Number.isInteger(settings.qualityWorkerCount) || settings.qualityWorkerCount < 1 || settings.qualityWorkerCount > 64 || !Number.isInteger(settings.qualityProbeTimeoutSeconds) || settings.qualityProbeTimeoutSeconds < 1 || settings.qualityProbeTimeoutSeconds > 600 || !Number.isFinite(settings.qualitySoftTPS) || settings.qualitySoftTPS <= 0 || !Number.isFinite(settings.qualityHardTPS) || settings.qualityHardTPS <= settings.qualitySoftTPS) {
-          setNotice("配置范围无效：基础线程 1–64，页面刷新 5–3600 秒，保活和复活间隔 1–86400 秒，探测重试 1–10 次，总槽位 1–1000，智商线程 1–64，智商超时 1–600 秒，hard TPS 必须高于 soft TPS。", "error");
+        if (!Number.isInteger(settings.workerCount) || settings.workerCount < 1 || settings.workerCount > 64 || !Number.isInteger(settings.refreshIntervalSeconds) || settings.refreshIntervalSeconds < minimumRefreshIntervalSeconds || settings.refreshIntervalSeconds > maximumRefreshIntervalSeconds || !Number.isInteger(settings.keepaliveWorkerCount) || settings.keepaliveWorkerCount < 1 || settings.keepaliveWorkerCount > 64 || !Number.isInteger(settings.keepaliveIntervalSeconds) || settings.keepaliveIntervalSeconds < 1 || settings.keepaliveIntervalSeconds > 86400 || !Number.isInteger(settings.reviveIntervalSeconds) || settings.reviveIntervalSeconds < 1 || settings.reviveIntervalSeconds > 86400 || !Number.isInteger(settings.probeRetryCount) || settings.probeRetryCount < 1 || settings.probeRetryCount > 10 || !Number.isInteger(settings.healthySlotCount) || settings.healthySlotCount < 1 || settings.healthySlotCount > 1000 || !Number.isInteger(settings.healthyCandidateSlotCount) || settings.healthyCandidateSlotCount < 0 || settings.healthySlotCount + settings.healthyCandidateSlotCount > 1000 || !Number.isInteger(settings.healthySlotMaxAgeMinutes) || settings.healthySlotMaxAgeMinutes < 1 || settings.healthySlotMaxAgeMinutes > 10080 || !Number.isInteger(settings.qualityWorkerCount) || settings.qualityWorkerCount < 1 || settings.qualityWorkerCount > 64 || !Number.isInteger(settings.qualityProbeTimeoutSeconds) || settings.qualityProbeTimeoutSeconds < 1 || settings.qualityProbeTimeoutSeconds > 600 || !Number.isFinite(settings.qualitySoftTPS) || settings.qualitySoftTPS <= 0 || !Number.isFinite(settings.qualityHardTPS) || settings.qualityHardTPS <= settings.qualitySoftTPS) {
+          setNotice("配置范围无效：基础线程 1–64，页面刷新 5–3600 秒，保活和复活间隔 1–86400 秒，探测重试 1–10 次，总槽位 1–1000，健康槽最大占用 1–10080 分钟，智商线程 1–64，智商超时 1–600 秒，hard TPS 必须高于 soft TPS。", "error");
           return;
         }
         if (settings.managerBaseUrl && !/^https?:\/\//i.test(settings.managerBaseUrl)) {
