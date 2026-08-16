@@ -37,7 +37,9 @@ const (
 	maxQualityProbeTimeoutSeconds   = 600
 	settingsDefaultsVersion         = "3"
 	maxPluginLogs                   = 1000
+	maxRealtimeGuardLogs            = 100
 	maxGroupedLogSets               = 10
+	maxStoredBatches                = 5
 
 	logLevelInfo  = "info"
 	logLevelWarn  = "warn"
@@ -89,6 +91,7 @@ type pluginSettings struct {
 	QualityProbeTimeoutSeconds int
 	QualitySoftTPS             float64
 	QualityHardTPS             float64
+	DebugEnabled               bool
 	Grok2apiSyncEnabled        bool
 	Grok2apiBaseUrl            string
 	Grok2apiAdminUsername      string
@@ -403,6 +406,9 @@ INSERT OR IGNORE INTO plugin_settings(setting_key, setting_value) VALUES
 		return err
 	}
 	if err := store.clearAutomaticFallbackNodes(); err != nil {
+		return err
+	}
+	if err := store.pruneStoredBatches(); err != nil {
 		return err
 	}
 	if err := store.pruneStoredLogs(); err != nil {
@@ -760,6 +766,10 @@ WHERE batch_id = ?`, added, duplicates, initialProbeCompletedCount, initialConne
 	if err := transaction.Commit(); err != nil {
 		return batchID, 0, 0, fmt.Errorf("commit sqlite batch insert: %w", err)
 	}
+	if err := store.pruneStoredBatches(); err != nil {
+		return batchID, added, duplicates, fmt.Errorf("prune sqlite batches after insert: %w", err)
+	}
+	_ = store.pruneStoredLogs()
 	return batchID, added, duplicates, nil
 }
 
@@ -1463,6 +1473,7 @@ WHERE setting_key IN (
     'revive_interval_seconds', 'probe_retry_count', 'healthy_slot_count', 'healthy_candidate_slot_count',
     'healthy_slot_max_age_minutes',
     'quality_worker_count', 'quality_probe_timeout_seconds', 'quality_soft_tps', 'quality_hard_tps',
+    'debug_enabled',
     'grok2api_sync_enabled', 'grok2api_base_url', 'grok2api_admin_username', 'grok2api_admin_password',
     'manager_base_url', 'manager_management_key', 'manager_database_path'
 )`)
@@ -1487,6 +1498,8 @@ WHERE setting_key IN (
 			} else {
 				settings.QualityHardTPS = value
 			}
+		case "debug_enabled":
+			settings.DebugEnabled = parseSettingBool(rawValue)
 		case "grok2api_sync_enabled":
 			settings.Grok2apiSyncEnabled = parseSettingBool(rawValue)
 		case "grok2api_base_url":
@@ -1569,6 +1582,7 @@ func (store *ipStore) setSettings(settings pluginSettings) error {
 		"quality_probe_timeout_seconds": strconv.Itoa(settings.QualityProbeTimeoutSeconds),
 		"quality_soft_tps":              strconv.FormatFloat(settings.QualitySoftTPS, 'f', -1, 64),
 		"quality_hard_tps":              strconv.FormatFloat(settings.QualityHardTPS, 'f', -1, 64),
+		"debug_enabled":                 formatSettingBool(settings.DebugEnabled),
 		"grok2api_sync_enabled":         formatSettingBool(settings.Grok2apiSyncEnabled),
 		"grok2api_base_url":             normalizeGrok2apiBaseURL(settings.Grok2apiBaseUrl),
 		"grok2api_admin_username":       strings.TrimSpace(settings.Grok2apiAdminUsername),

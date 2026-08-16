@@ -268,7 +268,7 @@
         <div class="section-head">
           <div>
             <h2>日志</h2>
-            <p>日志按用途、批次和节点状态分组；日志视图每个节点只显示一条最终探测结果，轮次保留开始/完成摘要；通用日志最多保存 1000 条，探测日志保留最近 10 个批次。</p>
+            <p>日志按用途、批次和节点状态分组；日志视图每个节点只显示一条最终探测结果，轮次保留开始/完成摘要；守护日志最多保存 100 条，批次查看最多保留 5 个批次；关闭调试时仅显示守护日志。</p>
           </div>
           <div class="toolbar">
             <input id="log-search" class="log-search" type="search" placeholder="搜索 ID、级别、事件、节点、消息或详情" aria-label="搜索日志">
@@ -276,11 +276,11 @@
           </div>
         </div>
         <nav id="log-category-tabs" class="status-tabs" aria-label="日志分类页签">
-          <button class="tab active" type="button" data-log-category="general">通用</button>
+          <button class="tab active" type="button" data-log-category="realtime_guard">守护日志</button>
+          <button class="tab" type="button" data-log-category="general">通用</button>
           <button class="tab" type="button" data-log-category="batch_probe">批次探测</button>
           <button class="tab" type="button" data-log-category="keepalive_probe">保活探测</button>
           <button class="tab" type="button" data-log-category="quality_probe">智商探测</button>
-          <button class="tab" type="button" data-log-category="realtime_guard">实时守护</button>
           <button class="tab" type="button" data-log-category="revive_probe">复活探测</button>
         </nav>
         <div id="log-group-panel" hidden>
@@ -346,6 +346,11 @@ socks5h://username:pass@ip:port
               <span class="settings-card-badge">调度类下次启动</span>
             </div>
             <p class="settings-card-help">初次连通探测并发、失败重试，以及管理页自动刷新周期。</p>
+            <label class="settings-checkbox-field" for="debug-enabled">
+              <input id="debug-enabled" type="checkbox">
+              启用调试日志
+            </label>
+            <p class="settings-help">关闭时日志页仅显示守护日志；其他日志页签保留，内容提示需打开调试。立即生效。守护日志最多 100 条；批次查看最多 5 个批次。</p>
             <div class="settings-grid">
               <label class="settings-field" for="worker-count">
                 探测线程数
@@ -498,7 +503,7 @@ socks5h://username:pass@ip:port
         </div>
 
         <div class="settings-actions">
-          <span class="help">调度类保存后下次启动生效；grok2api 与页面刷新立即生效。</span>
+          <span class="help">调度类保存后下次启动生效；调试开关、grok2api 与页面刷新立即生效。</span>
           <button id="sync-grok2api-button" class="button" type="button">立即同步 grok2api</button>
           <button id="save-settings-button" class="button primary" type="button">保存运行配置</button>
         </div>
@@ -545,9 +550,9 @@ socks5h://username:pass@ip:port
       const defaultRefreshIntervalSeconds = 30;
       const minimumRefreshIntervalSeconds = 5;
       const maximumRefreshIntervalSeconds = 3600;
-      const state = { activeView: "nodes", activeStatus: "connected", nodes: [], batches: [], batchNodes: [], selectedBatchID: "", batchStatusFilter: "all", batchSortKey: "", batchSortDirection: "asc", nodeSortKey: "", nodeSortDirection: "asc", activeLogCategory: "general", activeLogStatus: "connected", selectedLogGroupIDs: { batch_probe: "", keepalive_probe: "", quality_probe: "", revive_probe: "" }, logGroups: { batch_probe: [], keepalive_probe: [], quality_probe: [], revive_probe: [] }, logs: [], logSearch: "", refreshingViews: { nodes: false, batches: false, logs: false }, refreshIntervalSeconds: defaultRefreshIntervalSeconds, timer: null, noticeTimer: null };
+      const state = { activeView: "nodes", activeStatus: "connected", nodes: [], batches: [], batchNodes: [], selectedBatchID: "", batchStatusFilter: "all", batchSortKey: "", batchSortDirection: "asc", nodeSortKey: "", nodeSortDirection: "asc", activeLogCategory: "realtime_guard", activeLogStatus: "connected", selectedLogGroupIDs: { batch_probe: "", keepalive_probe: "", quality_probe: "", revive_probe: "" }, logGroups: { batch_probe: [], keepalive_probe: [], quality_probe: [], revive_probe: [] }, logs: [], logSearch: "", debugEnabled: false, refreshingViews: { nodes: false, batches: false, logs: false }, refreshIntervalSeconds: defaultRefreshIntervalSeconds, timer: null, noticeTimer: null };
       const statusLabels = { healthy: "健康", healthy_candidate: "健康备选", healthy_fallback: "健康保底", connected: "已连通", cooldown: "冷却中", probing: "探测中", keepalive_probing: "保活探测中", quality_probing: "智商探测中", revive_probing: "复活探测中", unprobed: "未探测", error: "异常" };
-      const logCategoryLabels = { general: "通用", batch_probe: "批次探测", keepalive_probe: "保活探测", quality_probe: "智商探测", realtime_guard: "实时守护", revive_probe: "复活探测" };
+      const logCategoryLabels = { general: "通用", batch_probe: "批次探测", keepalive_probe: "保活探测", quality_probe: "智商探测", realtime_guard: "守护日志", revive_probe: "复活探测" };
       const logStatusLabels = { connected: "已连通", probing: "探测中", error: "账号异常" };
       const logLevelLabels = { info: "信息", warn: "警告", error: "错误" };
       const elements = {
@@ -589,6 +594,7 @@ socks5h://username:pass@ip:port
         qualityProbeTimeout: document.getElementById("quality-probe-timeout"),
         qualitySoftTPS: document.getElementById("quality-soft-tps"),
         qualityHardTPS: document.getElementById("quality-hard-tps"),
+        debugEnabled: document.getElementById("debug-enabled"),
         grok2apiSyncEnabled: document.getElementById("grok2api-sync-enabled"),
         grok2apiBaseUrl: document.getElementById("grok2api-base-url"),
         grok2apiAdminUsername: document.getElementById("grok2api-admin-username"),
@@ -691,6 +697,7 @@ socks5h://username:pass@ip:port
           elements.qualityProbeTimeout.value = String(settings.qualityProbeTimeoutSeconds);
           elements.qualitySoftTPS.value = String(settings.qualitySoftTPS);
           elements.qualityHardTPS.value = String(settings.qualityHardTPS);
+          elements.debugEnabled.checked = Boolean(settings.debugEnabled);
           elements.grok2apiSyncEnabled.checked = Boolean(settings.grok2apiSyncEnabled);
           elements.grok2apiBaseUrl.value = settings.grok2apiBaseUrl || "";
           elements.grok2apiAdminUsername.value = settings.grok2apiAdminUsername || "";
@@ -699,10 +706,22 @@ socks5h://username:pass@ip:port
           elements.managerManagementKey.value = settings.managerManagementKey || "";
           elements.managerInspectionRunResult.textContent = "";
         }
+        state.debugEnabled = Boolean(settings.debugEnabled);
         if (applyRefreshInterval && state.refreshIntervalSeconds !== settings.refreshIntervalSeconds) {
           state.refreshIntervalSeconds = settings.refreshIntervalSeconds;
           resetRefreshTimer();
         }
+      }
+
+      function isDebugLogCategory(category) {
+        return category !== "realtime_guard";
+      }
+
+      function renderDebugLogsLocked() {
+        elements.logGroupPanel.hidden = true;
+        elements.logSummary.textContent = "需要打开调试才显示日志";
+        elements.logs.innerHTML = `<div class="empty">需要打开调试才显示日志</div>`;
+        document.querySelectorAll("[data-log-category]").forEach((tab) => tab.classList.toggle("active", tab.dataset.logCategory === state.activeLogCategory));
       }
 
       async function openSettingsModal() {
@@ -960,7 +979,10 @@ socks5h://username:pass@ip:port
         }
 
         elements.batchBackButton.hidden = true;
-        elements.batchSummary.textContent = state.batches.length ? `共 ${state.batches.length} 个批次；初次探测进度和初次已连通数量在初次结果写入后固定，只有实时已连通数量随节点状态变化。` : "暂无批次。";
+        const batchMax = state.batchRetentionMax || 5;
+        elements.batchSummary.textContent = state.batches.length
+          ? `共 ${state.batches.length} 个批次（最多保留 ${batchMax} 个）；初次探测进度和初次已连通数量在初次结果写入后固定，只有实时已连通数量随节点状态变化。`
+          : "暂无批次。";
         if (state.batches.length === 0) {
           elements.batches.innerHTML = `<div class="empty">暂无录入批次。</div>`;
           return;
@@ -1009,6 +1031,10 @@ socks5h://username:pass@ip:port
       }
 
       function renderLogs() {
+        if (!state.debugEnabled && isDebugLogCategory(state.activeLogCategory)) {
+          renderDebugLogsLocked();
+          return;
+        }
         renderLogNavigation();
         const groupedCategory = isGroupedLogCategory(state.activeLogCategory);
         const visibleLogs = groupedCategory
@@ -1031,10 +1057,12 @@ socks5h://username:pass@ip:port
         }
         const searchSummary = state.logSearch ? `，搜索：${state.logSearch}` : "";
         if (!groupedCategory) {
-          elements.logSummary.textContent = `显示 ${visibleLogs.length} 条${logCategoryLabels[state.activeLogCategory]}日志，最多保存 1000 条${searchSummary}。`;
+          const retentionMax = state.activeLogCategory === "realtime_guard" ? (state.logRetentionMax || 100) : (state.logRetentionMax || 1000);
+          elements.logSummary.textContent = `显示 ${visibleLogs.length} 条${logCategoryLabels[state.activeLogCategory]}日志，最多保存 ${retentionMax} 条${searchSummary}。`;
         } else {
           const groupLabel = selectedGroup ? `#${selectedGroup.sequenceNumber}` : "当前探测批次";
-          elements.logSummary.textContent = `显示${groupLabel}【${logStatusLabels[state.activeLogStatus]}】${visibleLogs.length} 条日志，保留最近 10 个${logCategoryLabels[state.activeLogCategory]}批次${searchSummary}${keepaliveRoundSummary(selectedGroup)}。`;
+          const groupRetention = state.activeLogCategory === "batch_probe" ? 5 : 10;
+          elements.logSummary.textContent = `显示${groupLabel}【${logStatusLabels[state.activeLogStatus]}】${visibleLogs.length} 条日志，保留最近 ${groupRetention} 个${logCategoryLabels[state.activeLogCategory]}批次${searchSummary}${keepaliveRoundSummary(selectedGroup)}。`;
         }
         elements.logs.innerHTML = `<table><thead><tr><th>ID</th><th>时间</th><th>级别</th><th>事件</th><th>节点</th><th>消息</th><th>详情</th></tr></thead><tbody>${visibleLogs.map((logEntry) => {
           const nodeLabel = logEntry.nodeId ? `#${logEntry.nodeId} ${logEntry.nodeName || "节点"}` : "插件";
@@ -1064,6 +1092,11 @@ socks5h://username:pass@ip:port
 
       async function refreshLogs() {
         state.logSearch = elements.logSearch.value.trim();
+        if (!state.debugEnabled && isDebugLogCategory(state.activeLogCategory)) {
+          state.logs = [];
+          renderDebugLogsLocked();
+          return;
+        }
         const searchParameters = new URLSearchParams();
         searchParameters.set("category", state.activeLogCategory);
         if (state.logSearch) searchParameters.set("search", state.logSearch);
@@ -1083,14 +1116,16 @@ socks5h://username:pass@ip:port
           ? await callAPI("GET", `/logs?${searchParameters.toString()}`)
           : state.selectedLogGroupIDs[state.activeLogCategory]
             ? await callAPI("GET", `/logs?${searchParameters.toString()}`)
-            : { items: [] };
+            : { items: [], max: 0 };
         state.logs = logData.items;
+        state.logRetentionMax = Number(logData.max) || 0;
         renderLogs();
       }
 
       async function refreshBatches() {
         const batchData = await callAPI("GET", "/batches");
         state.batches = batchData.items;
+        state.batchRetentionMax = Number(batchData.max) || 5;
         if (state.selectedBatchID) {
           const nodeData = await callAPI("GET", `/batches/${encodeURIComponent(state.selectedBatchID)}/nodes`);
           state.batchNodes = nodeData.items;
@@ -1106,6 +1141,8 @@ socks5h://username:pass@ip:port
         updateRefreshButton();
         try {
           if (view === "logs") {
+            const settings = await callAPI("GET", "/settings");
+            applySettings(settings, true, false);
             await refreshLogs();
           } else if (view === "batches") {
             await refreshBatches();
@@ -1184,6 +1221,7 @@ socks5h://username:pass@ip:port
           qualityProbeTimeoutSeconds: Number(elements.qualityProbeTimeout.value),
           qualitySoftTPS: Number(elements.qualitySoftTPS.value),
           qualityHardTPS: Number(elements.qualityHardTPS.value),
+          debugEnabled: elements.debugEnabled.checked,
           grok2apiSyncEnabled: elements.grok2apiSyncEnabled.checked,
           grok2apiBaseUrl: elements.grok2apiBaseUrl.value.trim().replace(/\/+$/, ""),
           grok2apiAdminUsername: elements.grok2apiAdminUsername.value.trim(),
@@ -1204,7 +1242,10 @@ socks5h://username:pass@ip:port
           const savedSettings = await callAPI("PUT", "/settings", settings);
           applySettings(savedSettings, false, true);
           closeModal(elements.settingsModal);
-          setNotice("运行配置已保存；调度类配置下次启动生效，grok2api 同步配置立即生效。", "success");
+          setNotice("运行配置已保存；调度类配置下次启动生效，调试开关、页面刷新与 grok2api 同步配置立即生效。", "success");
+          if (state.activeView === "logs") {
+            await refresh("logs");
+          }
         } catch (error) {
           setNotice(error instanceof Error ? error.message : String(error), "error");
         } finally {

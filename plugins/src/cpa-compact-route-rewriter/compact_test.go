@@ -7,13 +7,15 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginapi"
 )
 
-func TestRewriteOpenAIResponsesCompactRouteToCodexModel(t *testing.T) {
+const cursorSummarizationInstructions = `You are an intelligent assistant, tasked with summarizing the following conversation. You MUST follow the instructions given in the <summarization_request> tags and summarize the conversation. This summary will be provided to another AI assistant.`
+
+func TestRewriteOpenAIResponsesSummarizationTagToCodexModel(t *testing.T) {
 	configurePlugin([]byte("codex-compact-model: gpt-test-compact\ncodex-compact-reasoning-effort: low\n"))
 
-	body := []byte(`{"model":"gpt-5.4","context_management":{"type":"compaction"}}`)
+	body := []byte(`{"model":"gpt-5.5","instructions":"` + cursorSummarizationInstructions + `","input":[{"role":"user","content":"normal history"}]}`)
 	metaResp := enrichRequestMetadata(context.Background(), pluginapi.RequestMetadataEnrichRequest{
 		SourceFormat: "openai-response",
-		Model:        "gpt-5.4",
+		Model:        "gpt-5.5",
 		Body:         body,
 	}, "")
 	if metaResp.Metadata[metadataCompactDetected] != true {
@@ -22,8 +24,8 @@ func TestRewriteOpenAIResponsesCompactRouteToCodexModel(t *testing.T) {
 
 	routeResp := rewriteCompactRoute(context.Background(), pluginapi.RouteRewriteRequest{
 		SourceFormat:    "openai-response",
-		RequestedModel:  "gpt-5.4",
-		NormalizedModel: "gpt-5.4",
+		RequestedModel:  "gpt-5.5",
+		NormalizedModel: "gpt-5.5",
 		Providers:       []string{"codex"},
 		Body:            body,
 		Metadata:        metaResp.Metadata,
@@ -37,44 +39,6 @@ func TestRewriteOpenAIResponsesCompactRouteToCodexModel(t *testing.T) {
 	if routeResp.Metadata[metadataCompactProvider] != providerCodex {
 		t.Fatalf("provider metadata = %v, want %s", routeResp.Metadata[metadataCompactProvider], providerCodex)
 	}
-}
-
-func TestRewriteClaudeCompactRouteToAntigravityModel(t *testing.T) {
-	configurePlugin([]byte("antigravity-compact-model: gemini-test-compact\nantigravity-compact-reasoning-effort: medium\n"))
-
-	body := []byte(`{"model":"claude-sonnet","messages":[{"role":"user","content":"Your task is to create a detailed summary of the conversation so far."}]}`)
-	routeResp := rewriteCompactRoute(context.Background(), pluginapi.RouteRewriteRequest{
-		SourceFormat:    "anthropic",
-		RequestedModel:  "claude-sonnet",
-		NormalizedModel: "claude-sonnet",
-		Providers:       []string{"antigravity"},
-		Body:            body,
-	}, "")
-	if routeResp.RequestedModel != "gemini-test-compact" || routeResp.NormalizedModel != "gemini-test-compact" {
-		t.Fatalf("route models = %q/%q, want gemini-test-compact", routeResp.RequestedModel, routeResp.NormalizedModel)
-	}
-	if routeResp.Metadata["reasoning_effort"] != "medium" {
-		t.Fatalf("reasoning_effort metadata = %v, want medium", routeResp.Metadata["reasoning_effort"])
-	}
-	if routeResp.Metadata[metadataCompactKind] != compactKindClaudeMessages {
-		t.Fatalf("kind metadata = %v, want %s", routeResp.Metadata[metadataCompactKind], compactKindClaudeMessages)
-	}
-}
-
-func TestRewriteOpenAIResponsesSummarizationTagToCodexModel(t *testing.T) {
-	configurePlugin([]byte("codex-compact-model: gpt-test-compact\n"))
-
-	body := []byte(`{"model":"gpt-5.5","instructions":"You are an intelligent assistant, tasked with summarizing the following conversation. You MUST follow the instructions given in the <summarization_request> tags and summarize the conversation. This summary will be provided to another AI assistant.","input":[{"role":"user","content":"normal history"}]}`)
-	routeResp := rewriteCompactRoute(context.Background(), pluginapi.RouteRewriteRequest{
-		SourceFormat:    "openai-response",
-		RequestedModel:  "gpt-5.5",
-		NormalizedModel: "gpt-5.5",
-		Providers:       []string{"codex"},
-		Body:            body,
-	}, "")
-	if routeResp.RequestedModel != "gpt-test-compact" || routeResp.NormalizedModel != "gpt-test-compact" {
-		t.Fatalf("route models = %q/%q, want gpt-test-compact", routeResp.RequestedModel, routeResp.NormalizedModel)
-	}
 	if routeResp.Metadata[metadataCompactReason] != "cursor_summarization" {
 		t.Fatalf("reason metadata = %v, want cursor_summarization", routeResp.Metadata[metadataCompactReason])
 	}
@@ -83,10 +47,10 @@ func TestRewriteOpenAIResponsesSummarizationTagToCodexModel(t *testing.T) {
 	}
 }
 
-func TestRewriteClaudeMessagesSummarizationTagToCodexModel(t *testing.T) {
+func TestRewriteCursorSummarizationViaSystemFieldToCodexModel(t *testing.T) {
 	configurePlugin([]byte("codex-compact-model: gpt-test-compact\n"))
 
-	body := []byte(`{"model":"claude-sonnet","system":"You are an intelligent assistant, tasked with summarizing the following conversation. You MUST follow the instructions given in the <summarization_request> tags and summarize the conversation. This summary will be provided to another AI assistant.","messages":[{"role":"user","content":"normal history"}]}`)
+	body := []byte(`{"model":"claude-sonnet","system":"` + cursorSummarizationInstructions + `","messages":[{"role":"user","content":"normal history"}]}`)
 	routeResp := rewriteCompactRoute(context.Background(), pluginapi.RouteRewriteRequest{
 		SourceFormat:    "anthropic",
 		RequestedModel:  "claude-sonnet",
@@ -105,7 +69,7 @@ func TestRewriteClaudeMessagesSummarizationTagToCodexModel(t *testing.T) {
 func TestRewriteCompactRouteUsesDefaultTarget(t *testing.T) {
 	configurePlugin([]byte("compact-provider: antigravity\ncompact-model: gemini-unified-compact\ncompact-reasoning-effort: low\n"))
 
-	body := []byte(`{"model":"gpt-5.5","context_management":{"type":"compaction"}}`)
+	body := []byte(`{"model":"gpt-5.5","instructions":"` + cursorSummarizationInstructions + `","input":[{"role":"user","content":"normal history"}]}`)
 	routeResp := rewriteCompactRoute(context.Background(), pluginapi.RouteRewriteRequest{
 		SourceFormat:    "openai-response",
 		RequestedModel:  "gpt-5.5",
@@ -130,7 +94,7 @@ func TestRewriteCompactRouteUsesDefaultTarget(t *testing.T) {
 func TestRewriteCompactRouteSourceOverrideWins(t *testing.T) {
 	configurePlugin([]byte("compact-provider: antigravity\ncompact-model: gemini-unified-compact\ncompact-reasoning-effort: low\ncodex-compact-provider: codex\ncodex-compact-model: gpt-codex-compact\ncodex-compact-reasoning-effort: high\n"))
 
-	body := []byte(`{"model":"gpt-5.5","context_management":{"type":"compaction"}}`)
+	body := []byte(`{"model":"gpt-5.5","instructions":"` + cursorSummarizationInstructions + `","input":[{"role":"user","content":"normal history"}]}`)
 	routeResp := rewriteCompactRoute(context.Background(), pluginapi.RouteRewriteRequest{
 		SourceFormat:    "openai-response",
 		RequestedModel:  "gpt-5.5",
@@ -146,6 +110,52 @@ func TestRewriteCompactRouteSourceOverrideWins(t *testing.T) {
 	}
 	if routeResp.Metadata["reasoning_effort"] != "high" {
 		t.Fatalf("reasoning_effort metadata = %v, want high", routeResp.Metadata["reasoning_effort"])
+	}
+}
+
+func TestClaudeMessagesPhraseAloneDoesNotRewriteRoute(t *testing.T) {
+	configurePlugin([]byte("antigravity-compact-model: gemini-test-compact\nantigravity-compact-reasoning-effort: medium\n"))
+
+	routeResp := rewriteCompactRoute(context.Background(), pluginapi.RouteRewriteRequest{
+		SourceFormat:    "anthropic",
+		RequestedModel:  "claude-sonnet",
+		NormalizedModel: "claude-sonnet",
+		Providers:       []string{"antigravity"},
+		Body:            []byte(`{"model":"claude-sonnet","messages":[{"role":"user","content":"Your task is to create a detailed summary of the conversation so far."}]}`),
+	}, "")
+	if routeResp.RequestedModel != "" || routeResp.NormalizedModel != "" || len(routeResp.Metadata) != 0 {
+		t.Fatalf("unexpected rewrite response: %+v", routeResp)
+	}
+}
+
+func TestOpenAIResponsesCompactionFieldDoesNotRewriteRoute(t *testing.T) {
+	configurePlugin([]byte("codex-compact-model: gpt-test-compact\n"))
+
+	routeResp := rewriteCompactRoute(context.Background(), pluginapi.RouteRewriteRequest{
+		SourceFormat:    "openai-response",
+		RequestedModel:  "gpt-5.4",
+		NormalizedModel: "gpt-5.4",
+		Providers:       []string{"codex"},
+		Body:            []byte(`{"model":"gpt-5.4","context_management":{"type":"compaction"}}`),
+	}, "")
+	if routeResp.RequestedModel != "" || routeResp.NormalizedModel != "" || len(routeResp.Metadata) != 0 {
+		t.Fatalf("unexpected rewrite response: %+v", routeResp)
+	}
+}
+
+func TestResponsesCompactAltDoesNotRewriteRoute(t *testing.T) {
+	configurePlugin([]byte("codex-compact-model: gpt-test-compact\n"))
+
+	routeResp := rewriteCompactRoute(context.Background(), pluginapi.RouteRewriteRequest{
+		SourceFormat:    "openai-response",
+		Alt:             "responses/compact",
+		RequestedModel:  "gpt-5.4",
+		NormalizedModel: "gpt-5.4",
+		Providers:       []string{"codex"},
+		Body:            []byte(`{"model":"gpt-5.4","input":"hello"}`),
+	}, "")
+	if routeResp.RequestedModel != "" || routeResp.NormalizedModel != "" || len(routeResp.Metadata) != 0 {
+		t.Fatalf("unexpected rewrite response: %+v", routeResp)
 	}
 }
 

@@ -84,17 +84,15 @@ func (p *usageQueuePlugin) HandleUsage(ctx context.Context, record coreusage.Rec
 	}
 	fail := resolveFail(ctx, record, failed)
 
+	// latency_ms = end-to-end request duration (UsageReporter create → publish).
+	// ttft_ms = upstream first response byte (RoundTrip → body first read).
+	// generation_ms = first downstream payload → stream end (degradation TPS denominator).
+	// Do not rewrite latency_ms to generation_ms: UI "耗时" must stay >= "首字".
 	generationMilliseconds := recordGenerationMilliseconds(record.Metadata)
-	latency := record.Latency
-	timeToFirstToken := record.TTFT
-	if generationMilliseconds > 0 {
-		latency = time.Duration(generationMilliseconds) * time.Millisecond
-		timeToFirstToken = 0
-	}
 	detail := requestDetail{
 		Timestamp:       timestamp,
-		LatencyMs:       latency.Milliseconds(),
-		TTFTMs:          timeToFirstToken.Milliseconds(),
+		LatencyMs:       record.Latency.Milliseconds(),
+		TTFTMs:          record.TTFT.Milliseconds(),
 		GenerationMs:    generationMilliseconds,
 		Source:          record.Source,
 		AuthIndex:       record.AuthIndex,

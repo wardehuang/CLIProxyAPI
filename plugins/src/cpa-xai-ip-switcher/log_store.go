@@ -203,10 +203,26 @@ VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, time.Now().UnixMilli(), level, event, ca
 	if err != nil {
 		return fmt.Errorf("insert sqlite log: %w", err)
 	}
+	if category == logCategoryRealtimeGuard {
+		if err := store.pruneLogs(transaction, category); err != nil {
+			return err
+		}
+	}
 	if err := transaction.Commit(); err != nil {
 		return fmt.Errorf("commit sqlite log: %w", err)
 	}
 	return nil
+}
+
+func logRetentionLimit(category string) int {
+	switch category {
+	case logCategoryRealtimeGuard:
+		return maxRealtimeGuardLogs
+	case logCategoryGeneral:
+		return maxPluginLogs
+	default:
+		return 0
+	}
 }
 
 func (store *ipStore) pruneLogs(transaction *sql.Tx, category string) error {
@@ -223,8 +239,10 @@ WHERE category = ?
 DELETE FROM plugin_logs
 WHERE category = ?
   AND group_id NOT IN (
-      SELECT batch_id FROM ip_batches ORDER BY sequence_number DESC, created_at DESC LIMIT ?
-  )`, category, maxGroupedLogSets); err != nil {
+      SELECT batch_id FROM (
+          SELECT batch_id FROM ip_batches ORDER BY sequence_number DESC, created_at DESC LIMIT ?
+      )
+  )`, category, maxStoredBatches); err != nil {
 			return fmt.Errorf("prune batch sqlite logs: %w", err)
 		}
 	case logCategoryKeepaliveProbe, logCategoryQualityProbe:
@@ -240,7 +258,7 @@ WHERE category = ?
 		if _, err := transaction.Exec(`
 DELETE FROM plugin_logs
 WHERE category = ?
-  AND id NOT IN (SELECT id FROM plugin_logs WHERE category = ? ORDER BY id DESC LIMIT ?)`, category, category, maxPluginLogs); err != nil {
+  AND id NOT IN (SELECT id FROM plugin_logs WHERE category = ? ORDER BY id DESC LIMIT ?)`, category, category, maxRealtimeGuardLogs); err != nil {
 			return fmt.Errorf("prune realtime guard sqlite logs: %w", err)
 		}
 	case logCategoryReviveProbe:
@@ -252,6 +270,22 @@ WHERE category = ?
   )`, category, maxGroupedLogSets); err != nil {
 			return fmt.Errorf("prune revive sqlite logs: %w", err)
 		}
+	}
+	return nil
+}
+
+func (store *ipStore) pruneStoredBatches() error {
+	if _, err := store.database.Exec(`
+DELETE FROM ip_batches
+WHERE batch_id NOT IN (
+    SELECT batch_id FROM (
+        SELECT batch_id
+        FROM ip_batches
+        ORDER BY sequence_number DESC, created_at DESC
+        LIMIT ?
+    )
+)`, maxStoredBatches); err != nil {
+		return fmt.Errorf("prune sqlite batches: %w", err)
 	}
 	return nil
 }
@@ -331,9 +365,9 @@ WHERE category = ?`
 		}
 	}
 	query += ` ORDER BY id DESC`
-	if !isGroupedLogCategory(category) {
+	if retentionLimit := logRetentionLimit(category); retentionLimit > 0 {
 		query += ` LIMIT ?`
-		arguments = append(arguments, maxPluginLogs)
+		arguments = append(arguments, retentionLimit)
 	}
 
 	rows, err := store.database.Query(query, arguments...)
@@ -424,7 +458,7 @@ SELECT
     )
 FROM batch_state
 ORDER BY sequence_number DESC, created_at DESC
-LIMIT ?`, statusUnprobed, statusProbing, probeKindInitial, groupStatusRunning, groupStatusCompleted, logCategoryBatchProbe, maxGroupedLogSets)
+LIMIT ?`, statusUnprobed, statusProbing, probeKindInitial, groupStatusRunning, groupStatusCompleted, logCategoryBatchProbe, maxStoredBatches)
 	if err != nil {
 		return nil, fmt.Errorf("list sqlite batch log groups: %w", err)
 	}

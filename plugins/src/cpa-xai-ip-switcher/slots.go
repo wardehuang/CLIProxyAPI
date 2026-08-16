@@ -214,6 +214,7 @@ func defaultPluginSettings() pluginSettings {
 		QualityProbeTimeoutSeconds: defaultQualityProbeTimeout,
 		QualitySoftTPS:             defaultQualitySoftTPS,
 		QualityHardTPS:             defaultQualityHardTPS,
+		DebugEnabled:               false,
 		Grok2apiSyncEnabled:        false,
 		Grok2apiBaseUrl:            "",
 		Grok2apiAdminUsername:      "",

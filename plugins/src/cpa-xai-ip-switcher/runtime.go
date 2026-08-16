@@ -123,6 +123,7 @@ func pluginSettingsEqual(left, right pluginSettings) bool {
 		left.QualityProbeTimeoutSeconds == right.QualityProbeTimeoutSeconds &&
 		left.QualitySoftTPS == right.QualitySoftTPS &&
 		left.QualityHardTPS == right.QualityHardTPS &&
+		left.DebugEnabled == right.DebugEnabled &&
 		left.Grok2apiSyncEnabled == right.Grok2apiSyncEnabled &&
 		left.Grok2apiBaseUrl == right.Grok2apiBaseUrl &&
 		left.Grok2apiAdminUsername == right.Grok2apiAdminUsername &&

@@ -22,8 +22,6 @@ const (
 	metadataCompactRouteRewritten = "cpa.compact.route_rewritten"
 
 	compactKindCursorSummarization = "cursor_summarization"
-	compactKindClaudeMessages      = "claude_messages"
-	compactKindOpenAIResponse      = "openai_responses"
 
 	providerCodex       = "codex"
 	providerAntigravity = "antigravity"
@@ -187,43 +185,15 @@ func rewriteCompactRoute(ctx context.Context, req pluginapi.RouteRewriteRequest,
 }
 
 func detectCompactRequest(sourceFormat, alt string, body []byte) compactDetection {
-	if strings.EqualFold(strings.TrimSpace(alt), "responses/compact") {
-		return compactDetection{Detected: true, Kind: compactKindOpenAIResponse, Reason: "responses_compact_alt"}
-	}
+	_ = sourceFormat
+	_ = alt
 	if len(bytes.TrimSpace(body)) == 0 || !json.Valid(body) {
 		return compactDetection{}
 	}
 	if isCursorSummarizationRequest(body) {
 		return compactDetection{Detected: true, Kind: compactKindCursorSummarization, Reason: "cursor_summarization"}
 	}
-	if isOpenAIResponsesSummarizationRequest(body) {
-		return compactDetection{Detected: true, Kind: compactKindOpenAIResponse, Reason: "openai_responses_summarization"}
-	}
-	if isClaudeMessagesFormat(sourceFormat) && isClaudeMessagesCompactRequest(body) {
-		return compactDetection{Detected: true, Kind: compactKindClaudeMessages, Reason: "claude_messages_compact"}
-	}
 	return compactDetection{}
-}
-
-func isOpenAIResponsesSummarizationRequest(body []byte) bool {
-	if strings.EqualFold(gjson.GetBytes(body, "context_management.type").String(), "compaction") {
-		return true
-	}
-	if gjson.GetBytes(body, "context_management.compaction").Exists() {
-		return true
-	}
-	return strings.EqualFold(gjson.GetBytes(body, "metadata.cpa_compact").String(), "true")
-}
-
-func isClaudeMessagesCompactRequest(body []byte) bool {
-	return jsonContainsAnyString(body,
-		"your task is to create a detailed summary of the conversation so far",
-		"this summary should be thorough in capturing technical details",
-		"provide a detailed summary of our conversation so far",
-		"create a concise summary of the conversation so far",
-		"compact the conversation",
-		"context compaction",
-	)
 }
 
 func isCursorSummarizationRequest(body []byte) bool {
@@ -383,51 +353,8 @@ func compactDetectionFromMetadata(metadata map[string]any) compactDetection {
 	}
 }
 
-func isOpenAIResponseFormat(format string) bool {
-	format = strings.ToLower(strings.TrimSpace(format))
-	return strings.Contains(format, "response") || strings.Contains(format, "responses")
-}
-
-func isClaudeMessagesFormat(format string) bool {
-	format = strings.ToLower(strings.TrimSpace(format))
-	return strings.Contains(format, "claude") || strings.Contains(format, "anthropic")
-}
-
 func jsonString(body []byte, path string) string {
 	return strings.TrimSpace(gjson.GetBytes(body, path).String())
-}
-
-func jsonContainsAnyString(body []byte, needles ...string) bool {
-	var value any
-	if errUnmarshal := json.Unmarshal(body, &value); errUnmarshal != nil {
-		return false
-	}
-	return containsAnyStringValue(value, needles)
-}
-
-func containsAnyStringValue(value any, needles []string) bool {
-	switch typed := value.(type) {
-	case string:
-		text := strings.ToLower(typed)
-		for _, needle := range needles {
-			if strings.Contains(text, strings.ToLower(needle)) {
-				return true
-			}
-		}
-	case []any:
-		for _, item := range typed {
-			if containsAnyStringValue(item, needles) {
-				return true
-			}
-		}
-	case map[string]any:
-		for _, item := range typed {
-			if containsAnyStringValue(item, needles) {
-				return true
-			}
-		}
-	}
-	return false
 }
 
 func boolFromMetadata(key string, metadata map[string]any) bool {

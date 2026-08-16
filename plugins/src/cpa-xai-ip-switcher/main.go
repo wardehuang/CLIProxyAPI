@@ -515,6 +515,7 @@ func settingsFromPayload(payload map[string]any) (pluginSettings, error) {
 	qualityProbeTimeoutSeconds, qualityTimeoutOK := integerValue(firstValue(payload, "qualityProbeTimeoutSeconds", "quality_probe_timeout_seconds"))
 	qualitySoftTPS, softTPSOK := floatValue(firstValue(payload, "qualitySoftTPS", "quality_soft_tps"))
 	qualityHardTPS, hardTPSOK := floatValue(firstValue(payload, "qualityHardTPS", "quality_hard_tps"))
+	debugEnabled, debugEnabledOK := boolValue(firstValue(payload, "debugEnabled", "debug_enabled"))
 	grok2apiSyncEnabled, grok2apiSyncEnabledOK := boolValue(firstValue(payload, "grok2apiSyncEnabled", "grok2api_sync_enabled"))
 	grok2apiBaseUrl, grok2apiBaseUrlOK := stringValue(firstValue(payload, "grok2apiBaseUrl", "grok2api_base_url"))
 	grok2apiAdminUsername, grok2apiAdminUsernameOK := stringValue(firstValue(payload, "grok2apiAdminUsername", "grok2api_admin_username"))
@@ -523,8 +524,8 @@ func settingsFromPayload(payload map[string]any) (pluginSettings, error) {
 	managerManagementKey, managerManagementKeyOK := stringValue(firstValue(payload, "managerManagementKey", "manager_management_key"))
 	if !workerOK || !refreshOK || !keepaliveWorkersOK || !keepaliveIntervalOK || !reviveIntervalOK || !retryOK ||
 		!healthySlotOK || !healthyCandidateSlotOK || !healthySlotMaxAgeOK || !qualityWorkerOK || !qualityTimeoutOK || !softTPSOK || !hardTPSOK ||
-		!grok2apiSyncEnabledOK || !grok2apiBaseUrlOK || !grok2apiAdminUsernameOK || !grok2apiAdminPasswordOK || !managerBaseURLOK || !managerManagementKeyOK {
-		return pluginSettings{}, fmt.Errorf("必须同时提供基础调度、健康槽位、智商探测、grok2api 同步和 Manager API 配置")
+		!debugEnabledOK || !grok2apiSyncEnabledOK || !grok2apiBaseUrlOK || !grok2apiAdminUsernameOK || !grok2apiAdminPasswordOK || !managerBaseURLOK || !managerManagementKeyOK {
+		return pluginSettings{}, fmt.Errorf("必须同时提供基础调度、健康槽位、智商探测、调试开关、grok2api 同步和 Manager API 配置")
 	}
 	settings := pluginSettings{
 		WorkerCount:                workerCount,
@@ -540,6 +541,7 @@ func settingsFromPayload(payload map[string]any) (pluginSettings, error) {
 		QualityProbeTimeoutSeconds: qualityProbeTimeoutSeconds,
 		QualitySoftTPS:             qualitySoftTPS,
 		QualityHardTPS:             qualityHardTPS,
+		DebugEnabled:               debugEnabled,
 		Grok2apiSyncEnabled:        grok2apiSyncEnabled,
 		Grok2apiBaseUrl:            normalizeGrok2apiBaseURL(grok2apiBaseUrl),
 		Grok2apiAdminUsername:      strings.TrimSpace(grok2apiAdminUsername),
@@ -641,6 +643,7 @@ func publicSettings(settings pluginSettings) map[string]any {
 		"qualityProbeTimeoutSeconds": settings.QualityProbeTimeoutSeconds,
 		"qualitySoftTPS":             settings.QualitySoftTPS,
 		"qualityHardTPS":             settings.QualityHardTPS,
+		"debugEnabled":               settings.DebugEnabled,
 		"grok2apiSyncEnabled":        settings.Grok2apiSyncEnabled,
 		"grok2apiBaseUrl":            settings.Grok2apiBaseUrl,
 		"grok2apiAdminUsername":      settings.Grok2apiAdminUsername,
@@ -664,7 +667,7 @@ func dispatchAPIWithStore(store *ipStore, method, path string, query url.Values,
 			return managementJSON(http.StatusInternalServerError, errorMessage("batchesFailed", err.Error()))
 		}
 		return managementJSON(http.StatusOK, map[string]any{
-			"data": map[string]any{"items": publicBatches(items), "total": len(items)},
+			"data": map[string]any{"items": publicBatches(items), "total": len(items), "max": maxStoredBatches},
 		})
 
 	case len(parts) == 3 && parts[0] == "batches" && parts[2] == "nodes" && method == http.MethodGet:
@@ -728,19 +731,23 @@ func dispatchAPIWithStore(store *ipStore, method, path string, query url.Values,
 		if err != nil {
 			return managementJSON(http.StatusBadRequest, errorMessage("logGroupsFailed", err.Error()))
 		}
+		groupMax := maxGroupedLogSets
+		if category == logCategoryBatchProbe {
+			groupMax = maxStoredBatches
+		}
 		return managementJSON(http.StatusOK, map[string]any{
 			"data": map[string]any{
 				"items":    publicLogGroups(groups),
 				"total":    len(groups),
 				"category": category,
-				"max":      maxGroupedLogSets,
+				"max":      groupMax,
 			},
 		})
 
 	case path == "/logs" && method == http.MethodGet:
 		category := strings.TrimSpace(query.Get("category"))
 		if category == "" {
-			category = logCategoryGeneral
+			category = logCategoryRealtimeGuard
 		}
 		groupID := strings.TrimSpace(query.Get("groupId"))
 		logStatus := strings.TrimSpace(query.Get("status"))
@@ -763,15 +770,11 @@ func dispatchAPIWithStore(store *ipStore, method, path string, query url.Values,
 		if err != nil {
 			return managementJSON(http.StatusInternalServerError, errorMessage("logsFailed", err.Error()))
 		}
-		maxLogs := 0
-		if !isGroupedLogCategory(category) {
-			maxLogs = maxPluginLogs
-		}
 		return managementJSON(http.StatusOK, map[string]any{
 			"data": map[string]any{
 				"items":    publicLogs(items),
 				"total":    len(items),
-				"max":      maxLogs,
+				"max":      logRetentionLimit(category),
 				"search":   search,
 				"category": category,
 				"groupId":  groupID,
