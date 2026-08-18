@@ -88,7 +88,11 @@
     .error-group-count { color: var(--muted-foreground); font-size: var(--text-2xs); white-space: nowrap; }
     .error-group .button { min-height: 1.85rem; font-size: var(--text-2xs); }
     .notice { min-height: 2.5rem; padding: var(--space-2xs) var(--space-sm); color: var(--muted-foreground); font-size: var(--text-xs); }
-    .slot-availability { padding: var(--space-2xs) var(--space-sm); border-bottom: var(--rule-hairline) solid var(--border); color: var(--muted-foreground); font-size: var(--text-xs); line-height: 1.7; }
+        .keepalive-line { display: inline-flex; align-items: center; gap: .35rem; min-height: 2rem; padding: 0 .55rem; border: var(--rule-hairline) solid var(--border); border-radius: 999px; color: var(--muted-foreground); font-size: var(--text-2xs); white-space: nowrap; }
+        .keepalive-line strong { color: var(--foreground); font-weight: 700; }
+        .keepalive-line.running { color: var(--primary); border-color: color-mix(in srgb, var(--primary) 35%, var(--border)); background: var(--accent); }
+        .keepalive-line.running strong { color: var(--primary); }
+        .slot-availability { padding: var(--space-2xs) var(--space-sm); border-bottom: var(--rule-hairline) solid var(--border); color: var(--muted-foreground); font-size: var(--text-xs); line-height: 1.7; }
     .slot-availability strong { color: var(--foreground); }
     .slot-availability .empty-slot-list { color: var(--warning); font-family: var(--font-mono); }
     .modal-layer { position: fixed; inset: 0; z-index: 20; display: grid; place-items: center; padding: var(--space-sm); background: var(--overlay); }
@@ -195,9 +199,11 @@
         <p>代理出口 IP 录入、美国出口识别和 xAI endpoint 连通性探测。</p>
       </div>
       <div class="head-actions">
-        <span class="status-line"><span id="service-dot" class="status-dot"></span><span id="service-text">正在连接</span></span>
-        <button id="refresh-button" class="button ghost" type="button" title="立即刷新当前页的 IP 或日志数据">刷新</button>
-      </div>
+              <span class="status-line"><span id="service-dot" class="status-dot"></span><span id="service-text">正在连接</span></span>
+              <span id="keepalive-status" class="keepalive-line">下次保活：-</span>
+              <button id="keepalive-now-button" class="button" type="button" title="立即执行完整保活：连通探测、智商探测、分配槽位、推送 grok2api">立即保活</button>
+              <button id="refresh-button" class="button ghost" type="button" title="立即刷新当前页的 IP 或日志数据">刷新</button>
+            </div>
     </header>
 
     <section class="section">
@@ -550,7 +556,7 @@ socks5h://username:pass@ip:port
       const defaultRefreshIntervalSeconds = 30;
       const minimumRefreshIntervalSeconds = 5;
       const maximumRefreshIntervalSeconds = 3600;
-      const state = { activeView: "nodes", activeStatus: "connected", nodes: [], batches: [], batchNodes: [], selectedBatchID: "", batchStatusFilter: "all", batchSortKey: "", batchSortDirection: "asc", nodeSortKey: "", nodeSortDirection: "asc", activeLogCategory: "realtime_guard", activeLogStatus: "connected", selectedLogGroupIDs: { batch_probe: "", keepalive_probe: "", quality_probe: "", revive_probe: "" }, logGroups: { batch_probe: [], keepalive_probe: [], quality_probe: [], revive_probe: [] }, logs: [], logSearch: "", debugEnabled: false, refreshingViews: { nodes: false, batches: false, logs: false }, refreshIntervalSeconds: defaultRefreshIntervalSeconds, timer: null, noticeTimer: null };
+      const state = { activeView: "nodes", activeStatus: "connected", nodes: [], batches: [], batchNodes: [], selectedBatchID: "", batchStatusFilter: "all", batchSortKey: "", batchSortDirection: "asc", nodeSortKey: "", nodeSortDirection: "asc", activeLogCategory: "realtime_guard", activeLogStatus: "connected", selectedLogGroupIDs: { batch_probe: "", keepalive_probe: "", quality_probe: "", revive_probe: "" }, logGroups: { batch_probe: [], keepalive_probe: [], quality_probe: [], revive_probe: [] }, logs: [], logSearch: "", debugEnabled: false, refreshingViews: { nodes: false, batches: false, logs: false }, refreshIntervalSeconds: defaultRefreshIntervalSeconds, timer: null, noticeTimer: null, keepaliveStatus: null, keepaliveRunningRequest: false, keepalivePollTimer: null };
       const statusLabels = { healthy: "健康", healthy_candidate: "健康备选", healthy_fallback: "健康保底", connected: "已连通", cooldown: "冷却中", probing: "探测中", keepalive_probing: "保活探测中", quality_probing: "智商探测中", revive_probing: "复活探测中", unprobed: "未探测", error: "异常" };
       const logCategoryLabels = { general: "通用", batch_probe: "批次探测", keepalive_probe: "保活探测", quality_probe: "智商探测", realtime_guard: "守护日志", revive_probe: "复活探测" };
       const logStatusLabels = { connected: "已连通", probing: "探测中", error: "账号异常" };
@@ -559,8 +565,10 @@ socks5h://username:pass@ip:port
         deleteNonUSInput: document.getElementById("delete-non-us-input"),
         manualFallbackInput: document.getElementById("manual-fallback-input"),
         serviceDot: document.getElementById("service-dot"),
-        serviceText: document.getElementById("service-text"),
-        refreshButton: document.getElementById("refresh-button"),
+                serviceText: document.getElementById("service-text"),
+                keepaliveStatus: document.getElementById("keepalive-status"),
+                keepaliveNowButton: document.getElementById("keepalive-now-button"),
+                refreshButton: document.getElementById("refresh-button"),
         settingsButton: document.getElementById("settings-button"),
         settingsModal: document.getElementById("settings-modal"),
         nodesView: document.getElementById("nodes-view"),
@@ -639,11 +647,77 @@ socks5h://username:pass@ip:port
       }
 
       function setServiceState(healthy, message) {
-        elements.serviceDot.className = "status-dot" + (healthy ? " good" : " bad");
-        elements.serviceText.textContent = message;
-      }
+              elements.serviceDot.className = "status-dot" + (healthy ? " good" : " bad");
+              elements.serviceText.textContent = message;
+            }
 
-      function managementKey() {
+            function renderKeepaliveStatus(status) {
+                          state.keepaliveStatus = status || null;
+                          const running = Boolean(status && (status.running || status.pending));
+                          if (running) {
+                            elements.keepaliveStatus.className = "keepalive-line running";
+                            elements.keepaliveStatus.innerHTML = "保活：<strong>【探测中】</strong>";
+                          } else if (status && status.nextAt) {
+                            elements.keepaliveStatus.className = "keepalive-line";
+                            elements.keepaliveStatus.innerHTML = `下次保活：<strong>${escapeHTML(formatTime(status.nextAt))}</strong>`;
+                          } else {
+                            elements.keepaliveStatus.className = "keepalive-line";
+                            elements.keepaliveStatus.textContent = "下次保活：-";
+                          }
+                          elements.keepaliveNowButton.disabled = running || state.keepaliveRunningRequest;
+                          elements.keepaliveNowButton.textContent = running || state.keepaliveRunningRequest ? "保活中…" : "立即保活";
+                        }
+
+            async function refreshKeepaliveStatus() {
+              const status = await callAPI("GET", "/keepalive/status");
+              renderKeepaliveStatus(status);
+              return status;
+            }
+
+            function stopKeepalivePolling() {
+              window.clearTimeout(state.keepalivePollTimer);
+              state.keepalivePollTimer = null;
+            }
+
+            async function pollKeepaliveUntilIdle() {
+                          stopKeepalivePolling();
+                          let sawActive = false;
+                          for (let attempt = 0; attempt < 180; attempt += 1) {
+                            const status = await refreshKeepaliveStatus();
+                            const active = Boolean(status.running || status.pending);
+                            if (active) {
+                              sawActive = true;
+                            } else if (sawActive || attempt >= 2) {
+                              await refresh(state.activeView);
+                              return status;
+                            }
+                            await new Promise((resolve) => {
+                              state.keepalivePollTimer = window.setTimeout(resolve, 2000);
+                            });
+                          }
+                          return refreshKeepaliveStatus();
+                        }
+
+            async function runKeepaliveNow() {
+              if (state.keepaliveRunningRequest) return;
+              state.keepaliveRunningRequest = true;
+              renderKeepaliveStatus(state.keepaliveStatus);
+              try {
+                const result = await callAPI("POST", "/keepalive/run");
+                                renderKeepaliveStatus(result.status || { running: false, pending: true, nextAt: 0 });
+                                setNotice("已触发立即保活：连通探测 → 智商探测 → 槽位分配 → grok2api 同步。", "success", 4000);
+                                await pollKeepaliveUntilIdle();
+                                setNotice("立即保活轮次已结束。", "success", 4000);
+              } catch (error) {
+                setNotice(error instanceof Error ? error.message : String(error), "error");
+                try { await refreshKeepaliveStatus(); } catch (_) {}
+              } finally {
+                state.keepaliveRunningRequest = false;
+                renderKeepaliveStatus(state.keepaliveStatus);
+              }
+            }
+
+            function managementKey() {
         const decodeStoredValue = (storageKey) => {
           let raw = localStorage.getItem(storageKey) || "";
           if (!raw) return null;
@@ -1136,42 +1210,46 @@ socks5h://username:pass@ip:port
       }
 
       async function refresh(view = state.activeView) {
-        if (state.refreshingViews[view]) return;
-        state.refreshingViews[view] = true;
-        updateRefreshButton();
-        try {
-          if (view === "logs") {
-            const settings = await callAPI("GET", "/settings");
-            applySettings(settings, true, false);
-            await refreshLogs();
-          } else if (view === "batches") {
-            await refreshBatches();
-          } else {
-            const [nodeData, summary, settings] = await Promise.all([callAPI("GET", "/nodes?status=all"), callAPI("GET", "/summary"), callAPI("GET", "/settings")]);
-            state.nodes = nodeData.items;
-            renderCounts(summary);
-            applySettings(settings);
-            renderTable();
-          }
-          if (state.activeView === view) setServiceState(true, "服务运行中");
-        } catch (error) {
-          if (state.activeView !== view) return;
-          const message = error instanceof Error ? error.message : String(error);
-          setServiceState(false, "服务异常");
-          if (view === "logs") {
-            elements.logSummary.textContent = `日志加载失败：${message}`;
-            elements.logs.innerHTML = `<div class="error-state">${escapeHTML(message)}</div>`;
-          } else if (view === "batches") {
-            elements.batchSummary.textContent = `批次加载失败：${message}`;
-            elements.batches.innerHTML = `<div class="error-state">${escapeHTML(message)}</div>`;
-          } else {
-            elements.table.innerHTML = `<div class="error-state">${escapeHTML(message)}</div>`;
-          }
-        } finally {
-          state.refreshingViews[view] = false;
-          updateRefreshButton();
-        }
-      }
+              if (state.refreshingViews[view]) return;
+              state.refreshingViews[view] = true;
+              updateRefreshButton();
+              try {
+                if (view === "logs") {
+                  const [settings, keepaliveStatus] = await Promise.all([callAPI("GET", "/settings"), callAPI("GET", "/keepalive/status")]);
+                  applySettings(settings, true, false);
+                  renderKeepaliveStatus(keepaliveStatus);
+                  await refreshLogs();
+                } else if (view === "batches") {
+                  const keepaliveStatus = await callAPI("GET", "/keepalive/status");
+                  renderKeepaliveStatus(keepaliveStatus);
+                  await refreshBatches();
+                } else {
+                  const [nodeData, summary, settings, keepaliveStatus] = await Promise.all([callAPI("GET", "/nodes?status=all"), callAPI("GET", "/summary"), callAPI("GET", "/settings"), callAPI("GET", "/keepalive/status")]);
+                  state.nodes = nodeData.items;
+                  renderCounts(summary);
+                  applySettings(settings);
+                  renderKeepaliveStatus(keepaliveStatus);
+                  renderTable();
+                }
+                if (state.activeView === view) setServiceState(true, "服务运行中");
+              } catch (error) {
+                if (state.activeView !== view) return;
+                const message = error instanceof Error ? error.message : String(error);
+                setServiceState(false, "服务异常");
+                if (view === "logs") {
+                  elements.logSummary.textContent = `日志加载失败：${message}`;
+                  elements.logs.innerHTML = `<div class="error-state">${escapeHTML(message)}</div>`;
+                } else if (view === "batches") {
+                  elements.batchSummary.textContent = `批次加载失败：${message}`;
+                  elements.batches.innerHTML = `<div class="error-state">${escapeHTML(message)}</div>`;
+                } else {
+                  elements.table.innerHTML = `<div class="error-state">${escapeHTML(message)}</div>`;
+                }
+              } finally {
+                state.refreshingViews[view] = false;
+                updateRefreshButton();
+              }
+            }
 
       function openModal(element) {
         element.hidden = false;
@@ -1345,7 +1423,8 @@ socks5h://username:pass@ip:port
       elements.saveSettingsButton.addEventListener("click", saveSettings);
       elements.checkManagerAPIButton.addEventListener("click", checkManagerAPI);
       elements.syncGrok2apiButton.addEventListener("click", syncGrok2apiNow);
-      elements.refreshButton.addEventListener("click", () => refresh());
+            elements.keepaliveNowButton.addEventListener("click", runKeepaliveNow);
+            elements.refreshButton.addEventListener("click", () => refresh());
       document.querySelector(".main-tabs").addEventListener("click", (event) => {
         const tab = event.target.closest("[data-main-tab]");
         if (tab) setActiveView(tab.dataset.mainTab);
@@ -1430,12 +1509,13 @@ socks5h://username:pass@ip:port
       document.querySelectorAll(".modal-layer").forEach((layer) => layer.addEventListener("click", (event) => { if (event.target === layer) closeModal(layer); }));
 
       refresh();
-      resetRefreshTimer();
-      window.addEventListener("beforeunload", () => {
-        window.clearInterval(state.timer);
-        window.clearTimeout(state.noticeTimer);
-      });
-    })();
-  </script>
-</body>
-</html>
+            resetRefreshTimer();
+            window.addEventListener("beforeunload", () => {
+              window.clearInterval(state.timer);
+              window.clearTimeout(state.noticeTimer);
+              stopKeepalivePolling();
+            });
+          })();
+        </script>
+      </body>
+      </html>

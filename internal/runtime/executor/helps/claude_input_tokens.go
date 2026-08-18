@@ -68,6 +68,11 @@ func TranslateStreamWithClaudeInputTokens(
 			chunks[i] = EnsureResponsesUsageDetails(chunk)
 		}
 	}
+	return ApplyClaudeInputTokenState(ctx, chunks, state)
+}
+
+// ApplyClaudeInputTokenState applies one-time Claude input token estimation to translated stream chunks.
+func ApplyClaudeInputTokenState(ctx context.Context, chunks [][]byte, state *ClaudeInputTokenState) [][]byte {
 	if state == nil {
 		return chunks
 	}

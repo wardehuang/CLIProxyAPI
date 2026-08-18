@@ -789,6 +789,43 @@ func dispatchAPIWithStore(store *ipStore, method, path string, query url.Values,
 		}
 		return managementJSON(http.StatusOK, map[string]any{"data": publicSettings(settings)})
 
+	case path == "/keepalive/status" && method == http.MethodGet:
+		settings, err := store.settings()
+		if err != nil {
+			return managementJSON(http.StatusInternalServerError, errorMessage("keepaliveStatusFailed", err.Error()))
+		}
+		state := pluginRuntime.keepalive
+		if state == nil {
+			state = newKeepaliveScheduleState()
+			pluginRuntime.keepalive = state
+		}
+		return managementJSON(http.StatusOK, map[string]any{"data": state.snapshot(settings.KeepaliveIntervalSeconds)})
+
+	case path == "/keepalive/run" && method == http.MethodPost:
+		state := pluginRuntime.keepalive
+		if state == nil {
+			state = newKeepaliveScheduleState()
+			pluginRuntime.keepalive = state
+		}
+		accepted, running := state.requestNow()
+		if running {
+			return managementJSON(http.StatusConflict, errorMessage("keepaliveBusy", "保活正在进行中"))
+		}
+		if !accepted {
+			return managementJSON(http.StatusConflict, errorMessage("keepaliveBusy", "保活请求未能接入调度"))
+		}
+		settings, err := store.settings()
+		if err != nil {
+			return managementJSON(http.StatusInternalServerError, errorMessage("keepaliveRunFailed", err.Error()))
+		}
+		_ = store.appendLog(logLevelInfo, "keepalive.manual_requested", 0, "", "收到立即保活请求", "将执行完整保活：连通探测、智商探测、槽位分配、grok2api 同步")
+		return managementJSON(http.StatusOK, map[string]any{
+			"data": map[string]any{
+				"accepted": true,
+				"status":   state.snapshot(settings.KeepaliveIntervalSeconds),
+			},
+		})
+
 	case path == "/grok2api/sync" && method == http.MethodPost:
 		summary, err := syncHealthySlotsToGrok2api(store, grok2apiSyncTriggerManual)
 		if err != nil {

@@ -9,6 +9,11 @@ import (
 )
 
 func runKeepaliveScheduler(ctx context.Context, store *ipStore, settings pluginSettings) {
+	state := pluginRuntime.keepalive
+	if state == nil {
+		state = newKeepaliveScheduleState()
+		pluginRuntime.keepalive = state
+	}
 	_ = store.appendLog(
 		logLevelInfo,
 		"keepalive.scheduler_started",
@@ -17,19 +22,26 @@ func runKeepaliveScheduler(ctx context.Context, store *ipStore, settings pluginS
 		"保活调度器已启动",
 		fmt.Sprintf("保活线程数 %d，首轮立即执行，后续间隔 %d 秒", settings.KeepaliveWorkerCount, settings.KeepaliveIntervalSeconds),
 	)
+	state.markWaiting(time.Now())
 
 	for {
+		if ctx.Err() != nil {
+			return
+		}
+		startedAt := time.Now()
+		state.markStarted(startedAt)
 		runKeepaliveRound(ctx, store, settings)
+		state.markCompleted(time.Now())
 		if ctx.Err() != nil {
 			return
 		}
 
-		timer := time.NewTimer(time.Duration(settings.KeepaliveIntervalSeconds) * time.Second)
-		select {
-		case <-ctx.Done():
-			timer.Stop()
+		triggered, cancelled := state.waitForNext(ctx.Done(), settings.KeepaliveIntervalSeconds)
+		if cancelled {
 			return
-		case <-timer.C:
+		}
+		if triggered {
+			_ = store.appendLog(logLevelInfo, "keepalive.manual_triggered", 0, "", "立即保活请求已接入调度", "将立即执行完整保活轮次")
 		}
 	}
 }

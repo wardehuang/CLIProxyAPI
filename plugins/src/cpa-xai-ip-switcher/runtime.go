@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"strings"
 	"sync"
+	"time"
 )
 
 var pluginRuntime = &runtimeController{}
@@ -18,6 +19,7 @@ type runtimeController struct {
 	managerManagementKey string
 	workerCancel         context.CancelFunc
 	workerGroup          sync.WaitGroup
+	keepalive            *keepaliveScheduleState
 }
 
 func (controller *runtimeController) configure(config pluginConfig) error {
@@ -92,6 +94,10 @@ func (controller *runtimeController) configureLocked(config pluginConfig) error 
 	controller.store = store
 	controller.managerBaseURL = settings.ManagerBaseURL
 	controller.managerManagementKey = settings.ManagerManagementKey
+	if controller.keepalive == nil {
+		controller.keepalive = newKeepaliveScheduleState()
+	}
+	controller.keepalive.markWaiting(time.Now())
 	controller.topologyMutex.Lock()
 	defer controller.topologyMutex.Unlock()
 	if err := refreshHealthyAuthDistribution(store, settings.HealthySlotCount); err != nil {

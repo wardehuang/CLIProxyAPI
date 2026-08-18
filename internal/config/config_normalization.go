@@ -115,6 +115,7 @@ func (cfg *Config) SanitizeOpenAICompatibility() {
 		e.Prefix = normalizeModelPrefix(e.Prefix)
 		e.BaseURL = strings.TrimSpace(e.BaseURL)
 		e.Headers = NormalizeHeaders(e.Headers)
+		e.Protocol = NormalizeOpenAICompatibilityProtocol(e.Protocol)
 		if e.BaseURL == "" {
 			// Skip providers with no base-url; treated as removed
 			continue
@@ -122,6 +123,32 @@ func (cfg *Config) SanitizeOpenAICompatibility() {
 		out = append(out, e)
 	}
 	cfg.OpenAICompatibility = out
+}
+
+const (
+	// OpenAICompatibilityProtocolChatCompletions is the default upstream wire format.
+	OpenAICompatibilityProtocolChatCompletions = "chat-completions"
+	// OpenAICompatibilityProtocolResponses sends OpenAI Responses API requests upstream.
+	OpenAICompatibilityProtocolResponses = "responses"
+)
+
+// NormalizeOpenAICompatibilityProtocol canonicalizes openai-compatibility protocol values.
+// Empty input defaults to chat-completions. Unknown values are returned trimmed for callers
+// that want to surface validation errors separately.
+func NormalizeOpenAICompatibilityProtocol(raw string) string {
+	switch strings.ToLower(strings.TrimSpace(raw)) {
+	case "", "chat", "chat-completions", "chat_completions", "completions":
+		return OpenAICompatibilityProtocolChatCompletions
+	case "responses", "response", "openai-response", "openai-responses", "openai_response":
+		return OpenAICompatibilityProtocolResponses
+	default:
+		return strings.ToLower(strings.TrimSpace(raw))
+	}
+}
+
+// OpenAICompatibilityUsesResponses reports whether the provider should speak Responses upstream.
+func OpenAICompatibilityUsesResponses(protocol string) bool {
+	return NormalizeOpenAICompatibilityProtocol(protocol) == OpenAICompatibilityProtocolResponses
 }
 
 // SanitizeCodexKeys removes Codex API key entries missing a BaseURL.
