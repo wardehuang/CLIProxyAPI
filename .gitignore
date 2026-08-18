@@ -12,6 +12,7 @@ dist/
 /logs
 conv/*
 temp/*
+tmp/
 refs/*
 plugins/*
 !plugins/src/

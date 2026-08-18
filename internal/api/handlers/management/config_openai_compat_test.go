@@ -21,12 +21,13 @@ func TestGetOpenAICompatIncludesDisableCooling(t *testing.T) {
 				Name:    "Mimo CN",
 				BaseURL: "https://token-plan-cn.xiaomimimo.com/v1",
 				APIKeyEntries: []config.OpenAICompatibilityAPIKey{
-					{APIKey: "test-key"},
+					{APIKey: "sk-test"},
 				},
 				Models: []config.OpenAICompatibilityModel{
 					{Name: "mimo-v2.5", Alias: ""},
 				},
 				SupportPromptCacheKey: true,
+				Protocol:              "responses",
 				DisableCooling:        &disableCooling,
 				RequestRetry:          &requestRetry,
 			},
@@ -44,9 +45,10 @@ func TestGetOpenAICompatIncludesDisableCooling(t *testing.T) {
 
 	var body struct {
 		OpenAICompatibility []struct {
-			SupportPromptCacheKey *bool `json:"support-prompt-cache-key"`
-			DisableCooling        *bool `json:"disable-cooling"`
-			RequestRetry          *int  `json:"request-retry"`
+			SupportPromptCacheKey *bool  `json:"support-prompt-cache-key"`
+			Protocol              string `json:"protocol"`
+			DisableCooling        *bool  `json:"disable-cooling"`
+			RequestRetry          *int   `json:"request-retry"`
 		} `json:"openai-compatibility"`
 	}
 	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
@@ -57,6 +59,9 @@ func TestGetOpenAICompatIncludesDisableCooling(t *testing.T) {
 	}
 	if body.OpenAICompatibility[0].SupportPromptCacheKey == nil || !*body.OpenAICompatibility[0].SupportPromptCacheKey {
 		t.Fatalf("expected support-prompt-cache-key to be present and true, got %#v", body.OpenAICompatibility[0].SupportPromptCacheKey)
+	}
+	if body.OpenAICompatibility[0].Protocol != "responses" {
+		t.Fatalf("expected protocol=responses, got %#v", body.OpenAICompatibility[0].Protocol)
 	}
 	if body.OpenAICompatibility[0].DisableCooling == nil || !*body.OpenAICompatibility[0].DisableCooling {
 		t.Fatalf("expected disable-cooling to be present and true, got %#v", body.OpenAICompatibility[0].DisableCooling)
