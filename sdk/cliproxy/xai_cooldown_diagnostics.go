@@ -3,10 +3,16 @@ package cliproxy
 import (
 	"sort"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	coreauth "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
+	log "github.com/sirupsen/logrus"
 )
+
+const xaiWatcherTraceSampleRate uint64 = 64
+
+var xaiWatcherTraceSeq atomic.Uint64
 
 // xaiCooldownStateSummary provides watcher diagnostics without logging secrets
 // from the auth metadata or token storage.
@@ -54,4 +60,20 @@ func boolString(value bool) string {
 		return "true"
 	}
 	return "false"
+}
+
+func logXAIWatcherTrace(sample bool, format string, args ...any) {
+	if !log.IsLevelEnabled(log.DebugLevel) {
+		return
+	}
+	if !sample {
+		log.Debugf(format, args...)
+		return
+	}
+	n := xaiWatcherTraceSeq.Add(1)
+	if n%xaiWatcherTraceSampleRate != 1 {
+		return
+	}
+	sampledArgs := append(append([]any{}, args...), n, xaiWatcherTraceSampleRate)
+	log.Debugf(format+" sample_n=%d sample_rate=%d", sampledArgs...)
 }

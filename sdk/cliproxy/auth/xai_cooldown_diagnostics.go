@@ -4,8 +4,34 @@ import (
 	"context"
 	"sort"
 	"strings"
+	"sync/atomic"
 	"time"
+
+	log "github.com/sirupsen/logrus"
 )
+
+// High-volume XAI_COOLDOWN_TRACE phases are sampled even when debug is enabled so
+// bulk auth reloads cannot fill disks. Batch summaries stay unsampled.
+const xaiCooldownTraceSampleRate uint64 = 64
+
+var xaiCooldownTraceSeq atomic.Uint64
+
+func logXAICooldownTrace(ctx context.Context, sample bool, format string, args ...any) {
+	if !log.IsLevelEnabled(log.DebugLevel) {
+		return
+	}
+	entry := logEntryWithRequestID(ctx)
+	if !sample {
+		entry.Debugf(format, args...)
+		return
+	}
+	n := xaiCooldownTraceSeq.Add(1)
+	if n%xaiCooldownTraceSampleRate != 1 {
+		return
+	}
+	sampledArgs := append(append([]any{}, args...), n, xaiCooldownTraceSampleRate)
+	entry.Debugf(format+" sample_n=%d sample_rate=%d", sampledArgs...)
+}
 
 // logXAIAvailabilityDecision emits the complete state used by legacy selection.
 // Keep the diagnostic values in the message because the deployed log formatter
@@ -15,7 +41,9 @@ func logXAIAvailabilityDecision(ctx context.Context, phase string, auth *Auth, r
 		return
 	}
 	state, stateKey := xaiModelStateForDiagnostic(auth, checkModel)
-	logEntryWithRequestID(ctx).Infof(
+	logXAICooldownTrace(
+		ctx,
+		true,
 		"XAI_COOLDOWN_TRACE phase=%s auth_id=%s route_model=%s check_model=%s blocked=%t block_reason=%s next_retry_after=%s auth_unavailable=%t auth_next_retry_after=%s model_state_key=%s model_state_present=%t model_state_status=%s model_state_unavailable=%t model_state_next_retry_after=%s model_state_quota_exceeded=%t model_state_quota_recover_at=%s model_state_keys=%s",
 		phase,
 		auth.ID,
@@ -43,7 +71,9 @@ func logXAISelectionDecision(ctx context.Context, phase string, auth *Auth, rout
 	}
 	checkModel := canonicalModelKey(routeModel)
 	state, stateKey := xaiModelStateForDiagnostic(auth, checkModel)
-	logEntryWithRequestID(ctx).Infof(
+	logXAICooldownTrace(
+		ctx,
+		true,
 		"XAI_COOLDOWN_TRACE phase=%s selected_auth_id=%s route_model=%s check_model=%s candidate_count=%d available_count=%d plugin_handled=%t selected_model_state_key=%s selected_model_state_present=%t selected_model_state_unavailable=%t selected_model_state_next_retry_after=%s selected_model_state_quota_exceeded=%t",
 		phase,
 		auth.ID,

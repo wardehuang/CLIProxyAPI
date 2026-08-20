@@ -67,7 +67,7 @@ func (s *Service) consumeAuthUpdates(ctx context.Context) {
 				}
 			}
 			if xaiUpdateCount > 0 {
-				log.Infof("XAI_COOLDOWN_TRACE phase=watcher_queue update_count=%d xai_update_count=%d skip_persist=true", len(updates), xaiUpdateCount)
+				logXAIWatcherTrace(false, "XAI_COOLDOWN_TRACE phase=watcher_queue update_count=%d xai_update_count=%d skip_persist=true", len(updates), xaiUpdateCount)
 			}
 			s.handleAuthUpdates(ctx, updates)
 		}
@@ -111,7 +111,7 @@ func (s *Service) handleAuthUpdates(ctx context.Context, updates []watcher.AuthU
 		}
 	}
 	if xaiUpdateCount > 0 {
-		log.Infof("XAI_COOLDOWN_TRACE phase=watcher_updates update_count=%d xai_update_count=%d", len(updates), xaiUpdateCount)
+		logXAIWatcherTrace(false, "XAI_COOLDOWN_TRACE phase=watcher_updates update_count=%d xai_update_count=%d", len(updates), xaiUpdateCount)
 	}
 	s.cfgMu.RLock()
 	cfg := s.cfg
@@ -124,11 +124,22 @@ func (s *Service) handleAuthUpdates(ctx context.Context, updates []watcher.AuthU
 	tasks := make([]modelRegistrationTask, 0, len(updates))
 	needsPluginSync := false
 	needsAliasRebuild := false
+	runtimeOnlyCount := 0
 	for _, update := range updates {
 		switch update.Action {
 		case watcher.AuthUpdateActionAdd, watcher.AuthUpdateActionModify:
 			if update.Auth == nil || update.Auth.ID == "" {
 				continue
+			}
+			if update.Action == watcher.AuthUpdateActionModify {
+				if existing, ok := s.coreManager.GetByID(update.Auth.ID); ok && coreauth.IsProxyOrPriorityOnlyChange(existing, update.Auth) {
+					if _, err := s.coreManager.ApplyProxyAndPriorityUpdate(registrationCtx, update.Auth); err != nil {
+						log.Errorf("failed to apply runtime-only auth update %s: %v", update.Auth.ID, err)
+						continue
+					}
+					runtimeOnlyCount++
+					continue
+				}
 			}
 			auth := s.prepareCoreAuthForModelRegistration(registrationCtx, update.Auth)
 			if auth == nil {
@@ -159,6 +170,9 @@ func (s *Service) handleAuthUpdates(ctx context.Context, updates []watcher.AuthU
 		}
 	}
 
+	if runtimeOnlyCount > 0 {
+		log.Debugf("auth updates runtime_only=%d full_model_registration=%d plugin_sync=%t", runtimeOnlyCount, len(tasks), needsPluginSync)
+	}
 	if needsAliasRebuild {
 		s.coreManager.RefreshAPIKeyModelAlias()
 	}
@@ -279,6 +293,15 @@ func (s *Service) wsOnDisconnected(channelID string, reason error) {
 }
 
 func (s *Service) applyCoreAuthAddOrUpdate(ctx context.Context, auth *coreauth.Auth) {
+	if s == nil || s.coreManager == nil || auth == nil || auth.ID == "" {
+		return
+	}
+	if existing, ok := s.coreManager.GetByID(auth.ID); ok && coreauth.IsProxyOrPriorityOnlyChange(existing, auth) {
+		if _, err := s.coreManager.ApplyProxyAndPriorityUpdate(ctx, auth); err != nil {
+			log.Errorf("failed to apply runtime-only auth update %s: %v", auth.ID, err)
+		}
+		return
+	}
 	auth = s.prepareCoreAuthForModelRegistration(ctx, auth)
 	if auth == nil {
 		return
@@ -315,7 +338,8 @@ func (s *Service) prepareCoreAuthForModelRegistration(ctx context.Context, auth 
 			}
 		}
 		if isXAIAuth {
-			log.Infof(
+			logXAIWatcherTrace(
+				true,
 				"XAI_COOLDOWN_TRACE phase=watcher_update_before auth_id=%s incoming_model_state_count=%d existing_model_state_count=%d preserve_existing_model_states=%t incoming_state=%s existing_state=%s",
 				auth.ID,
 				incomingModelStateCount,
@@ -340,7 +364,8 @@ func (s *Service) prepareCoreAuthForModelRegistration(ctx context.Context, auth 
 					xaiCooldownModelCount++
 				}
 			}
-			log.Infof(
+			logXAIWatcherTrace(
+				true,
 				"XAI_COOLDOWN_TRACE phase=watcher_update_after auth_id=%s operation=%s model_state_count=%d cooldown_model_state_count=%d state=%s",
 				auth.ID,
 				op,
@@ -438,7 +463,7 @@ func (s *Service) configureCooldownStateStoreContext(ctx context.Context, cfg *c
 func (s *Service) resolveCooldownStateStore(cfg *config.Config) coreauth.CooldownStateStore {
 	if cfg == nil || !cfg.SaveCooldownStatus || cfg.Home.Enabled {
 		if cfg != nil {
-			log.Infof("XAI_COOLDOWN_TRACE phase=cooldown_store_configuration configured=false save_cooldown_status=%t home_enabled=%t", cfg.SaveCooldownStatus, cfg.Home.Enabled)
+			logXAIWatcherTrace(false, "XAI_COOLDOWN_TRACE phase=cooldown_store_configuration configured=false save_cooldown_status=%t home_enabled=%t", cfg.SaveCooldownStatus, cfg.Home.Enabled)
 		}
 		return nil
 	}
@@ -453,7 +478,7 @@ func (s *Service) resolveCooldownStateStore(cfg *config.Config) coreauth.Cooldow
 	if authDir == "" {
 		return nil
 	}
-	log.Infof("XAI_COOLDOWN_TRACE phase=cooldown_store_configuration configured=true save_cooldown_status=true home_enabled=false")
+	logXAIWatcherTrace(false, "XAI_COOLDOWN_TRACE phase=cooldown_store_configuration configured=true save_cooldown_status=true home_enabled=false")
 	return coreauth.NewFileCooldownStateStoreWithAuthDir(authDir, authDir)
 }
 

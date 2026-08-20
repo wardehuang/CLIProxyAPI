@@ -969,7 +969,9 @@ func (m *Manager) MarkResult(ctx context.Context, result Result) {
 		if cooldownUntil.After(time.Now()) {
 			cooldownSeconds = int64(time.Until(cooldownUntil).Seconds())
 		}
-		logEntryWithRequestID(ctx).Warnf(
+		logXAICooldownTrace(
+			ctx,
+			false,
 			"XAI_COOLDOWN_TRACE phase=mark_result_429 auth_id=%s model=%s retry_after_seconds=%d next_retry_after=%s cooldown_seconds_remaining=%d quota_exceeded=%t quota_backoff_level=%d cooldown_state_changed=%t cooldown_store_configured=%t auth_persistence_skip_requested=%t auth_persistence_failed=%t",
 			result.AuthID,
 			result.Model,
