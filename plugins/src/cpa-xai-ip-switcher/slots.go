@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"fmt"
 	"strings"
+	"unicode"
 	"time"
 )
 
@@ -212,8 +213,10 @@ func defaultPluginSettings() pluginSettings {
 		HealthySlotMaxAgeMinutes:   defaultHealthySlotMaxAgeMinutes,
 		QualityWorkerCount:         defaultQualityWorkerCount,
 		QualityProbeTimeoutSeconds: defaultQualityProbeTimeout,
+		QualityProbeModel:          defaultQualityProbeModel,
 		QualitySoftTPS:             defaultQualitySoftTPS,
 		QualityHardTPS:             defaultQualityHardTPS,
+		QualityLLMProbeEnabled:     defaultQualityLLMProbeEnabled,
 		DebugEnabled:               false,
 		Grok2apiSyncEnabled:        false,
 		Grok2apiBaseUrl:            "",
@@ -386,6 +389,9 @@ func validateSlotSettings(settings pluginSettings) error {
 	if settings.QualityProbeTimeoutSeconds < 1 || settings.QualityProbeTimeoutSeconds > maxQualityProbeTimeoutSeconds {
 		return fmt.Errorf("quality probe timeout must be between 1 and %d seconds", maxQualityProbeTimeoutSeconds)
 	}
+	if err := validateQualityProbeModel(settings.QualityProbeModel); err != nil {
+		return err
+	}
 	if settings.QualitySoftTPS <= 0 || settings.QualityHardTPS <= settings.QualitySoftTPS {
 		return fmt.Errorf("quality hard TPS must be greater than quality soft TPS")
 	}
@@ -395,8 +401,163 @@ func validateSlotSettings(settings pluginSettings) error {
 	return nil
 }
 
+func normalizeQualityProbeModel(value string) string {
+	model := strings.TrimSpace(value)
+	if model == "" {
+		return defaultQualityProbeModel
+	}
+	return model
+}
+
+func validateQualityProbeModel(value string) error {
+	model := strings.TrimSpace(value)
+	if model == "" {
+		return fmt.Errorf("quality probe model must not be empty")
+	}
+	if len(model) > maxQualityProbeModelLength {
+		return fmt.Errorf("quality probe model must be at most %d characters", maxQualityProbeModelLength)
+	}
+	for _, r := range model {
+		if unicode.IsSpace(r) {
+			return fmt.Errorf("quality probe model must not contain whitespace")
+		}
+	}
+	return nil
+}
+
+func isHTTP503QualityFailure(result qualityProbeResult) bool {
+	if result.StatusCode == 503 {
+		return true
+	}
+	reason := strings.ToLower(strings.TrimSpace(result.ClassificationReason))
+	if reason == "http_503" || strings.HasPrefix(reason, "http_503") {
+		return true
+	}
+	code := strings.ToLower(strings.TrimSpace(result.ErrorCode))
+	return code == "http_503" || strings.HasPrefix(code, "http_503")
+}
+
 func newSlotClaimToken(slotID, roundID int64) string {
 	return fmt.Sprintf("%d-%d-%d", roundID, slotID, time.Now().UnixNano())
+}
+
+func (store *ipStore) fillEmptySlotsByLowestLatency(roundID int64) (int64, error) {
+	type filledSlot struct {
+		slotID    int64
+		slotKind  string
+		nodeID    int64
+		nodeName  string
+		latencyMs int64
+	}
+	transaction, err := store.database.Begin()
+	if err != nil {
+		return 0, fmt.Errorf("begin sqlite latency slot fill: %w", err)
+	}
+	defer transaction.Rollback()
+
+	slotRows, err := transaction.Query(`
+SELECT slot_id, slot_kind
+FROM ip_slots
+WHERE node_id = 0
+  AND slot_kind IN (?, ?)
+ORDER BY CASE WHEN slot_kind = ? THEN 0 ELSE 1 END, slot_id ASC`, statusHealthy, statusHealthyCandidate, statusHealthy)
+	if err != nil {
+		return 0, fmt.Errorf("list empty slots for latency fill: %w", err)
+	}
+	type emptySlot struct {
+		id   int64
+		kind string
+	}
+	emptySlots := make([]emptySlot, 0)
+	for slotRows.Next() {
+		var item emptySlot
+		if err := slotRows.Scan(&item.id, &item.kind); err != nil {
+			slotRows.Close()
+			return 0, fmt.Errorf("scan empty slot for latency fill: %w", err)
+		}
+		emptySlots = append(emptySlots, item)
+	}
+	if err := slotRows.Err(); err != nil {
+		slotRows.Close()
+		return 0, fmt.Errorf("iterate empty slots for latency fill: %w", err)
+	}
+	if err := slotRows.Close(); err != nil {
+		return 0, fmt.Errorf("close empty slots for latency fill: %w", err)
+	}
+
+	nowMs := time.Now().UnixMilli()
+	filledItems := make([]filledSlot, 0, len(emptySlots))
+	for _, slot := range emptySlots {
+		var nodeID int64
+		var nodeName string
+		var latencyMs int64
+		err := transaction.QueryRow(`
+SELECT id, node_name, latency_ms
+FROM ip_nodes
+WHERE status = ?
+  AND probe_kind = ''
+  AND id NOT IN (SELECT node_id FROM ip_slots WHERE node_id > 0)
+ORDER BY CASE WHEN latency_ms <= 0 THEN 1 ELSE 0 END, latency_ms ASC, id ASC
+LIMIT 1`, statusConnected).Scan(&nodeID, &nodeName, &latencyMs)
+		if err == sql.ErrNoRows {
+			break
+		}
+		if err != nil {
+			return 0, fmt.Errorf("select lowest latency connected node: %w", err)
+		}
+		nodeUpdate, err := transaction.Exec(`
+UPDATE ip_nodes
+SET status = ?, initial_connected = 1, probe_started_at = 0, probe_kind = '', probe_return_status = '',
+    keepalive_round_id = 0, quality_deferred_round_id = 0, probe_time = ?, error_reason = '', error_detail = '',
+    revive_target_status = ?
+WHERE id = ? AND status = ? AND probe_kind = ''`, slot.kind, nowMs, statusConnected, nodeID, statusConnected)
+		if err != nil {
+			return 0, fmt.Errorf("assign latency fill node %d: %w", nodeID, err)
+		}
+		rowsAffected, err := nodeUpdate.RowsAffected()
+		if err != nil {
+			return 0, fmt.Errorf("read latency fill node result: %w", err)
+		}
+		if rowsAffected != 1 {
+			return 0, fmt.Errorf("latency fill node %d claim was lost", nodeID)
+		}
+		slotUpdate, err := transaction.Exec(`
+UPDATE ip_slots
+SET `+slotNodeIDAssignment()+`, fallback_origin = 0, fallback_entered_round_id = 0,
+    claim_node_id = 0, claim_token = '', claim_stage = '', claim_started_at = 0,
+    last_processed_round_id = ?, blocked_round_id = 0
+WHERE slot_id = ? AND node_id = 0`, slotNodeIDArgs(nodeID, roundID, slot.id)...)
+		if err != nil {
+			return 0, fmt.Errorf("assign latency fill slot %d: %w", slot.id, err)
+		}
+		slotRowsAffected, err := slotUpdate.RowsAffected()
+		if err != nil {
+			return 0, fmt.Errorf("read latency fill slot result: %w", err)
+		}
+		if slotRowsAffected != 1 {
+			return 0, fmt.Errorf("latency fill slot %d claim was lost", slot.id)
+		}
+		filledItems = append(filledItems, filledSlot{
+			slotID: slot.id, slotKind: slot.kind, nodeID: nodeID, nodeName: nodeName, latencyMs: latencyMs,
+		})
+	}
+	if err := transaction.Commit(); err != nil {
+		return 0, fmt.Errorf("commit sqlite latency slot fill: %w", err)
+	}
+	for _, item := range filledItems {
+		_ = store.appendProbeLog(
+			logCategoryQualityProbe,
+			keepaliveGroupID(roundID),
+			logStatusConnected,
+			logLevelInfo,
+			"quality.latency_fill",
+			item.nodeID,
+			item.nodeName,
+			fmt.Sprintf("槽位 %d 按最低延迟直接占槽（未请求 LLM）", item.slotID),
+			fmt.Sprintf("轮次=%d；槽位=%d；槽类型=%s；延迟=%dms；模式=latency_fill", roundID, item.slotID, item.slotKind, item.latencyMs),
+		)
+	}
+	return int64(len(filledItems)), nil
 }
 
 func (store *ipStore) claimNextQualityWork(roundID int64) (*qualityWork, error) {
@@ -631,6 +792,14 @@ WHERE slot_id = ? AND claim_token = ?`, slotNodeIDArgs(work.Node.ID, boolInteger
 		}
 	} else {
 		errorReason := result.DisplayReason()
+		targetStatus := statusCooldown
+		reviveTargetStatus := statusCooldown
+		if isHTTP503QualityFailure(result) {
+			targetStatus = statusConnected
+			reviveTargetStatus = statusConnected
+			errorReason = ""
+			result.Detail = ""
+		}
 		if work.FallbackOrigin {
 			if _, err := transaction.Exec(`DELETE FROM ip_nodes WHERE id = ? AND status = ? AND probe_kind = ?`, work.Node.ID, statusQualityProbing, probeKindQuality); err != nil {
 				return fmt.Errorf("delete sqlite failed fallback node %d: %w", work.Node.ID, err)
@@ -639,8 +808,8 @@ WHERE slot_id = ? AND claim_token = ?`, slotNodeIDArgs(work.Node.ID, boolInteger
 UPDATE ip_nodes
 SET status = ?, probe_started_at = 0, probe_kind = '', probe_return_status = '', keepalive_round_id = 0,
     quality_deferred_round_id = 0, probe_time = ?, latency_ms = ?, error_reason = ?, error_detail = ?, revive_target_status = ?
-WHERE id = ? AND status = ? AND probe_kind = ?`, statusCooldown, time.Now().UnixMilli(), work.Node.LatencyMs, errorReason, result.Detail, statusCooldown, work.Node.ID, statusQualityProbing, probeKindQuality); err != nil {
-			return fmt.Errorf("save sqlite cooldown quality node %d: %w", work.Node.ID, err)
+WHERE id = ? AND status = ? AND probe_kind = ?`, targetStatus, time.Now().UnixMilli(), work.Node.LatencyMs, errorReason, result.Detail, reviveTargetStatus, work.Node.ID, statusQualityProbing, probeKindQuality); err != nil {
+			return fmt.Errorf("save sqlite quality failure node %d: %w", work.Node.ID, err)
 		}
 		if _, err := transaction.Exec(`
 UPDATE ip_slots

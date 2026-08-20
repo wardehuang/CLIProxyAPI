@@ -14,7 +14,6 @@ import (
 
 const (
 	qualityProbeEndpoint          = "https://cli-chat-proxy.grok.com/v1/responses"
-	qualityProbeModel             = "grok-4.6"
 	qualityProbePrompt            = "用中文回答：17 × 23 等于多少？只输出计算过程和答案。"
 	qualityClassificationQuota    = "quota_exhausted"
 	qualityClassificationUnknown  = "unknown"
@@ -117,7 +116,7 @@ func runQualityProbeForWork(ctx context.Context, store *ipStore, work qualityWor
 			work.Node.ID,
 			work.Node.Name,
 			fmt.Sprintf("槽位 %d 智商探测尝试完成，分类 %s", work.Slot.ID, result.Classification),
-			qualityAttemptLogDetail(work, auth, source, result),
+			qualityAttemptLogDetailWithModel(work, auth, source, result, settings.QualityProbeModel),
 		)
 		if result.Classification == qualityClassificationQuota {
 			_ = store.appendProbeLog(
@@ -144,6 +143,10 @@ func runQualityProbeForWork(ctx context.Context, store *ipStore, work qualityWor
 }
 
 func qualityAttemptLogDetail(work qualityWork, auth authFile, source string, result qualityProbeResult) string {
+	return qualityAttemptLogDetailWithModel(work, auth, source, result, defaultQualityProbeModel)
+}
+
+func qualityAttemptLogDetailWithModel(work qualityWork, auth authFile, source string, result qualityProbeResult, model string) string {
 	return fmt.Sprintf(
 		"轮次=%d；槽位=%d；auth=%s；auth_index=%s；选择来源=%s；节点代理=%s；endpoint=%s；model=%s；HTTP=%d；TTFB=%dms；首生成=%dms；生成=%dms；总耗时=%dms；tokens=%d；reasoning_tokens=%d；TPS=%.2f；soft_tps=%.2f；hard_tps=%.2f；分类=%s；等级=%s；原因=%s；thinking_delta=%t；答案命中=%t；错误码=%s；详情=%s",
 		work.RoundID,
@@ -153,7 +156,7 @@ func qualityAttemptLogDetail(work qualityWork, auth authFile, source string, res
 		source,
 		work.Node.ProxyURL,
 		qualityProbeEndpoint,
-		qualityProbeModel,
+		normalizeQualityProbeModel(model),
 		result.StatusCode,
 		result.TTFBMs,
 		result.FirstTokenMs,
@@ -203,7 +206,7 @@ func probeQualityOnce(ctx context.Context, proxyURL string, auth authFile, setti
 		QualityHardTPS: settings.QualityHardTPS,
 	}
 	requestBody, err := json.Marshal(map[string]any{
-		"model":  qualityProbeModel,
+		"model":  normalizeQualityProbeModel(settings.QualityProbeModel),
 		"input":  qualityProbePrompt,
 		"stream": true,
 		"reasoning": map[string]string{

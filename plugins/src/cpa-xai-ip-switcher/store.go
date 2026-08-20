@@ -26,8 +26,10 @@ const (
 	maxHealthySlotMaxAgeMinutes     = 10080
 	defaultQualityWorkerCount       = 8
 	defaultQualityProbeTimeout      = 25
+	defaultQualityProbeModel        = "grok-4.5"
 	defaultQualitySoftTPS           = 500.0
 	defaultQualityHardTPS           = 1000.0
+	defaultQualityLLMProbeEnabled   = false
 	maxProbeWorkers                 = 64
 	maxRefreshIntervalSeconds       = 3600
 	maxKeepaliveIntervalSeconds     = 86400
@@ -35,7 +37,8 @@ const (
 	maxReviveFailureCount           = 3
 	maxSlotCount                    = 1000
 	maxQualityProbeTimeoutSeconds   = 600
-	settingsDefaultsVersion         = "3"
+	maxQualityProbeModelLength      = 128
+	settingsDefaultsVersion         = "4"
 	maxPluginLogs                   = 1000
 	maxRealtimeGuardLogs            = 100
 	maxGroupedLogSets               = 10
@@ -89,8 +92,10 @@ type pluginSettings struct {
 	HealthySlotMaxAgeMinutes   int
 	QualityWorkerCount         int
 	QualityProbeTimeoutSeconds int
+	QualityProbeModel          string
 	QualitySoftTPS             float64
 	QualityHardTPS             float64
+	QualityLLMProbeEnabled     bool
 	DebugEnabled               bool
 	Grok2apiSyncEnabled        bool
 	Grok2apiBaseUrl            string
@@ -366,13 +371,21 @@ INSERT OR IGNORE INTO plugin_settings(setting_key, setting_value) VALUES
     ('healthy_slot_max_age_minutes', '350'),
     ('quality_worker_count', '8'),
     ('quality_probe_timeout_seconds', '25'),
+    ('quality_probe_model', 'grok-4.5'),
     ('quality_soft_tps', '500'),
-    ('quality_hard_tps', '1000');
+    ('quality_hard_tps', '1000'),
+    ('quality_llm_probe_enabled', '0');
 `)
 	if err != nil {
 		return fmt.Errorf("initialize sqlite database: %w", err)
 	}
 	if err := store.migrateSettingsDefaults(); err != nil {
+		return err
+	}
+	if err := store.ensureQualityProbeModelSetting(); err != nil {
+		return err
+	}
+	if err := store.ensureQualityLLMProbeEnabledSetting(); err != nil {
 		return err
 	}
 	if err := store.ensureProbeColumns(); err != nil {
@@ -457,7 +470,68 @@ SET status = ?, completed_at = ?
 WHERE status = ?`, groupStatusCompleted, time.Now().UnixMilli(), groupStatusRunning); err != nil {
 		return fmt.Errorf("finish interrupted sqlite revive rounds: %w", err)
 	}
+	if _, err := store.releaseHTTP503Cooldowns(); err != nil {
+		return err
+	}
 	return nil
+}
+
+func (store *ipStore) ensureQualityProbeModelSetting() error {
+	if _, err := store.database.Exec(`
+INSERT INTO plugin_settings(setting_key, setting_value) VALUES (?, ?)
+ON CONFLICT(setting_key) DO NOTHING`, "quality_probe_model", defaultQualityProbeModel); err != nil {
+		return fmt.Errorf("ensure quality probe model setting: %w", err)
+	}
+	return nil
+}
+
+func (store *ipStore) ensureQualityLLMProbeEnabledSetting() error {
+	if _, err := store.database.Exec(`
+INSERT INTO plugin_settings(setting_key, setting_value) VALUES (?, ?)
+ON CONFLICT(setting_key) DO NOTHING`, "quality_llm_probe_enabled", formatSettingBool(defaultQualityLLMProbeEnabled)); err != nil {
+		return fmt.Errorf("ensure quality llm probe enabled setting: %w", err)
+	}
+	return nil
+}
+
+func (store *ipStore) releaseHTTP503Cooldowns() (int64, error) {
+	result, err := store.database.Exec(`
+UPDATE ip_nodes
+SET status = ?,
+    probe_started_at = 0,
+    probe_kind = '',
+    probe_return_status = '',
+    error_reason = '',
+    error_detail = '',
+    revive_target_status = ?
+WHERE status = ?
+  AND (
+    lower(error_reason) = 'http_503'
+    OR lower(error_reason) LIKE 'http_503%'
+    OR lower(error_detail) LIKE '%http_503%'
+    OR id IN (
+      SELECT a.node_id
+      FROM quality_probe_attempts a
+      JOIN (
+        SELECT node_id, MAX(id) AS max_id
+        FROM quality_probe_attempts
+        GROUP BY node_id
+      ) latest ON latest.node_id = a.node_id AND latest.max_id = a.id
+      WHERE a.status_code = 503
+         OR lower(IFNULL(a.classification_reason, '')) = 'http_503'
+         OR lower(IFNULL(a.classification_reason, '')) LIKE 'http_503%'
+         OR lower(IFNULL(a.error_code, '')) = 'http_503'
+         OR lower(IFNULL(a.error_code, '')) LIKE 'http_503%'
+    )
+  )`, statusConnected, statusConnected, statusCooldown)
+	if err != nil {
+		return 0, fmt.Errorf("release http_503 cooldown nodes: %w", err)
+	}
+	affected, err := result.RowsAffected()
+	if err != nil {
+		return 0, fmt.Errorf("count released http_503 cooldown nodes: %w", err)
+	}
+	return affected, nil
 }
 
 func (store *ipStore) migrateSettingsDefaults() error {
@@ -1133,13 +1207,13 @@ INSERT INTO keepalive_round_nodes(round_id, node_id)
 SELECT ?, candidates.id
 FROM ip_nodes AS candidates
 WHERE candidates.initial_connected = 1
-  AND candidates.status IN (?, ?, ?, ?)
+  AND candidates.status IN (?, ?, ?)
   AND NOT EXISTS (
       SELECT 1
       FROM ip_nodes AS batch_nodes
       WHERE batch_nodes.batch_id = candidates.batch_id
         AND (batch_nodes.status IN (?, ?) OR batch_nodes.probe_kind = ?)
-  )`, roundID, statusHealthy, statusHealthyCandidate, statusConnected, statusCooldown, statusUnprobed, statusProbing, probeKindInitial)
+  )`, roundID, statusHealthy, statusHealthyCandidate, statusConnected, statusUnprobed, statusProbing, probeKindInitial)
 	if err != nil {
 		return 0, fmt.Errorf("snapshot sqlite keepalive candidates: %w", err)
 	}
@@ -1167,9 +1241,9 @@ SELECT candidates.node_id, node_name, proxy_url, host, input_ip, port, protocol,
 FROM keepalive_round_nodes AS candidates
 JOIN ip_nodes ON ip_nodes.id = candidates.node_id
 WHERE candidates.round_id = ?
-  AND status IN (?, ?, ?, ?)
+  AND status IN (?, ?, ?)
   AND keepalive_round_id <> ?
-ORDER BY node_id ASC LIMIT 1`, roundID, statusHealthy, statusHealthyCandidate, statusConnected, statusCooldown, roundID).Scan(
+ORDER BY node_id ASC LIMIT 1`, roundID, statusHealthy, statusHealthyCandidate, statusConnected, roundID).Scan(
 		&node.ID,
 		&node.Name,
 		&node.ProxyURL,
@@ -1472,7 +1546,8 @@ WHERE setting_key IN (
     'worker_count', 'refresh_interval_seconds', 'keepalive_worker_count', 'keepalive_interval_seconds',
     'revive_interval_seconds', 'probe_retry_count', 'healthy_slot_count', 'healthy_candidate_slot_count',
     'healthy_slot_max_age_minutes',
-    'quality_worker_count', 'quality_probe_timeout_seconds', 'quality_soft_tps', 'quality_hard_tps',
+    'quality_worker_count', 'quality_probe_timeout_seconds', 'quality_probe_model', 'quality_soft_tps', 'quality_hard_tps',
+    'quality_llm_probe_enabled',
     'debug_enabled',
     'grok2api_sync_enabled', 'grok2api_base_url', 'grok2api_admin_username', 'grok2api_admin_password',
     'manager_base_url', 'manager_management_key', 'manager_database_path'
@@ -1498,6 +1573,10 @@ WHERE setting_key IN (
 			} else {
 				settings.QualityHardTPS = value
 			}
+		case "quality_probe_model":
+			settings.QualityProbeModel = normalizeQualityProbeModel(rawValue)
+		case "quality_llm_probe_enabled":
+			settings.QualityLLMProbeEnabled = parseSettingBool(rawValue)
 		case "debug_enabled":
 			settings.DebugEnabled = parseSettingBool(rawValue)
 		case "grok2api_sync_enabled":
@@ -1580,8 +1659,10 @@ func (store *ipStore) setSettings(settings pluginSettings) error {
 		"healthy_slot_max_age_minutes":  strconv.Itoa(settings.HealthySlotMaxAgeMinutes),
 		"quality_worker_count":          strconv.Itoa(settings.QualityWorkerCount),
 		"quality_probe_timeout_seconds": strconv.Itoa(settings.QualityProbeTimeoutSeconds),
+		"quality_probe_model":           normalizeQualityProbeModel(settings.QualityProbeModel),
 		"quality_soft_tps":              strconv.FormatFloat(settings.QualitySoftTPS, 'f', -1, 64),
 		"quality_hard_tps":              strconv.FormatFloat(settings.QualityHardTPS, 'f', -1, 64),
+		"quality_llm_probe_enabled":     formatSettingBool(settings.QualityLLMProbeEnabled),
 		"debug_enabled":                 formatSettingBool(settings.DebugEnabled),
 		"grok2api_sync_enabled":         formatSettingBool(settings.Grok2apiSyncEnabled),
 		"grok2api_base_url":             normalizeGrok2apiBaseURL(settings.Grok2apiBaseUrl),

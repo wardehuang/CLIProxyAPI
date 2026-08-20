@@ -8,6 +8,9 @@ import (
 )
 
 func runQualityRound(ctx context.Context, store *ipStore, roundID int64, workerCount int, settings pluginSettings) (int64, int64, int64) {
+	if !settings.QualityLLMProbeEnabled {
+		return runLatencyFillQualityRound(store, roundID, settings)
+	}
 	if err := store.updateKeepaliveQualityPhase(roundID, "quality_started", 0, 0, 0); err != nil {
 		_ = store.appendProbeLog(logCategoryQualityProbe, keepaliveGroupID(roundID), logStatusError, logLevelError, "quality.round_start_failed", 0, "", "启动智商探测阶段失败", err.Error())
 		return 0, 0, 0
@@ -104,4 +107,39 @@ func qualityLogMessage(result qualityProbeResult, slotID int64) string {
 
 func qualityLogDetail(result qualityProbeResult) string {
 	return fmt.Sprintf("分类=%s；等级=%s；原因=%s；HTTP=%d；TTFB=%dms；首生成=%dms；生成=%dms；总耗时=%dms；tokens=%d；reasoning_tokens=%d；TPS=%.2f；soft_tps=%.2f；hard_tps=%.2f；答案命中=%t；thinking_delta=%t；详情=%s", result.Classification, result.QualityLevel, result.ClassificationReason, result.StatusCode, result.TTFBMs, result.FirstTokenMs, result.GenerationMs, result.TotalMs, result.OutputTokens, result.ReasoningTokens, result.OutputTokensPerSecond, result.QualitySoftTPS, result.QualityHardTPS, result.AnswerMatched, result.ThinkingDelta, result.Detail)
+}
+
+func runLatencyFillQualityRound(store *ipStore, roundID int64, settings pluginSettings) (int64, int64, int64) {
+	if err := store.updateKeepaliveQualityPhase(roundID, "quality_started", 0, 0, 0); err != nil {
+		_ = store.appendProbeLog(logCategoryQualityProbe, keepaliveGroupID(roundID), logStatusError, logLevelError, "quality.round_start_failed", 0, "", "启动按延迟占槽阶段失败", err.Error())
+		return 0, 0, 0
+	}
+	_ = store.appendProbeLog(
+		logCategoryQualityProbe,
+		keepaliveGroupID(roundID),
+		logStatusProbing,
+		logLevelInfo,
+		"quality.latency_fill_started",
+		0,
+		"",
+		"真实 LLM 智商检测已关闭，按最低延迟直接占空槽",
+		fmt.Sprintf("轮次=%d；健康槽=%d；健康备选槽=%d", roundID, settings.HealthySlotCount, settings.HealthyCandidateSlotCount),
+	)
+	filled, err := store.fillEmptySlotsByLowestLatency(roundID)
+	if err != nil {
+		_ = store.appendProbeLog(logCategoryQualityProbe, keepaliveGroupID(roundID), logStatusError, logLevelError, "quality.latency_fill_failed", 0, "", "按最低延迟占槽失败", err.Error())
+		return 0, 0, 0
+	}
+	_ = store.appendProbeLog(
+		logCategoryQualityProbe,
+		keepaliveGroupID(roundID),
+		logStatusConnected,
+		logLevelInfo,
+		"quality.latency_fill_completed",
+		0,
+		"",
+		"按最低延迟占槽完成",
+		fmt.Sprintf("轮次=%d；占槽成功=%d；未请求 LLM", roundID, filled),
+	)
+	return filled, filled, 0
 }

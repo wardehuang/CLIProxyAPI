@@ -72,7 +72,7 @@ import (
 
 const (
 	pluginName          = "cpa-xai-ip-switcher"
-	pluginVersion       = "0.1.0"
+	pluginVersion       = "0.1.3"
 	resourcePath        = "/status"
 	managementAPIPath   = "/v0/management/cpa-xai-ip-switcher/api"
 	resourceContentType = "text/html; charset=utf-8"
@@ -513,8 +513,10 @@ func settingsFromPayload(payload map[string]any) (pluginSettings, error) {
 	healthySlotMaxAgeMinutes, healthySlotMaxAgeOK := integerValue(firstValue(payload, "healthySlotMaxAgeMinutes", "healthy_slot_max_age_minutes"))
 	qualityWorkerCount, qualityWorkerOK := integerValue(firstValue(payload, "qualityWorkerCount", "quality_worker_count"))
 	qualityProbeTimeoutSeconds, qualityTimeoutOK := integerValue(firstValue(payload, "qualityProbeTimeoutSeconds", "quality_probe_timeout_seconds"))
+	qualityProbeModel, qualityModelOK := stringValue(firstValue(payload, "qualityProbeModel", "quality_probe_model"))
 	qualitySoftTPS, softTPSOK := floatValue(firstValue(payload, "qualitySoftTPS", "quality_soft_tps"))
 	qualityHardTPS, hardTPSOK := floatValue(firstValue(payload, "qualityHardTPS", "quality_hard_tps"))
+	qualityLLMProbeEnabled, qualityLLMProbeOK := boolValue(firstValue(payload, "qualityLLMProbeEnabled", "quality_llm_probe_enabled"))
 	debugEnabled, debugEnabledOK := boolValue(firstValue(payload, "debugEnabled", "debug_enabled"))
 	grok2apiSyncEnabled, grok2apiSyncEnabledOK := boolValue(firstValue(payload, "grok2apiSyncEnabled", "grok2api_sync_enabled"))
 	grok2apiBaseUrl, grok2apiBaseUrlOK := stringValue(firstValue(payload, "grok2apiBaseUrl", "grok2api_base_url"))
@@ -523,7 +525,7 @@ func settingsFromPayload(payload map[string]any) (pluginSettings, error) {
 	managerBaseURL, managerBaseURLOK := stringValue(firstValue(payload, "managerBaseUrl", "manager_base_url"))
 	managerManagementKey, managerManagementKeyOK := stringValue(firstValue(payload, "managerManagementKey", "manager_management_key"))
 	if !workerOK || !refreshOK || !keepaliveWorkersOK || !keepaliveIntervalOK || !reviveIntervalOK || !retryOK ||
-		!healthySlotOK || !healthyCandidateSlotOK || !healthySlotMaxAgeOK || !qualityWorkerOK || !qualityTimeoutOK || !softTPSOK || !hardTPSOK ||
+		!healthySlotOK || !healthyCandidateSlotOK || !healthySlotMaxAgeOK || !qualityWorkerOK || !qualityTimeoutOK || !qualityModelOK || !softTPSOK || !hardTPSOK || !qualityLLMProbeOK ||
 		!debugEnabledOK || !grok2apiSyncEnabledOK || !grok2apiBaseUrlOK || !grok2apiAdminUsernameOK || !grok2apiAdminPasswordOK || !managerBaseURLOK || !managerManagementKeyOK {
 		return pluginSettings{}, fmt.Errorf("必须同时提供基础调度、健康槽位、智商探测、调试开关、grok2api 同步和 Manager API 配置")
 	}
@@ -539,8 +541,10 @@ func settingsFromPayload(payload map[string]any) (pluginSettings, error) {
 		HealthySlotMaxAgeMinutes:   healthySlotMaxAgeMinutes,
 		QualityWorkerCount:         qualityWorkerCount,
 		QualityProbeTimeoutSeconds: qualityProbeTimeoutSeconds,
+		QualityProbeModel:          normalizeQualityProbeModel(qualityProbeModel),
 		QualitySoftTPS:             qualitySoftTPS,
 		QualityHardTPS:             qualityHardTPS,
+		QualityLLMProbeEnabled:     qualityLLMProbeEnabled,
 		DebugEnabled:               debugEnabled,
 		Grok2apiSyncEnabled:        grok2apiSyncEnabled,
 		Grok2apiBaseUrl:            normalizeGrok2apiBaseURL(grok2apiBaseUrl),
@@ -641,8 +645,10 @@ func publicSettings(settings pluginSettings) map[string]any {
 		"healthySlotMaxAgeMinutes":   settings.HealthySlotMaxAgeMinutes,
 		"qualityWorkerCount":         settings.QualityWorkerCount,
 		"qualityProbeTimeoutSeconds": settings.QualityProbeTimeoutSeconds,
+		"qualityProbeModel":          settings.QualityProbeModel,
 		"qualitySoftTPS":             settings.QualitySoftTPS,
 		"qualityHardTPS":             settings.QualityHardTPS,
+		"qualityLLMProbeEnabled":     settings.QualityLLMProbeEnabled,
 		"debugEnabled":               settings.DebugEnabled,
 		"grok2apiSyncEnabled":        settings.Grok2apiSyncEnabled,
 		"grok2apiBaseUrl":            settings.Grok2apiBaseUrl,

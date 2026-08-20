@@ -431,7 +431,12 @@ socks5h://username:pass@ip:port
               <h4 id="settings-quality-title" class="settings-card-title">智商探测</h4>
               <span class="settings-card-badge">下次启动</span>
             </div>
-            <p class="settings-card-help">保活第二阶段 `/v1/responses` 流式探测。hard TPS 必须高于 soft。</p>
+            <p class="settings-card-help">保活第二阶段。关闭真实 LLM 时，按连通延迟最低的前 N 个【已连通】节点直接占空槽；开启后走 `/v1/responses` 流式探测并用 TPS 判降智。hard TPS 必须高于 soft。HTTP 503 不进冷却，回【已连通】。</p>
+            <label class="settings-checkbox-field" for="quality-llm-probe-enabled">
+              <input id="quality-llm-probe-enabled" type="checkbox">
+              启用真实 LLM 智商检测（按 TPS 判降智）
+            </label>
+            <p class="settings-help">默认关闭。关闭时不请求大模型，直接用延迟最低节点占健康/健康备选空槽；开启后与原有智商探测逻辑一致。</p>
             <div class="settings-grid cols-4">
               <label class="settings-field" for="quality-worker-count">
                 智商线程数
@@ -452,6 +457,11 @@ socks5h://username:pass@ip:port
                 hard TPS
                 <input id="quality-hard-tps" type="number" min="0.01" step="0.01" value="1000" title="≥ 该值判 hard 降智，须高于 soft">
                 <span class="settings-help">≥ 值 · hard · 须 &gt; soft</span>
+              </label>
+              <label class="settings-field span-2" for="quality-probe-model">
+                智商检测模型
+                <input id="quality-probe-model" type="text" value="grok-4.5" maxlength="128" autocomplete="off" title="探测用模型 ID，默认 grok-4.5">
+                <span class="settings-help">默认 grok-4.5 · 无空格 · ≤128 · 下次启动</span>
               </label>
             </div>
           </section>
@@ -600,8 +610,10 @@ socks5h://username:pass@ip:port
         healthySlotMaxAgeMinutes: document.getElementById("healthy-slot-max-age-minutes"),
         qualityWorkerCount: document.getElementById("quality-worker-count"),
         qualityProbeTimeout: document.getElementById("quality-probe-timeout"),
+        qualityProbeModel: document.getElementById("quality-probe-model"),
         qualitySoftTPS: document.getElementById("quality-soft-tps"),
         qualityHardTPS: document.getElementById("quality-hard-tps"),
+        qualityLLMProbeEnabled: document.getElementById("quality-llm-probe-enabled"),
         debugEnabled: document.getElementById("debug-enabled"),
         grok2apiSyncEnabled: document.getElementById("grok2api-sync-enabled"),
         grok2apiBaseUrl: document.getElementById("grok2api-base-url"),
@@ -769,8 +781,10 @@ socks5h://username:pass@ip:port
           elements.healthySlotMaxAgeMinutes.value = String(settings.healthySlotMaxAgeMinutes);
           elements.qualityWorkerCount.value = String(settings.qualityWorkerCount);
           elements.qualityProbeTimeout.value = String(settings.qualityProbeTimeoutSeconds);
+          elements.qualityProbeModel.value = settings.qualityProbeModel || "grok-4.5";
           elements.qualitySoftTPS.value = String(settings.qualitySoftTPS);
           elements.qualityHardTPS.value = String(settings.qualityHardTPS);
+          elements.qualityLLMProbeEnabled.checked = Boolean(settings.qualityLLMProbeEnabled);
           elements.debugEnabled.checked = Boolean(settings.debugEnabled);
           elements.grok2apiSyncEnabled.checked = Boolean(settings.grok2apiSyncEnabled);
           elements.grok2apiBaseUrl.value = settings.grok2apiBaseUrl || "";
@@ -1297,8 +1311,10 @@ socks5h://username:pass@ip:port
           healthySlotMaxAgeMinutes: Number(elements.healthySlotMaxAgeMinutes.value),
           qualityWorkerCount: Number(elements.qualityWorkerCount.value),
           qualityProbeTimeoutSeconds: Number(elements.qualityProbeTimeout.value),
+          qualityProbeModel: elements.qualityProbeModel.value.trim() || "grok-4.5",
           qualitySoftTPS: Number(elements.qualitySoftTPS.value),
           qualityHardTPS: Number(elements.qualityHardTPS.value),
+          qualityLLMProbeEnabled: elements.qualityLLMProbeEnabled.checked,
           debugEnabled: elements.debugEnabled.checked,
           grok2apiSyncEnabled: elements.grok2apiSyncEnabled.checked,
           grok2apiBaseUrl: elements.grok2apiBaseUrl.value.trim().replace(/\/+$/, ""),
@@ -1307,8 +1323,8 @@ socks5h://username:pass@ip:port
           managerBaseUrl: elements.managerBaseUrl.value.trim().replace(/\/+$/, ""),
           managerManagementKey: elements.managerManagementKey.value
         };
-        if (!Number.isInteger(settings.workerCount) || settings.workerCount < 1 || settings.workerCount > 64 || !Number.isInteger(settings.refreshIntervalSeconds) || settings.refreshIntervalSeconds < minimumRefreshIntervalSeconds || settings.refreshIntervalSeconds > maximumRefreshIntervalSeconds || !Number.isInteger(settings.keepaliveWorkerCount) || settings.keepaliveWorkerCount < 1 || settings.keepaliveWorkerCount > 64 || !Number.isInteger(settings.keepaliveIntervalSeconds) || settings.keepaliveIntervalSeconds < 1 || settings.keepaliveIntervalSeconds > 86400 || !Number.isInteger(settings.reviveIntervalSeconds) || settings.reviveIntervalSeconds < 1 || settings.reviveIntervalSeconds > 86400 || !Number.isInteger(settings.probeRetryCount) || settings.probeRetryCount < 1 || settings.probeRetryCount > 10 || !Number.isInteger(settings.healthySlotCount) || settings.healthySlotCount < 1 || settings.healthySlotCount > 1000 || !Number.isInteger(settings.healthyCandidateSlotCount) || settings.healthyCandidateSlotCount < 0 || settings.healthySlotCount + settings.healthyCandidateSlotCount > 1000 || !Number.isInteger(settings.healthySlotMaxAgeMinutes) || settings.healthySlotMaxAgeMinutes < 1 || settings.healthySlotMaxAgeMinutes > 10080 || !Number.isInteger(settings.qualityWorkerCount) || settings.qualityWorkerCount < 1 || settings.qualityWorkerCount > 64 || !Number.isInteger(settings.qualityProbeTimeoutSeconds) || settings.qualityProbeTimeoutSeconds < 1 || settings.qualityProbeTimeoutSeconds > 600 || !Number.isFinite(settings.qualitySoftTPS) || settings.qualitySoftTPS <= 0 || !Number.isFinite(settings.qualityHardTPS) || settings.qualityHardTPS <= settings.qualitySoftTPS) {
-          setNotice("配置范围无效：基础线程 1–64，页面刷新 5–3600 秒，保活和复活间隔 1–86400 秒，探测重试 1–10 次，总槽位 1–1000，健康槽最大占用 1–10080 分钟，智商线程 1–64，智商超时 1–600 秒，hard TPS 必须高于 soft TPS。", "error");
+        if (!Number.isInteger(settings.workerCount) || settings.workerCount < 1 || settings.workerCount > 64 || !Number.isInteger(settings.refreshIntervalSeconds) || settings.refreshIntervalSeconds < minimumRefreshIntervalSeconds || settings.refreshIntervalSeconds > maximumRefreshIntervalSeconds || !Number.isInteger(settings.keepaliveWorkerCount) || settings.keepaliveWorkerCount < 1 || settings.keepaliveWorkerCount > 64 || !Number.isInteger(settings.keepaliveIntervalSeconds) || settings.keepaliveIntervalSeconds < 1 || settings.keepaliveIntervalSeconds > 86400 || !Number.isInteger(settings.reviveIntervalSeconds) || settings.reviveIntervalSeconds < 1 || settings.reviveIntervalSeconds > 86400 || !Number.isInteger(settings.probeRetryCount) || settings.probeRetryCount < 1 || settings.probeRetryCount > 10 || !Number.isInteger(settings.healthySlotCount) || settings.healthySlotCount < 1 || settings.healthySlotCount > 1000 || !Number.isInteger(settings.healthyCandidateSlotCount) || settings.healthyCandidateSlotCount < 0 || settings.healthySlotCount + settings.healthyCandidateSlotCount > 1000 || !Number.isInteger(settings.healthySlotMaxAgeMinutes) || settings.healthySlotMaxAgeMinutes < 1 || settings.healthySlotMaxAgeMinutes > 10080 || !Number.isInteger(settings.qualityWorkerCount) || settings.qualityWorkerCount < 1 || settings.qualityWorkerCount > 64 || !Number.isInteger(settings.qualityProbeTimeoutSeconds) || settings.qualityProbeTimeoutSeconds < 1 || settings.qualityProbeTimeoutSeconds > 600 || !settings.qualityProbeModel || /\s/.test(settings.qualityProbeModel) || settings.qualityProbeModel.length > 128 || !Number.isFinite(settings.qualitySoftTPS) || settings.qualitySoftTPS <= 0 || !Number.isFinite(settings.qualityHardTPS) || settings.qualityHardTPS <= settings.qualitySoftTPS) {
+          setNotice("配置范围无效：基础线程 1–64，页面刷新 5–3600 秒，保活和复活间隔 1–86400 秒，探测重试 1–10 次，总槽位 1–1000，健康槽最大占用 1–10080 分钟，智商线程 1–64，智商超时 1–600 秒，智商检测模型非空且无空格，hard TPS 必须高于 soft TPS。", "error");
           return;
         }
         if (settings.managerBaseUrl && !/^https?:\/\//i.test(settings.managerBaseUrl)) {

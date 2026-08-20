@@ -127,8 +127,10 @@ func pluginSettingsEqual(left, right pluginSettings) bool {
 		left.HealthySlotMaxAgeMinutes == right.HealthySlotMaxAgeMinutes &&
 		left.QualityWorkerCount == right.QualityWorkerCount &&
 		left.QualityProbeTimeoutSeconds == right.QualityProbeTimeoutSeconds &&
+		left.QualityProbeModel == right.QualityProbeModel &&
 		left.QualitySoftTPS == right.QualitySoftTPS &&
 		left.QualityHardTPS == right.QualityHardTPS &&
+		left.QualityLLMProbeEnabled == right.QualityLLMProbeEnabled &&
 		left.DebugEnabled == right.DebugEnabled &&
 		left.Grok2apiSyncEnabled == right.Grok2apiSyncEnabled &&
 		left.Grok2apiBaseUrl == right.Grok2apiBaseUrl &&
