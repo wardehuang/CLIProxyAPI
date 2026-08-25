@@ -236,6 +236,52 @@ func TestStreamUsageBufferPreservesTierAcrossChunks(t *testing.T) {
 	}
 }
 
+func TestStreamUsageBufferObserveOpenAIStreamReadsResponseUsage(t *testing.T) {
+	t.Parallel()
+
+	// Responses API terminal chunk nests usage under response.usage (not top-level usage).
+	// OpenAICompatExecutor ObserveOpenAIStream must capture it or request monitoring TPS stays "--".
+	var buffer StreamUsageBuffer
+	buffer.ObserveOpenAIStream([]byte(`data: {"type":"response.completed","response":{"service_tier":"default","usage":{"input_tokens":19157,"output_tokens":111,"total_tokens":19268,"input_tokens_details":{"cached_tokens":384},"output_tokens_details":{"reasoning_tokens":63}}}}`))
+	detail, ok := buffer.Detail()
+	if !ok {
+		t.Fatal("Detail() ok = false, want true")
+	}
+	if detail.InputTokens != 19157 {
+		t.Fatalf("input tokens = %d, want 19157", detail.InputTokens)
+	}
+	if detail.OutputTokens != 111 {
+		t.Fatalf("output tokens = %d, want 111", detail.OutputTokens)
+	}
+	if detail.ReasoningTokens != 63 {
+		t.Fatalf("reasoning tokens = %d, want 63", detail.ReasoningTokens)
+	}
+	if detail.CachedTokens != 384 || detail.CacheReadTokens != 384 {
+		t.Fatalf("cached tokens = %d/%d, want 384/384", detail.CachedTokens, detail.CacheReadTokens)
+	}
+	if detail.TotalTokens != 19268 {
+		t.Fatalf("total tokens = %d, want 19268", detail.TotalTokens)
+	}
+	if detail.ResponseServiceTier != "default" {
+		t.Fatalf("response service tier = %q, want default", detail.ResponseServiceTier)
+	}
+}
+
+func TestParseOpenAIStreamUsageReadsResponseUsage(t *testing.T) {
+	t.Parallel()
+
+	detail, ok := ParseOpenAIStreamUsage([]byte(`data: {"type":"response.completed","response":{"service_tier":"default","usage":{"input_tokens":19157,"output_tokens":111,"total_tokens":19268,"output_tokens_details":{"reasoning_tokens":63}}}}`))
+	if !ok {
+		t.Fatal("ParseOpenAIStreamUsage() ok = false, want true")
+	}
+	if detail.InputTokens != 19157 || detail.OutputTokens != 111 || detail.ReasoningTokens != 63 {
+		t.Fatalf("detail = %+v", detail)
+	}
+	if detail.ResponseServiceTier != "default" {
+		t.Fatalf("response service tier = %q, want default", detail.ResponseServiceTier)
+	}
+}
+
 func TestStreamUsageBufferObserveOpenAIStreamStateTransitions(t *testing.T) {
 	t.Parallel()
 

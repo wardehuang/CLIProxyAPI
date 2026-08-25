@@ -52,6 +52,9 @@ func runKeepaliveRound(ctx context.Context, store *ipStore, settings pluginSetti
 	defer func() {
 		_ = store.pruneStoredLogs()
 	}()
+	if err := syncGrok2apiDegradedNodesBeforeKeepalive(store, settings); err != nil {
+		_ = store.appendLog(logLevelWarn, "grok2api.degraded_sync_failed", 0, "", "保活前读取降智节点失败，继续执行保活探测", err.Error())
+	}
 	roundID := time.Now().UnixNano()
 	if _, err := store.startKeepaliveRound(roundID); err != nil {
 		_ = store.appendLog(logLevelError, "keepalive.round_create_failed", 0, "", "创建保活探测轮次失败", err.Error())

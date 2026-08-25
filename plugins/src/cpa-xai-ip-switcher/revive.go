@@ -85,8 +85,7 @@ SELECT ?, nodes.id
 FROM ip_nodes AS nodes
 WHERE nodes.status = ?
   AND nodes.probe_kind = ''
-  AND nodes.revive_failure_count < ?
-  AND (nodes.exit_country = '' OR UPPER(nodes.exit_country) = 'US')`, roundID, statusError, maxReviveFailureCount)
+  AND nodes.revive_failure_count < ?`, roundID, statusError, maxReviveFailureCount)
 	if err != nil {
 		return 0, fmt.Errorf("snapshot sqlite revive candidates: %w", err)
 	}
@@ -116,7 +115,6 @@ WHERE candidates.round_id = ?
   AND status = ?
   AND probe_kind = ''
   AND revive_round_id <> ?
-  AND (ip_nodes.exit_country = '' OR UPPER(ip_nodes.exit_country) = 'US')
 ORDER BY node_id ASC LIMIT 1`, roundID, statusError, roundID).Scan(
 		&node.ID,
 		&node.Name,
@@ -170,22 +168,6 @@ func (store *ipStore) completeReviveProbe(node proxyNode, result probeResult) (b
 	targetStatus := node.ReviveTargetStatus
 	if targetStatus != statusCooldown && targetStatus != statusConnected {
 		targetStatus = statusConnected
-	}
-	if result.Reason == "非us出口" {
-		_, err := store.database.Exec(`
-UPDATE ip_nodes
-SET status = ?, latency_ms = ?, probe_time = ?, probe_started_at = 0,
-    probe_kind = '', probe_return_status = '',
-    exit_ip = CASE WHEN ? <> '' THEN ? ELSE exit_ip END,
-    exit_country = CASE WHEN ? <> '' THEN ? ELSE exit_country END,
-    revive_failure_count = 0,
-    error_reason = ?, error_detail = ?
-WHERE id = ? AND status = ? AND probe_kind = ? AND revive_round_id = ?`, statusError, result.LatencyMs, probeTime, result.ExitIP, result.ExitIP, result.CountryCode, result.CountryCode, result.Reason, result.Detail, node.ID, statusReviveProbing, probeKindRevive, node.ReviveRoundID)
-		if err != nil {
-			return false, fmt.Errorf("save non-US revive result: %w", err)
-		}
-		_ = store.appendProbeLog(logCategoryReviveProbe, reviveGroupID(node.ReviveRoundID), logStatusError, logLevelWarn, "revive.non_us", node.ID, node.Name, "复活探测确认非 US 出口，节点保留为异常", formatProbeResultDetail(result))
-		return false, nil
 	}
 	if result.Success {
 		_, err := store.database.Exec(`

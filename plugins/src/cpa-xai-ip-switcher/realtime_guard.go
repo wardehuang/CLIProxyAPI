@@ -2,7 +2,6 @@ package main
 
 import (
 	"bytes"
-	"context"
 	"database/sql"
 	"encoding/json"
 	"fmt"
@@ -16,13 +15,10 @@ import (
 const probeKindRealtimeGuard = "realtime_guard"
 
 type realtimeGuardReplacement struct {
-	HealthySlot      slotRecord
-	OriginalNode     proxyNode
-	ReplacementNode  proxyNode
-	CandidateSlot    slotRecord
-	FromFallback     bool
-	HasReplacement   bool
-	FallbackReserved bool
+	HealthySlot     slotRecord
+	OriginalNode    proxyNode
+	ReplacementNode proxyNode
+	HasReplacement  bool
 }
 
 func (store *ipStore) ensureRealtimeGuardMetadata() error {
@@ -99,15 +95,8 @@ func handleStreamCompletionIntercept(completion pluginapi.StreamCompletionInterc
 				store.logRealtimeManagerAPIUnavailable(probe, decision, failure, managerErr)
 				return nil, managerErr
 			}
-			if failure.ConsecutiveFailureCount < realtimeDegradationReplacementThreshold {
-				if retryErr := ensureRealtimeGuardReplacementAuth(probe.AuthIndex); retryErr != nil {
-					return nil, retryErr
-				}
-				store.logRealtimeDegradationRecorded(probe, decision, failure)
-				return nil, nil
-			}
 		}
-		if applyErr := store.applyRealtimeGuard(context.Background(), probe, &decision); applyErr != nil {
+		if applyErr := store.applyRealtimeGuard(probe, &decision); applyErr != nil {
 			return nil, applyErr
 		}
 		if decision.Action == realtimeGuardActionRetry {
@@ -207,7 +196,12 @@ func classifyRealtimeGuardProbeWithSettings(probe realtimeGuardProbe, settings p
 	if generationDuration < time.Millisecond {
 		generationDuration = time.Millisecond
 	}
-	decision.TPS = float64(outputTokens+reasoningTokens) / generationDuration.Seconds()
+	ttfbDuration := generationStartedAt.Sub(probe.StartedAt)
+	ttfbDuration = time.Duration(ttfbDuration.Milliseconds()) * time.Millisecond
+	decision.TTFBMs = ttfbDuration.Milliseconds()
+	decision.GenerationMs = generationDuration.Milliseconds()
+	decision.TotalTokens = outputTokens + reasoningTokens
+	decision.TPS = float64(decision.TotalTokens) / generationDuration.Seconds()
 	if decision.TPS >= settings.QualityHardTPS {
 		decision.Action = realtimeGuardActionRetry
 		decision.Classification = realtimeGuardClassificationDegradation
@@ -220,6 +214,15 @@ func classifyRealtimeGuardProbeWithSettings(probe realtimeGuardProbe, settings p
 		decision.Classification = realtimeGuardClassificationDegradation
 		decision.QualityLevel = realtimeGuardQualitySoft
 		decision.Reason = "soft_tps_missing_thinking_delta"
+		return decision
+	}
+	if ttfbDuration.Seconds() > settings.RealtimeGuardTTFBSeconds &&
+		generationDuration.Seconds() < settings.RealtimeGuardGenerationSeconds &&
+		decision.TotalTokens > int64(settings.RealtimeGuardTokenThreshold) {
+		decision.Action = realtimeGuardActionRetry
+		decision.Classification = realtimeGuardClassificationDegradation
+		decision.QualityLevel = realtimeGuardQualitySoft
+		decision.Reason = "ttfb_downgrade"
 	}
 	return decision
 }
@@ -292,7 +295,7 @@ func parseRealtimeGuardSSE(body []byte) (int64, int64, bool, error) {
 	return outputTokens, reasoningTokens, thinkingDelta, nil
 }
 
-func (store *ipStore) applyRealtimeGuard(ctx context.Context, probe realtimeGuardProbe, decision *realtimeGuardDecision) error {
+func (store *ipStore) applyRealtimeGuard(probe realtimeGuardProbe, decision *realtimeGuardDecision) error {
 	settings, err := store.settings()
 	if err != nil {
 		return err
@@ -304,73 +307,24 @@ func (store *ipStore) applyRealtimeGuard(ctx context.Context, probe realtimeGuar
 	decision.OriginalNodeID = replacement.OriginalNode.ID
 	decision.OriginalProxyURL = replacement.OriginalNode.ProxyURL
 
-	if replacement.HasReplacement && !replacement.FromFallback {
-		decision.ReplacementNodeID = replacement.ReplacementNode.ID
-		decision.ReplacementProxyURL = replacement.ReplacementNode.ProxyURL
+	if !replacement.HasReplacement {
 		if err := refreshHealthyAuthDistribution(store, settings.HealthySlotCount); err != nil {
-			return fmt.Errorf("实时守护同步候补 auth 文件: %w", err)
+			return fmt.Errorf("实时守护清空健康槽位 auth 文件: %w", err)
 		}
-		decision.Action = realtimeGuardActionRetry
-		store.logRealtimeGuard(probe, *decision, replacement.OriginalNode, replacement.ReplacementNode)
-		return nil
-	}
-
-	if err := refreshHealthyAuthDistribution(store, settings.HealthySlotCount); err != nil {
-		return fmt.Errorf("实时守护清空健康槽位 auth 文件: %w", err)
-	}
-	if !replacement.FallbackReserved {
 		decision.Action = realtimeGuardActionFail
-		decision.Error = "实时守护没有可用健康备选或健康保底节点"
+		decision.Error = "实时守护没有可用健康备选节点"
 		store.logRealtimeGuard(probe, *decision, replacement.OriginalNode, proxyNode{})
 		return nil
 	}
 
-	for replacement.FallbackReserved {
-		connectivityResult := probeNodeWithRetries(ctx, replacement.ReplacementNode, 1)
-		if !connectivityResult.Success {
-			if err := store.finishRealtimeFallbackFailure(replacement.ReplacementNode, connectivityResult.Reason, connectivityResult.Detail); err != nil {
-				return err
-			}
-			store.logRealtimeFallbackCheck(probe, replacement.ReplacementNode, "connectivity_failed", connectivityResult.Reason+"；"+connectivityResult.Detail)
-			replacement, err = store.reserveNextRealtimeFallback(replacement.HealthySlot)
-			if err != nil {
-				return err
-			}
-			continue
-		}
-
-		qualityResult, qualityErr := store.probeRealtimeFallbackQuality(ctx, replacement.ReplacementNode, replacement.HealthySlot.ID)
-		if qualityErr != nil || qualityResult.Classification != qualityClassificationNormal {
-			detail := ""
-			if qualityErr != nil {
-				detail = qualityErr.Error()
-			} else {
-				detail = qualityResult.DisplayReason()
-			}
-			if err := store.finishRealtimeFallbackFailure(replacement.ReplacementNode, "quality_failed", detail); err != nil {
-				return err
-			}
-			store.logRealtimeFallbackCheck(probe, replacement.ReplacementNode, "quality_failed", detail)
-			replacement, err = store.reserveNextRealtimeFallback(replacement.HealthySlot)
-			if err != nil {
-				return err
-			}
-			continue
-		}
-
-		if err := store.finishRealtimeFallbackSuccess(replacement.HealthySlot, replacement.ReplacementNode, connectivityResult); err != nil {
-			return err
-		}
-		if err := refreshHealthyAuthDistribution(store, settings.HealthySlotCount); err != nil {
-			return fmt.Errorf("实时守护同步保底替换 auth 文件: %w", err)
-		}
-		decision.Action = realtimeGuardActionRetry
-		decision.ReplacementNodeID = replacement.ReplacementNode.ID
-		decision.ReplacementProxyURL = replacement.ReplacementNode.ProxyURL
-		store.logRealtimeGuard(probe, *decision, replacement.OriginalNode, replacement.ReplacementNode)
-		return nil
+	decision.ReplacementNodeID = replacement.ReplacementNode.ID
+	decision.ReplacementProxyURL = replacement.ReplacementNode.ProxyURL
+	if err := refreshHealthyAuthDistribution(store, settings.HealthySlotCount); err != nil {
+		return fmt.Errorf("实时守护同步所有 auth 文件: %w", err)
 	}
-	return fmt.Errorf("实时守护状态异常")
+	decision.Action = realtimeGuardActionRetry
+	store.logRealtimeGuard(probe, *decision, replacement.OriginalNode, replacement.ReplacementNode)
+	return nil
 }
 
 func (store *ipStore) startRealtimeGuardReplacement(probe realtimeGuardProbe, decision realtimeGuardDecision) (realtimeGuardReplacement, error) {
@@ -454,18 +408,7 @@ WHERE id = ? AND status = ?`, statusHealthy, statusHealthy, candidate.ID, status
 		}
 		replacement.ReplacementNode = candidate
 		replacement.ReplacementNode.Status = statusHealthy
-		replacement.CandidateSlot = candidateSlot
 		replacement.HasReplacement = true
-	} else {
-		fallback, found, fallbackErr := reserveRealtimeFallback(transaction)
-		if fallbackErr != nil {
-			return realtimeGuardReplacement{}, fallbackErr
-		}
-		if found {
-			replacement.ReplacementNode = fallback
-			replacement.FallbackReserved = true
-			replacement.FromFallback = true
-		}
 	}
 	if err := transaction.Commit(); err != nil {
 		return realtimeGuardReplacement{}, fmt.Errorf("提交实时守护替换事务: %w", err)
@@ -534,123 +477,6 @@ LIMIT 1`, statusHealthyCandidate, statusHealthyCandidate).Scan(
 	return candidate, slot, true, nil
 }
 
-func reserveRealtimeFallback(transaction *sql.Tx) (proxyNode, bool, error) {
-	var fallback proxyNode
-	err := scanProxyNode(transaction.QueryRow(`
-SELECT id, node_name, proxy_url, host, input_ip, port, protocol, domain, batch_id, status,
-       initial_connected, probe_kind, probe_return_status, keepalive_round_id, revive_round_id,
-       revive_failure_count, latency_ms, entered_at, probe_started_at, probe_time, exit_ip,
-       exit_country, error_reason, error_detail, revive_target_status
-FROM ip_nodes
-WHERE status = ? AND manual_fallback = 1 AND probe_kind = ''
-ORDER BY entered_at ASC, id ASC
-LIMIT 1`, statusHealthyFallback), &fallback)
-	if err == sql.ErrNoRows {
-		return proxyNode{}, false, nil
-	}
-	if err != nil {
-		return proxyNode{}, false, fmt.Errorf("选择实时守护健康保底节点: %w", err)
-	}
-	result, err := transaction.Exec(`
-UPDATE ip_nodes
-SET status = ?, probe_started_at = ?, probe_kind = ?, probe_return_status = ?, error_reason = '', error_detail = ''
-WHERE id = ? AND status = ? AND manual_fallback = 1 AND probe_kind = ''`, statusProbing, time.Now().UnixMilli(), probeKindRealtimeGuard, statusHealthyFallback, fallback.ID, statusHealthyFallback)
-	if err != nil {
-		return proxyNode{}, false, fmt.Errorf("预留实时守护健康保底节点: %w", err)
-	}
-	affected, err := result.RowsAffected()
-	if err != nil {
-		return proxyNode{}, false, err
-	}
-	if affected != 1 {
-		return proxyNode{}, false, fmt.Errorf("实时守护健康保底节点预留丢失")
-	}
-	fallback.Status = statusProbing
-	fallback.ProbeKind = probeKindRealtimeGuard
-	return fallback, true, nil
-}
-
-func (store *ipStore) reserveNextRealtimeFallback(healthySlot slotRecord) (realtimeGuardReplacement, error) {
-	transaction, err := store.database.Begin()
-	if err != nil {
-		return realtimeGuardReplacement{}, fmt.Errorf("开始实时守护下一保底事务: %w", err)
-	}
-	defer transaction.Rollback()
-	fallback, found, err := reserveRealtimeFallback(transaction)
-	if err != nil {
-		return realtimeGuardReplacement{}, err
-	}
-	if err := transaction.Commit(); err != nil {
-		return realtimeGuardReplacement{}, fmt.Errorf("提交实时守护下一保底事务: %w", err)
-	}
-	return realtimeGuardReplacement{HealthySlot: healthySlot, ReplacementNode: fallback, FromFallback: found, FallbackReserved: found}, nil
-}
-
-func (store *ipStore) finishRealtimeFallbackFailure(node proxyNode, reason, detail string) error {
-	_, err := store.database.Exec(`
-UPDATE ip_nodes
-SET status = ?, probe_started_at = 0, probe_kind = '', probe_return_status = '',
-    error_reason = ?, error_detail = ?, revive_target_status = ?
-WHERE id = ? AND status = ? AND probe_kind = ?`, statusCooldown, reason, detail, statusCooldown, node.ID, statusProbing, probeKindRealtimeGuard)
-	if err != nil {
-		return fmt.Errorf("保存实时守护保底节点失败: %w", err)
-	}
-	return nil
-}
-
-func (store *ipStore) finishRealtimeFallbackSuccess(slot slotRecord, node proxyNode, connectivity probeResult) error {
-	transaction, err := store.database.Begin()
-	if err != nil {
-		return fmt.Errorf("开始实时守护保底成功事务: %w", err)
-	}
-	defer transaction.Rollback()
-	if _, err := transaction.Exec(`
-UPDATE ip_nodes
-SET status = ?, latency_ms = ?, probe_time = ?, probe_started_at = 0, probe_kind = '', probe_return_status = '',
-    error_reason = '', error_detail = '', revive_target_status = ?
-WHERE id = ? AND status = ? AND probe_kind = ?`, statusHealthy, connectivity.LatencyMs, time.Now().UnixMilli(), statusHealthy, node.ID, statusProbing, probeKindRealtimeGuard); err != nil {
-		return fmt.Errorf("保存实时守护保底健康节点: %w", err)
-	}
-	if _, err := transaction.Exec(`UPDATE ip_slots SET `+slotNodeIDAssignment()+` WHERE slot_id = ? AND slot_kind = ? AND node_id = 0`, slotNodeIDArgs(node.ID, slot.ID, statusHealthy)...); err != nil {
-		return fmt.Errorf("写入实时守护保底健康槽位: %w", err)
-	}
-	if err := transaction.Commit(); err != nil {
-		return fmt.Errorf("提交实时守护保底成功事务: %w", err)
-	}
-	return nil
-}
-
-func (store *ipStore) probeRealtimeFallbackQuality(ctx context.Context, node proxyNode, slotID int64) (qualityProbeResult, error) {
-	settings, err := store.settings()
-	if err != nil {
-		return qualityProbeResult{}, err
-	}
-	authFiles, err := listAuthFiles()
-	if err != nil {
-		return qualityProbeResult{}, err
-	}
-	usedAuth := make(map[string]struct{})
-	for {
-		auth, source, selectErr := selectAuthForQuality(store, node, slotID, 0, usedAuth, authFiles)
-		if selectErr != nil {
-			return qualityProbeResult{}, selectErr
-		}
-		result := probeQualityOnce(ctx, node.ProxyURL, auth, settings)
-		if err := store.recordQualityAttempt(0, slotID, node.ID, auth, "realtime_"+source, result); err != nil {
-			return qualityProbeResult{}, err
-		}
-		if result.Classification == qualityClassificationQuota {
-			continue
-		}
-		if result.Classification == qualityClassificationNormal {
-			if err := store.recordAuthSuccess(node.ID, slotID, 0, auth, "realtime_"+source); err != nil {
-				return qualityProbeResult{}, err
-			}
-		}
-		return result, nil
-	}
-}
-
 func ensureRealtimeGuardReplacementAuth(degradedAuthIndex string) error {
 	authFiles, err := listAuthFiles()
 	if err != nil {
@@ -675,21 +501,7 @@ func (store *ipStore) logRealtimeDegradationDetected(probe realtimeGuardProbe, d
 		probe.SourceSnapshot.NodeID,
 		"",
 		fmt.Sprintf("【检测到降智】auth:%s，节点:%s，原因:%s", probe.AuthFileName, probe.ProxyURL, decision.Reason),
-		fmt.Sprintf("request_id=%s；auth_file=%s；auth_index=%s；节点代理=%s；HTTP=%d；等级=%s；TPS=%.2f", probe.RequestID, probe.AuthFileName, probe.AuthIndex, probe.ProxyURL, probe.StatusCode, decision.QualityLevel, decision.TPS),
-	)
-}
-
-func (store *ipStore) logRealtimeDegradationRecorded(probe realtimeGuardProbe, decision realtimeGuardDecision, failure realtimeDegradationFailure) {
-	_ = store.appendProbeLog(
-		logCategoryRealtimeGuard,
-		probe.RequestID,
-		logStatusProbing,
-		logLevelWarn,
-		"realtime_guard.degradation_recorded",
-		failure.NodeID,
-		failure.NodeName,
-		"实时守护记录节点首次降智，账号已标记为异常",
-		fmt.Sprintf("request_id=%s；auth_id=%s；auth_index=%s；节点代理=%s；降智次数=%d/%d；原因=%s；等级=%s；TPS=%.2f；动作=仅换号重试", probe.RequestID, probe.AuthID, probe.AuthIndex, failure.ProxyURL, failure.ConsecutiveFailureCount, realtimeDegradationReplacementThreshold, decision.Reason, decision.QualityLevel, decision.TPS),
+		fmt.Sprintf("request_id=%s；auth_file=%s；auth_index=%s；节点代理=%s；HTTP=%d；等级=%s；TPS=%.2f；TTFB=%dms；首字后耗时=%dms；输出+思考tokens=%d", probe.RequestID, probe.AuthFileName, probe.AuthIndex, probe.ProxyURL, probe.StatusCode, decision.QualityLevel, decision.TPS, decision.TTFBMs, decision.GenerationMs, decision.TotalTokens),
 	)
 }
 
@@ -704,20 +516,6 @@ func (store *ipStore) logRealtimeManagerAPIUnavailable(probe realtimeGuardProbe,
 		failure.NodeName,
 		"实时守护未能调用 CPA-Manager-Plus API",
 		fmt.Sprintf("request_id=%s；auth_id=%s；auth_index=%s；节点代理=%s；降智次数=%d；原因=%s；错误=%s", probe.RequestID, probe.AuthID, probe.AuthIndex, failure.ProxyURL, failure.ConsecutiveFailureCount, decision.Reason, managerErr.Error()),
-	)
-}
-
-func (store *ipStore) logRealtimeFallbackCheck(probe realtimeGuardProbe, node proxyNode, stage, detail string) {
-	_ = store.appendProbeLog(
-		logCategoryRealtimeGuard,
-		probe.RequestID,
-		logStatusProbing,
-		logLevelWarn,
-		"realtime_guard."+stage,
-		node.ID,
-		node.Name,
-		"实时守护健康保底节点检测未通过",
-		fmt.Sprintf("request_id=%s；auth_id=%s；slot_proxy=%s；节点=%s；详情=%s", probe.RequestID, probe.AuthID, probe.ProxyURL, node.ProxyURL, detail),
 	)
 }
 
@@ -737,6 +535,6 @@ func (store *ipStore) logRealtimeGuard(probe realtimeGuardProbe, decision realti
 		originalNode.ID,
 		originalNode.Name,
 		"实时守护发现异常并已处理",
-		fmt.Sprintf("request_id=%s；auth_id=%s；auth_index=%s；HTTP=%d；分类=%s；等级=%s；TPS=%.2f；原节点=%d；原代理=%s；替换节点=%d；替换代理=%s；动作=%s；重试=%d/%d；错误=%s", probe.RequestID, probe.AuthID, probe.AuthIndex, probe.StatusCode, decision.Classification, decision.QualityLevel, decision.TPS, originalNode.ID, originalNode.ProxyURL, replacementNode.ID, replacementNode.ProxyURL, decision.Action, probe.RetryCount, probe.MaxRetries, decision.Error),
+		fmt.Sprintf("request_id=%s；auth_id=%s；auth_index=%s；HTTP=%d；分类=%s；等级=%s；TPS=%.2f；TTFB=%dms；首字后耗时=%dms；输出+思考tokens=%d；原节点=%d；原代理=%s；替换节点=%d；替换代理=%s；动作=%s；重试=%d/%d；错误=%s", probe.RequestID, probe.AuthID, probe.AuthIndex, probe.StatusCode, decision.Classification, decision.QualityLevel, decision.TPS, decision.TTFBMs, decision.GenerationMs, decision.TotalTokens, originalNode.ID, originalNode.ProxyURL, replacementNode.ID, replacementNode.ProxyURL, decision.Action, probe.RetryCount, probe.MaxRetries, decision.Error),
 	)
 }

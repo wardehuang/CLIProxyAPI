@@ -3,9 +3,10 @@ package main
 import (
 	"database/sql"
 	"fmt"
+	"math"
 	"strings"
-	"unicode"
 	"time"
+	"unicode"
 )
 
 type slotRecord struct {
@@ -202,26 +203,29 @@ func ensureSQLiteColumn(database *sql.DB, tableName, columnName, columnDefinitio
 
 func defaultPluginSettings() pluginSettings {
 	return pluginSettings{
-		WorkerCount:                defaultWorkerCount,
-		RefreshIntervalSeconds:     defaultRefreshIntervalSeconds,
-		KeepaliveWorkerCount:       defaultKeepaliveWorkerCount,
-		KeepaliveIntervalSeconds:   defaultKeepaliveIntervalSeconds,
-		ReviveIntervalSeconds:      defaultReviveIntervalSeconds,
-		ProbeRetryCount:            defaultProbeRetryCount,
-		HealthySlotCount:           defaultHealthySlotCount,
-		HealthyCandidateSlotCount:  defaultHealthyCandidateCount,
-		HealthySlotMaxAgeMinutes:   defaultHealthySlotMaxAgeMinutes,
-		QualityWorkerCount:         defaultQualityWorkerCount,
-		QualityProbeTimeoutSeconds: defaultQualityProbeTimeout,
-		QualityProbeModel:          defaultQualityProbeModel,
-		QualitySoftTPS:             defaultQualitySoftTPS,
-		QualityHardTPS:             defaultQualityHardTPS,
-		QualityLLMProbeEnabled:     defaultQualityLLMProbeEnabled,
-		DebugEnabled:               false,
-		Grok2apiSyncEnabled:        false,
-		Grok2apiBaseUrl:            "",
-		Grok2apiAdminUsername:      "",
-		Grok2apiAdminPassword:      "",
+		WorkerCount:                    defaultWorkerCount,
+		RefreshIntervalSeconds:         defaultRefreshIntervalSeconds,
+		KeepaliveWorkerCount:           defaultKeepaliveWorkerCount,
+		KeepaliveIntervalSeconds:       defaultKeepaliveIntervalSeconds,
+		ReviveIntervalSeconds:          defaultReviveIntervalSeconds,
+		ProbeRetryCount:                defaultProbeRetryCount,
+		HealthySlotCount:               defaultHealthySlotCount,
+		HealthyCandidateSlotCount:      defaultHealthyCandidateCount,
+		HealthySlotMaxAgeMinutes:       defaultHealthySlotMaxAgeMinutes,
+		QualityWorkerCount:             defaultQualityWorkerCount,
+		QualityProbeTimeoutSeconds:     defaultQualityProbeTimeout,
+		QualityProbeModel:              defaultQualityProbeModel,
+		QualitySoftTPS:                 defaultQualitySoftTPS,
+		QualityHardTPS:                 defaultQualityHardTPS,
+		QualityLLMProbeEnabled:         defaultQualityLLMProbeEnabled,
+		RealtimeGuardTTFBSeconds:       defaultRealtimeGuardTTFBSeconds,
+		RealtimeGuardGenerationSeconds: defaultRealtimeGuardGenerationSeconds,
+		RealtimeGuardTokenThreshold:    defaultRealtimeGuardTokenThreshold,
+		DebugEnabled:                   false,
+		Grok2apiSyncEnabled:            false,
+		Grok2apiBaseUrl:                "",
+		Grok2apiAdminUsername:          "",
+		Grok2apiAdminPassword:          "",
 	}
 }
 
@@ -394,6 +398,15 @@ func validateSlotSettings(settings pluginSettings) error {
 	}
 	if settings.QualitySoftTPS <= 0 || settings.QualityHardTPS <= settings.QualitySoftTPS {
 		return fmt.Errorf("quality hard TPS must be greater than quality soft TPS")
+	}
+	if math.IsNaN(settings.RealtimeGuardTTFBSeconds) || math.IsInf(settings.RealtimeGuardTTFBSeconds, 0) || settings.RealtimeGuardTTFBSeconds <= 0 {
+		return fmt.Errorf("realtime guard TTFB threshold must be greater than 0 seconds")
+	}
+	if math.IsNaN(settings.RealtimeGuardGenerationSeconds) || math.IsInf(settings.RealtimeGuardGenerationSeconds, 0) || settings.RealtimeGuardGenerationSeconds <= 0 {
+		return fmt.Errorf("realtime guard generation threshold must be greater than 0 seconds")
+	}
+	if settings.RealtimeGuardTokenThreshold < 1 {
+		return fmt.Errorf("realtime guard token threshold must be at least 1")
 	}
 	if settings.HealthySlotMaxAgeMinutes < 1 || settings.HealthySlotMaxAgeMinutes > maxHealthySlotMaxAgeMinutes {
 		return fmt.Errorf("healthy slot max age must be between 1 and %d minutes", maxHealthySlotMaxAgeMinutes)

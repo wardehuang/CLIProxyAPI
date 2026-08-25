@@ -7,8 +7,6 @@ import (
 	"time"
 )
 
-const realtimeDegradationReplacementThreshold = 2
-
 type realtimeDegradationFailure struct {
 	NodeID                  int64
 	NodeName                string

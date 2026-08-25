@@ -13,36 +13,39 @@ import (
 )
 
 const (
-	defaultDatabasePath             = "/opt/cli-proxy-api/plugin-data/cpa-xai-ip-switcher/ip-switcher.sqlite3"
-	defaultWorkerCount              = 4
-	defaultRefreshIntervalSeconds   = 30
-	defaultKeepaliveWorkerCount     = 8
-	defaultKeepaliveIntervalSeconds = 1800
-	defaultReviveIntervalSeconds    = 1800
-	defaultProbeRetryCount          = 3
-	defaultHealthySlotCount         = 50
-	defaultHealthyCandidateCount    = 20
-	defaultHealthySlotMaxAgeMinutes = 350
-	maxHealthySlotMaxAgeMinutes     = 10080
-	defaultQualityWorkerCount       = 8
-	defaultQualityProbeTimeout      = 25
-	defaultQualityProbeModel        = "grok-4.5"
-	defaultQualitySoftTPS           = 500.0
-	defaultQualityHardTPS           = 1000.0
-	defaultQualityLLMProbeEnabled   = false
-	maxProbeWorkers                 = 64
-	maxRefreshIntervalSeconds       = 3600
-	maxKeepaliveIntervalSeconds     = 86400
-	maxProbeRetryCount              = 10
-	maxReviveFailureCount           = 3
-	maxSlotCount                    = 1000
-	maxQualityProbeTimeoutSeconds   = 600
-	maxQualityProbeModelLength      = 128
-	settingsDefaultsVersion         = "4"
-	maxPluginLogs                   = 1000
-	maxRealtimeGuardLogs            = 100
-	maxGroupedLogSets               = 10
-	maxStoredBatches                = 5
+	defaultDatabasePath                   = "/opt/cli-proxy-api/plugin-data/cpa-xai-ip-switcher/ip-switcher.sqlite3"
+	defaultWorkerCount                    = 4
+	defaultRefreshIntervalSeconds         = 30
+	defaultKeepaliveWorkerCount           = 8
+	defaultKeepaliveIntervalSeconds       = 1800
+	defaultReviveIntervalSeconds          = 1800
+	defaultProbeRetryCount                = 3
+	defaultHealthySlotCount               = 50
+	defaultHealthyCandidateCount          = 20
+	defaultHealthySlotMaxAgeMinutes       = 350
+	maxHealthySlotMaxAgeMinutes           = 10080
+	defaultQualityWorkerCount             = 8
+	defaultQualityProbeTimeout            = 25
+	defaultQualityProbeModel              = "grok-4.5"
+	defaultQualitySoftTPS                 = 500.0
+	defaultQualityHardTPS                 = 1000.0
+	defaultQualityLLMProbeEnabled         = false
+	defaultRealtimeGuardTTFBSeconds       = 5.0
+	defaultRealtimeGuardGenerationSeconds = 1.25
+	defaultRealtimeGuardTokenThreshold    = 300
+	maxProbeWorkers                       = 64
+	maxRefreshIntervalSeconds             = 3600
+	maxKeepaliveIntervalSeconds           = 86400
+	maxProbeRetryCount                    = 10
+	maxReviveFailureCount                 = 3
+	maxSlotCount                          = 1000
+	maxQualityProbeTimeoutSeconds         = 600
+	maxQualityProbeModelLength            = 128
+	settingsDefaultsVersion               = "4"
+	maxPluginLogs                         = 1000
+	maxRealtimeGuardLogs                  = 100
+	maxGroupedLogSets                     = 10
+	maxStoredBatches                      = 5
 
 	logLevelInfo  = "info"
 	logLevelWarn  = "warn"
@@ -81,28 +84,31 @@ const (
 )
 
 type pluginSettings struct {
-	WorkerCount                int
-	RefreshIntervalSeconds     int
-	KeepaliveWorkerCount       int
-	KeepaliveIntervalSeconds   int
-	ReviveIntervalSeconds      int
-	ProbeRetryCount            int
-	HealthySlotCount           int
-	HealthyCandidateSlotCount  int
-	HealthySlotMaxAgeMinutes   int
-	QualityWorkerCount         int
-	QualityProbeTimeoutSeconds int
-	QualityProbeModel          string
-	QualitySoftTPS             float64
-	QualityHardTPS             float64
-	QualityLLMProbeEnabled     bool
-	DebugEnabled               bool
-	Grok2apiSyncEnabled        bool
-	Grok2apiBaseUrl            string
-	Grok2apiAdminUsername      string
-	Grok2apiAdminPassword      string
-	ManagerBaseURL             string
-	ManagerManagementKey       string
+	WorkerCount                    int
+	RefreshIntervalSeconds         int
+	KeepaliveWorkerCount           int
+	KeepaliveIntervalSeconds       int
+	ReviveIntervalSeconds          int
+	ProbeRetryCount                int
+	HealthySlotCount               int
+	HealthyCandidateSlotCount      int
+	HealthySlotMaxAgeMinutes       int
+	QualityWorkerCount             int
+	QualityProbeTimeoutSeconds     int
+	QualityProbeModel              string
+	QualitySoftTPS                 float64
+	QualityHardTPS                 float64
+	QualityLLMProbeEnabled         bool
+	RealtimeGuardTTFBSeconds       float64
+	RealtimeGuardGenerationSeconds float64
+	RealtimeGuardTokenThreshold    int
+	DebugEnabled                   bool
+	Grok2apiSyncEnabled            bool
+	Grok2apiBaseUrl                string
+	Grok2apiAdminUsername          string
+	Grok2apiAdminPassword          string
+	ManagerBaseURL                 string
+	ManagerManagementKey           string
 }
 
 type proxyNode struct {
@@ -144,7 +150,6 @@ type ipBatch struct {
 	TotalCount             int64
 	DuplicateCount         int64
 	InputErrorCount        int64
-	DeleteNonUS            int64
 	CompletedCount         int64
 	PendingCount           int64
 	CandidateCount         int64
@@ -301,7 +306,6 @@ CREATE TABLE IF NOT EXISTS ip_batches (
     total_count INTEGER NOT NULL DEFAULT 0,
     duplicate_count INTEGER NOT NULL DEFAULT 0,
     input_error_count INTEGER NOT NULL DEFAULT 0,
-    delete_non_us INTEGER NOT NULL DEFAULT 0,
     initial_probe_completed_count INTEGER NOT NULL DEFAULT 0,
     initial_connected_count INTEGER NOT NULL DEFAULT 0
 );
@@ -374,7 +378,10 @@ INSERT OR IGNORE INTO plugin_settings(setting_key, setting_value) VALUES
     ('quality_probe_model', 'grok-4.5'),
     ('quality_soft_tps', '500'),
     ('quality_hard_tps', '1000'),
-    ('quality_llm_probe_enabled', '0');
+    ('quality_llm_probe_enabled', '0'),
+    ('realtime_guard_ttfb_seconds', '5'),
+    ('realtime_guard_generation_seconds', '1.25'),
+    ('realtime_guard_token_threshold', '300');
 `)
 	if err != nil {
 		return fmt.Errorf("initialize sqlite database: %w", err)
@@ -754,7 +761,7 @@ func newBatchID() string {
 	return fmt.Sprintf("B%d", time.Now().UnixNano())
 }
 
-func (store *ipStore) insertNodes(nodes []proxyNode, inputErrorCount int, deleteNonUS, manualFallback bool) (batchID string, added, duplicates int, err error) {
+func (store *ipStore) insertNodes(nodes []proxyNode, inputErrorCount int, manualFallback bool) (batchID string, added, duplicates int, err error) {
 	if len(nodes) == 0 {
 		return "", 0, 0, nil
 	}
@@ -775,8 +782,8 @@ func (store *ipStore) insertNodes(nodes []proxyNode, inputErrorCount int, delete
 		return batchID, 0, 0, fmt.Errorf("read sqlite batch sequence: %w", err)
 	}
 	if _, err := transaction.Exec(`
-INSERT INTO ip_batches(batch_id, sequence_number, created_at, input_error_count, delete_non_us)
-VALUES (?, ?, ?, ?, ?)`, batchID, sequenceNumber, createdAt, inputErrorCount, deleteNonUS); err != nil {
+	INSERT INTO ip_batches(batch_id, sequence_number, created_at, input_error_count)
+	VALUES (?, ?, ?, ?)`, batchID, sequenceNumber, createdAt, inputErrorCount); err != nil {
 		return batchID, 0, 0, fmt.Errorf("create sqlite batch: %w", err)
 	}
 
@@ -956,7 +963,6 @@ SELECT
     batches.created_at,
     batches.duplicate_count,
     batches.input_error_count,
-    batches.delete_non_us,
     batches.total_count,
     batches.initial_probe_completed_count,
     CASE
@@ -980,7 +986,7 @@ SELECT
     END), 0)
 FROM ip_batches AS batches
 LEFT JOIN ip_nodes AS nodes ON nodes.batch_id = batches.batch_id
-GROUP BY batches.batch_id, batches.sequence_number, batches.created_at, batches.total_count, batches.duplicate_count, batches.input_error_count, batches.delete_non_us, batches.initial_probe_completed_count, batches.initial_connected_count
+GROUP BY batches.batch_id, batches.sequence_number, batches.created_at, batches.total_count, batches.duplicate_count, batches.input_error_count, batches.initial_probe_completed_count, batches.initial_connected_count
 ORDER BY batches.sequence_number DESC, batches.created_at DESC, batches.batch_id DESC`,
 		statusHealthy,
 		statusConnected,
@@ -1008,7 +1014,6 @@ ORDER BY batches.sequence_number DESC, batches.created_at DESC, batches.batch_id
 			&item.CreatedAt,
 			&item.DuplicateCount,
 			&item.InputErrorCount,
-			&item.DeleteNonUS,
 			&item.TotalCount,
 			&item.CompletedCount,
 			&item.PendingCount,
@@ -1086,17 +1091,6 @@ DELETE FROM ip_nodes WHERE status = ? AND error_reason = ?`, statusError, errorR
 		return 0, fmt.Errorf("read sqlite delete result: %w", err)
 	}
 	return deleted, nil
-}
-
-func (store *ipStore) batchDeletesNonUS(batchID string) (bool, error) {
-	var deleteNonUS int64
-	if err := store.database.QueryRow(`SELECT delete_non_us FROM ip_batches WHERE batch_id = ?`, batchID).Scan(&deleteNonUS); err != nil {
-		if err == sql.ErrNoRows {
-			return false, nil
-		}
-		return false, fmt.Errorf("read sqlite batch delete option: %w", err)
-	}
-	return deleteNonUS == 1, nil
 }
 
 func (store *ipStore) getNode(id int64) (proxyNode, bool, error) {
@@ -1341,37 +1335,6 @@ WHERE id = ? AND status = ? AND probe_kind = ? AND keepalive_round_id = ?`, node
 		}
 		return store.completeKeepaliveFailure(node, result)
 	}
-	deleteNonUS, err := store.batchDeletesNonUS(node.BatchID)
-	if err != nil {
-		return err
-	}
-	if !result.Success && deleteNonUS && result.Reason == "非us出口" {
-		transaction, err := store.database.Begin()
-		if err != nil {
-			return fmt.Errorf("begin non-US sqlite node deletion: %w", err)
-		}
-		defer transaction.Rollback()
-		deleteResult, err := transaction.Exec(`
-DELETE FROM ip_nodes WHERE id = ? AND status = ? AND probe_kind = ?`, node.ID, statusProbing, probeKindInitial)
-		if err != nil {
-			return fmt.Errorf("delete non-US sqlite node: %w", err)
-		}
-		deletedRows, err := deleteResult.RowsAffected()
-		if err != nil {
-			return fmt.Errorf("read non-US sqlite delete result: %w", err)
-		}
-		if deletedRows != 1 {
-			return fmt.Errorf("non-US sqlite node %d was not deleted", node.ID)
-		}
-		if err := store.incrementInitialProbeCounters(transaction, node.BatchID, false); err != nil {
-			return err
-		}
-		if err := transaction.Commit(); err != nil {
-			return fmt.Errorf("commit non-US sqlite node deletion: %w", err)
-		}
-		_ = store.appendProbeLog(logCategoryBatchProbe, node.BatchID, logStatusError, logLevelWarn, "probe.deleted_non_us", node.ID, node.Name, "节点出口非 US，已按导入选项删除", formatProbeResultDetail(result))
-		return nil
-	}
 	if result.Success {
 		transaction, err := store.database.Begin()
 		if err != nil {
@@ -1547,7 +1510,7 @@ WHERE setting_key IN (
     'revive_interval_seconds', 'probe_retry_count', 'healthy_slot_count', 'healthy_candidate_slot_count',
     'healthy_slot_max_age_minutes',
     'quality_worker_count', 'quality_probe_timeout_seconds', 'quality_probe_model', 'quality_soft_tps', 'quality_hard_tps',
-    'quality_llm_probe_enabled',
+    'quality_llm_probe_enabled', 'realtime_guard_ttfb_seconds', 'realtime_guard_generation_seconds', 'realtime_guard_token_threshold',
     'debug_enabled',
     'grok2api_sync_enabled', 'grok2api_base_url', 'grok2api_admin_username', 'grok2api_admin_password',
     'manager_base_url', 'manager_management_key', 'manager_database_path'
@@ -1563,15 +1526,19 @@ WHERE setting_key IN (
 			return pluginSettings{}, fmt.Errorf("scan plugin settings: %w", err)
 		}
 		switch settingKey {
-		case "quality_soft_tps", "quality_hard_tps":
+		case "quality_soft_tps", "quality_hard_tps", "realtime_guard_ttfb_seconds", "realtime_guard_generation_seconds":
 			value, parseErr := strconv.ParseFloat(strings.TrimSpace(rawValue), 64)
 			if parseErr != nil {
 				continue
 			}
 			if settingKey == "quality_soft_tps" {
 				settings.QualitySoftTPS = value
-			} else {
+			} else if settingKey == "quality_hard_tps" {
 				settings.QualityHardTPS = value
+			} else if settingKey == "realtime_guard_ttfb_seconds" {
+				settings.RealtimeGuardTTFBSeconds = value
+			} else {
+				settings.RealtimeGuardGenerationSeconds = value
 			}
 		case "quality_probe_model":
 			settings.QualityProbeModel = normalizeQualityProbeModel(rawValue)
@@ -1619,6 +1586,8 @@ WHERE setting_key IN (
 				settings.QualityWorkerCount = value
 			case "quality_probe_timeout_seconds":
 				settings.QualityProbeTimeoutSeconds = value
+			case "realtime_guard_token_threshold":
+				settings.RealtimeGuardTokenThreshold = value
 			}
 		}
 	}
@@ -1648,28 +1617,31 @@ func (store *ipStore) setSettings(settings pluginSettings) error {
 	defer transaction.Rollback()
 
 	settingsToSave := map[string]string{
-		"worker_count":                  strconv.Itoa(settings.WorkerCount),
-		"refresh_interval_seconds":      strconv.Itoa(settings.RefreshIntervalSeconds),
-		"keepalive_worker_count":        strconv.Itoa(settings.KeepaliveWorkerCount),
-		"keepalive_interval_seconds":    strconv.Itoa(settings.KeepaliveIntervalSeconds),
-		"revive_interval_seconds":       strconv.Itoa(settings.ReviveIntervalSeconds),
-		"probe_retry_count":             strconv.Itoa(settings.ProbeRetryCount),
-		"healthy_slot_count":            strconv.Itoa(settings.HealthySlotCount),
-		"healthy_candidate_slot_count":  strconv.Itoa(settings.HealthyCandidateSlotCount),
-		"healthy_slot_max_age_minutes":  strconv.Itoa(settings.HealthySlotMaxAgeMinutes),
-		"quality_worker_count":          strconv.Itoa(settings.QualityWorkerCount),
-		"quality_probe_timeout_seconds": strconv.Itoa(settings.QualityProbeTimeoutSeconds),
-		"quality_probe_model":           normalizeQualityProbeModel(settings.QualityProbeModel),
-		"quality_soft_tps":              strconv.FormatFloat(settings.QualitySoftTPS, 'f', -1, 64),
-		"quality_hard_tps":              strconv.FormatFloat(settings.QualityHardTPS, 'f', -1, 64),
-		"quality_llm_probe_enabled":     formatSettingBool(settings.QualityLLMProbeEnabled),
-		"debug_enabled":                 formatSettingBool(settings.DebugEnabled),
-		"grok2api_sync_enabled":         formatSettingBool(settings.Grok2apiSyncEnabled),
-		"grok2api_base_url":             normalizeGrok2apiBaseURL(settings.Grok2apiBaseUrl),
-		"grok2api_admin_username":       strings.TrimSpace(settings.Grok2apiAdminUsername),
-		"grok2api_admin_password":       settings.Grok2apiAdminPassword,
-		"manager_base_url":              strings.TrimRight(strings.TrimSpace(settings.ManagerBaseURL), "/"),
-		"manager_management_key":        settings.ManagerManagementKey,
+		"worker_count":                      strconv.Itoa(settings.WorkerCount),
+		"refresh_interval_seconds":          strconv.Itoa(settings.RefreshIntervalSeconds),
+		"keepalive_worker_count":            strconv.Itoa(settings.KeepaliveWorkerCount),
+		"keepalive_interval_seconds":        strconv.Itoa(settings.KeepaliveIntervalSeconds),
+		"revive_interval_seconds":           strconv.Itoa(settings.ReviveIntervalSeconds),
+		"probe_retry_count":                 strconv.Itoa(settings.ProbeRetryCount),
+		"healthy_slot_count":                strconv.Itoa(settings.HealthySlotCount),
+		"healthy_candidate_slot_count":      strconv.Itoa(settings.HealthyCandidateSlotCount),
+		"healthy_slot_max_age_minutes":      strconv.Itoa(settings.HealthySlotMaxAgeMinutes),
+		"quality_worker_count":              strconv.Itoa(settings.QualityWorkerCount),
+		"quality_probe_timeout_seconds":     strconv.Itoa(settings.QualityProbeTimeoutSeconds),
+		"quality_probe_model":               normalizeQualityProbeModel(settings.QualityProbeModel),
+		"quality_soft_tps":                  strconv.FormatFloat(settings.QualitySoftTPS, 'f', -1, 64),
+		"quality_hard_tps":                  strconv.FormatFloat(settings.QualityHardTPS, 'f', -1, 64),
+		"quality_llm_probe_enabled":         formatSettingBool(settings.QualityLLMProbeEnabled),
+		"realtime_guard_ttfb_seconds":       strconv.FormatFloat(settings.RealtimeGuardTTFBSeconds, 'f', -1, 64),
+		"realtime_guard_generation_seconds": strconv.FormatFloat(settings.RealtimeGuardGenerationSeconds, 'f', -1, 64),
+		"realtime_guard_token_threshold":    strconv.Itoa(settings.RealtimeGuardTokenThreshold),
+		"debug_enabled":                     formatSettingBool(settings.DebugEnabled),
+		"grok2api_sync_enabled":             formatSettingBool(settings.Grok2apiSyncEnabled),
+		"grok2api_base_url":                 normalizeGrok2apiBaseURL(settings.Grok2apiBaseUrl),
+		"grok2api_admin_username":           strings.TrimSpace(settings.Grok2apiAdminUsername),
+		"grok2api_admin_password":           settings.Grok2apiAdminPassword,
+		"manager_base_url":                  strings.TrimRight(strings.TrimSpace(settings.ManagerBaseURL), "/"),
+		"manager_management_key":            settings.ManagerManagementKey,
 	}
 	for settingKey, settingValue := range settingsToSave {
 		if _, err := transaction.Exec(`

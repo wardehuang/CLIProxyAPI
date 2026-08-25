@@ -570,7 +570,7 @@ func (b *StreamUsageBuffer) ObserveOpenAIStream(line []byte) {
 	detail := usage.Detail{}
 	usageOK := false
 	if hasUsageCandidate {
-		usageNode := gjson.GetBytes(payload, "usage")
+		usageNode := openAIStyleUsageNodeFromPayload(payload)
 		if hasOpenAIStyleUsageTokenFields(usageNode) {
 			detail = parseOpenAIStyleUsageNode(usageNode)
 			usageOK = true
@@ -747,7 +747,7 @@ func ParseOpenAIStreamUsage(line []byte) (usage.Detail, bool) {
 		return usage.Detail{}, false
 	}
 	responseServiceTier := extractResponseServiceTier(payload)
-	usageNode := gjson.GetBytes(payload, "usage")
+	usageNode := openAIStyleUsageNodeFromPayload(payload)
 	if !hasOpenAIStyleUsageTokenFields(usageNode) {
 		if responseServiceTier == "" {
 			return usage.Detail{}, false
@@ -757,6 +757,17 @@ func ParseOpenAIStreamUsage(line []byte) (usage.Detail, bool) {
 	detail := parseOpenAIStyleUsageNode(usageNode)
 	detail.ResponseServiceTier = responseServiceTier
 	return detail, true
+}
+
+// openAIStyleUsageNodeFromPayload prefers top-level usage (chat.completions
+// stream chunks) and falls back to response.usage (Responses API terminal
+// events such as response.completed).
+func openAIStyleUsageNodeFromPayload(payload []byte) gjson.Result {
+	usageNode := gjson.GetBytes(payload, "usage")
+	if hasOpenAIStyleUsageTokenFields(usageNode) {
+		return usageNode
+	}
+	return gjson.GetBytes(payload, "response.usage")
 }
 
 func ParseClaudeUsage(data []byte) usage.Detail {

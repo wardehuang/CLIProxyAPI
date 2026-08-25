@@ -480,8 +480,8 @@ func updatePluginSettings(body json.RawMessage) ([]byte, error) {
 		"settings.updated",
 		0,
 		"",
-		"插件配置已保存，将在下次启动时生效",
-		fmt.Sprintf("探测线程数 %d，页面刷新 %d 秒，保活线程数 %d，保活间隔 %d 秒，复活间隔 %d 秒，探测重试次数 %d，配置变化 %t；当前进程未重启", settings.WorkerCount, settings.RefreshIntervalSeconds, settings.KeepaliveWorkerCount, settings.KeepaliveIntervalSeconds, settings.ReviveIntervalSeconds, settings.ProbeRetryCount, settingsSaved),
+		"插件配置已保存；实时守护阈值立即生效，调度类配置下次启动生效",
+		fmt.Sprintf("探测线程数 %d，页面刷新 %d 秒，保活线程数 %d，保活间隔 %d 秒，复活间隔 %d 秒，探测重试次数 %d，实时守护首字阈值 %.2f 秒，首字后耗时阈值 %.2f 秒，token 阈值 %d，配置变化 %t；当前进程未重启", settings.WorkerCount, settings.RefreshIntervalSeconds, settings.KeepaliveWorkerCount, settings.KeepaliveIntervalSeconds, settings.ReviveIntervalSeconds, settings.ProbeRetryCount, settings.RealtimeGuardTTFBSeconds, settings.RealtimeGuardGenerationSeconds, settings.RealtimeGuardTokenThreshold, settingsSaved),
 	)
 	return managementJSON(http.StatusOK, map[string]any{"data": publicSettings(settings)})
 }
@@ -516,6 +516,9 @@ func settingsFromPayload(payload map[string]any) (pluginSettings, error) {
 	qualityProbeModel, qualityModelOK := stringValue(firstValue(payload, "qualityProbeModel", "quality_probe_model"))
 	qualitySoftTPS, softTPSOK := floatValue(firstValue(payload, "qualitySoftTPS", "quality_soft_tps"))
 	qualityHardTPS, hardTPSOK := floatValue(firstValue(payload, "qualityHardTPS", "quality_hard_tps"))
+	realtimeGuardTTFBSeconds, realtimeGuardTTFBOK := floatValue(firstValue(payload, "realtimeGuardTTFBSeconds", "realtime_guard_ttfb_seconds"))
+	realtimeGuardGenerationSeconds, realtimeGuardGenerationOK := floatValue(firstValue(payload, "realtimeGuardGenerationSeconds", "realtime_guard_generation_seconds"))
+	realtimeGuardTokenThreshold, realtimeGuardTokenOK := integerValue(firstValue(payload, "realtimeGuardTokenThreshold", "realtime_guard_token_threshold"))
 	qualityLLMProbeEnabled, qualityLLMProbeOK := boolValue(firstValue(payload, "qualityLLMProbeEnabled", "quality_llm_probe_enabled"))
 	debugEnabled, debugEnabledOK := boolValue(firstValue(payload, "debugEnabled", "debug_enabled"))
 	grok2apiSyncEnabled, grok2apiSyncEnabledOK := boolValue(firstValue(payload, "grok2apiSyncEnabled", "grok2api_sync_enabled"))
@@ -525,33 +528,36 @@ func settingsFromPayload(payload map[string]any) (pluginSettings, error) {
 	managerBaseURL, managerBaseURLOK := stringValue(firstValue(payload, "managerBaseUrl", "manager_base_url"))
 	managerManagementKey, managerManagementKeyOK := stringValue(firstValue(payload, "managerManagementKey", "manager_management_key"))
 	if !workerOK || !refreshOK || !keepaliveWorkersOK || !keepaliveIntervalOK || !reviveIntervalOK || !retryOK ||
-		!healthySlotOK || !healthyCandidateSlotOK || !healthySlotMaxAgeOK || !qualityWorkerOK || !qualityTimeoutOK || !qualityModelOK || !softTPSOK || !hardTPSOK || !qualityLLMProbeOK ||
+		!healthySlotOK || !healthyCandidateSlotOK || !healthySlotMaxAgeOK || !qualityWorkerOK || !qualityTimeoutOK || !qualityModelOK || !softTPSOK || !hardTPSOK || !realtimeGuardTTFBOK || !realtimeGuardGenerationOK || !realtimeGuardTokenOK || !qualityLLMProbeOK ||
 		!debugEnabledOK || !grok2apiSyncEnabledOK || !grok2apiBaseUrlOK || !grok2apiAdminUsernameOK || !grok2apiAdminPasswordOK || !managerBaseURLOK || !managerManagementKeyOK {
 		return pluginSettings{}, fmt.Errorf("必须同时提供基础调度、健康槽位、智商探测、调试开关、grok2api 同步和 Manager API 配置")
 	}
 	settings := pluginSettings{
-		WorkerCount:                workerCount,
-		RefreshIntervalSeconds:     refreshIntervalSeconds,
-		KeepaliveWorkerCount:       keepaliveWorkerCount,
-		KeepaliveIntervalSeconds:   keepaliveIntervalSeconds,
-		ReviveIntervalSeconds:      reviveIntervalSeconds,
-		ProbeRetryCount:            probeRetryCount,
-		HealthySlotCount:           healthySlotCount,
-		HealthyCandidateSlotCount:  healthyCandidateSlotCount,
-		HealthySlotMaxAgeMinutes:   healthySlotMaxAgeMinutes,
-		QualityWorkerCount:         qualityWorkerCount,
-		QualityProbeTimeoutSeconds: qualityProbeTimeoutSeconds,
-		QualityProbeModel:          normalizeQualityProbeModel(qualityProbeModel),
-		QualitySoftTPS:             qualitySoftTPS,
-		QualityHardTPS:             qualityHardTPS,
-		QualityLLMProbeEnabled:     qualityLLMProbeEnabled,
-		DebugEnabled:               debugEnabled,
-		Grok2apiSyncEnabled:        grok2apiSyncEnabled,
-		Grok2apiBaseUrl:            normalizeGrok2apiBaseURL(grok2apiBaseUrl),
-		Grok2apiAdminUsername:      strings.TrimSpace(grok2apiAdminUsername),
-		Grok2apiAdminPassword:      grok2apiAdminPassword,
-		ManagerBaseURL:             strings.TrimRight(strings.TrimSpace(managerBaseURL), "/"),
-		ManagerManagementKey:       managerManagementKey,
+		WorkerCount:                    workerCount,
+		RefreshIntervalSeconds:         refreshIntervalSeconds,
+		KeepaliveWorkerCount:           keepaliveWorkerCount,
+		KeepaliveIntervalSeconds:       keepaliveIntervalSeconds,
+		ReviveIntervalSeconds:          reviveIntervalSeconds,
+		ProbeRetryCount:                probeRetryCount,
+		HealthySlotCount:               healthySlotCount,
+		HealthyCandidateSlotCount:      healthyCandidateSlotCount,
+		HealthySlotMaxAgeMinutes:       healthySlotMaxAgeMinutes,
+		QualityWorkerCount:             qualityWorkerCount,
+		QualityProbeTimeoutSeconds:     qualityProbeTimeoutSeconds,
+		QualityProbeModel:              normalizeQualityProbeModel(qualityProbeModel),
+		QualitySoftTPS:                 qualitySoftTPS,
+		QualityHardTPS:                 qualityHardTPS,
+		RealtimeGuardTTFBSeconds:       realtimeGuardTTFBSeconds,
+		RealtimeGuardGenerationSeconds: realtimeGuardGenerationSeconds,
+		RealtimeGuardTokenThreshold:    realtimeGuardTokenThreshold,
+		QualityLLMProbeEnabled:         qualityLLMProbeEnabled,
+		DebugEnabled:                   debugEnabled,
+		Grok2apiSyncEnabled:            grok2apiSyncEnabled,
+		Grok2apiBaseUrl:                normalizeGrok2apiBaseURL(grok2apiBaseUrl),
+		Grok2apiAdminUsername:          strings.TrimSpace(grok2apiAdminUsername),
+		Grok2apiAdminPassword:          grok2apiAdminPassword,
+		ManagerBaseURL:                 strings.TrimRight(strings.TrimSpace(managerBaseURL), "/"),
+		ManagerManagementKey:           managerManagementKey,
 	}
 	if settings.Grok2apiBaseUrl != "" {
 		if err := validateGrok2apiBaseURLOnly(settings.Grok2apiBaseUrl); err != nil {
@@ -634,28 +640,31 @@ func floatValue(value any) (float64, bool) {
 
 func publicSettings(settings pluginSettings) map[string]any {
 	return map[string]any{
-		"workerCount":                settings.WorkerCount,
-		"refreshIntervalSeconds":     settings.RefreshIntervalSeconds,
-		"keepaliveWorkerCount":       settings.KeepaliveWorkerCount,
-		"keepaliveIntervalSeconds":   settings.KeepaliveIntervalSeconds,
-		"reviveIntervalSeconds":      settings.ReviveIntervalSeconds,
-		"probeRetryCount":            settings.ProbeRetryCount,
-		"healthySlotCount":           settings.HealthySlotCount,
-		"healthyCandidateSlotCount":  settings.HealthyCandidateSlotCount,
-		"healthySlotMaxAgeMinutes":   settings.HealthySlotMaxAgeMinutes,
-		"qualityWorkerCount":         settings.QualityWorkerCount,
-		"qualityProbeTimeoutSeconds": settings.QualityProbeTimeoutSeconds,
-		"qualityProbeModel":          settings.QualityProbeModel,
-		"qualitySoftTPS":             settings.QualitySoftTPS,
-		"qualityHardTPS":             settings.QualityHardTPS,
-		"qualityLLMProbeEnabled":     settings.QualityLLMProbeEnabled,
-		"debugEnabled":               settings.DebugEnabled,
-		"grok2apiSyncEnabled":        settings.Grok2apiSyncEnabled,
-		"grok2apiBaseUrl":            settings.Grok2apiBaseUrl,
-		"grok2apiAdminUsername":      settings.Grok2apiAdminUsername,
-		"grok2apiAdminPassword":      settings.Grok2apiAdminPassword,
-		"managerBaseUrl":             settings.ManagerBaseURL,
-		"managerManagementKey":       settings.ManagerManagementKey,
+		"workerCount":                    settings.WorkerCount,
+		"refreshIntervalSeconds":         settings.RefreshIntervalSeconds,
+		"keepaliveWorkerCount":           settings.KeepaliveWorkerCount,
+		"keepaliveIntervalSeconds":       settings.KeepaliveIntervalSeconds,
+		"reviveIntervalSeconds":          settings.ReviveIntervalSeconds,
+		"probeRetryCount":                settings.ProbeRetryCount,
+		"healthySlotCount":               settings.HealthySlotCount,
+		"healthyCandidateSlotCount":      settings.HealthyCandidateSlotCount,
+		"healthySlotMaxAgeMinutes":       settings.HealthySlotMaxAgeMinutes,
+		"qualityWorkerCount":             settings.QualityWorkerCount,
+		"qualityProbeTimeoutSeconds":     settings.QualityProbeTimeoutSeconds,
+		"qualityProbeModel":              settings.QualityProbeModel,
+		"qualitySoftTPS":                 settings.QualitySoftTPS,
+		"qualityHardTPS":                 settings.QualityHardTPS,
+		"realtimeGuardTTFBSeconds":       settings.RealtimeGuardTTFBSeconds,
+		"realtimeGuardGenerationSeconds": settings.RealtimeGuardGenerationSeconds,
+		"realtimeGuardTokenThreshold":    settings.RealtimeGuardTokenThreshold,
+		"qualityLLMProbeEnabled":         settings.QualityLLMProbeEnabled,
+		"debugEnabled":                   settings.DebugEnabled,
+		"grok2apiSyncEnabled":            settings.Grok2apiSyncEnabled,
+		"grok2apiBaseUrl":                settings.Grok2apiBaseUrl,
+		"grok2apiAdminUsername":          settings.Grok2apiAdminUsername,
+		"grok2apiAdminPassword":          settings.Grok2apiAdminPassword,
+		"managerBaseUrl":                 settings.ManagerBaseURL,
+		"managerManagementKey":           settings.ManagerManagementKey,
 	}
 }
 
@@ -839,6 +848,20 @@ func dispatchAPIWithStore(store *ipStore, method, path string, query url.Values,
 		}
 		return managementJSON(http.StatusOK, map[string]any{"data": summary})
 
+	case path == "/grok2api/degraded-egress-nodes" && method == http.MethodGet:
+		settings, err := store.settings()
+		if err != nil {
+			return managementJSON(http.StatusInternalServerError, errorMessage("grok2apiDegradedNodesFailed", err.Error()))
+		}
+		result, err := fetchGrok2apiDegradedEgressNodes(settings)
+		if err != nil {
+			return managementJSON(http.StatusBadRequest, errorMessage("grok2apiDegradedNodesFailed", err.Error()))
+		}
+		return managementJSON(http.StatusOK, map[string]any{"data": map[string]any{
+			"content":   redactGrok2apiDegradedEgressNodeContent(result.Content),
+			"nodeCount": len(result.Nodes),
+		}})
+
 	case len(parts) == 3 && parts[0] == "slots" && parts[2] == "auth-bindings" && method == http.MethodGet:
 		slotID, err := strconv.ParseInt(parts[1], 10, 64)
 		if err != nil || slotID <= 0 {
@@ -928,7 +951,6 @@ func addNodes(store *ipStore, body json.RawMessage) ([]byte, error) {
 	var payload struct {
 		Text           string `json:"text"`
 		IPs            string `json:"ips"`
-		DeleteNonUS    bool   `json:"deleteNonUS"`
 		ManualFallback bool   `json:"manualFallback"`
 	}
 	if err := json.Unmarshal(body, &payload); err != nil {
@@ -943,7 +965,7 @@ func addNodes(store *ipStore, body json.RawMessage) ([]byte, error) {
 	}
 
 	nodes, inputErrors := parseProxyLines(text)
-	batchID, added, duplicates, err := store.insertNodes(nodes, len(inputErrors), payload.DeleteNonUS, payload.ManualFallback)
+	batchID, added, duplicates, err := store.insertNodes(nodes, len(inputErrors), payload.ManualFallback)
 	if err != nil {
 		_ = store.appendLog(logLevelError, "nodes.insert_failed", 0, "", "录入节点失败", err.Error())
 		return managementJSON(http.StatusInternalServerError, errorMessage("insertFailed", err.Error()))
@@ -1013,7 +1035,6 @@ func publicBatches(batches []ipBatch) []map[string]any {
 			"totalCount":             batch.TotalCount,
 			"duplicateCount":         batch.DuplicateCount,
 			"inputErrorCount":        batch.InputErrorCount,
-			"deleteNonUS":            batch.DeleteNonUS == 1,
 			"completedCount":         batch.CompletedCount,
 			"pendingCount":           batch.PendingCount,
 			"candidateCount":         batch.CandidateCount,

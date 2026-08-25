@@ -196,7 +196,7 @@
     <header class="page-head">
       <div>
         <h1>xAi出口守护</h1>
-        <p>代理出口 IP 录入、美国出口识别和 xAI endpoint 连通性探测。</p>
+        <p>代理出口 IP 录入、出口国家识别和 xAI endpoint 连通性探测。</p>
       </div>
       <div class="head-actions">
               <span class="status-line"><span id="service-dot" class="status-dot"></span><span id="service-text">正在连接</span></span>
@@ -308,7 +308,7 @@
       <div class="modal-head">
         <div>
           <h3 id="add-modal-title">增加IP</h3>
-          <p>每一行录入一个代理节点。可选择丢弃非 US 出口。</p>
+          <p>每一行录入一个代理节点。探测成功后显示出口国家。</p>
         </div>
         <button class="button icon ghost" type="button" data-close-modal="add-modal" aria-label="关闭">×</button>
       </div>
@@ -323,10 +323,6 @@ socks5h://username:pass@ip:port
           <span><input id="manual-fallback-input" type="checkbox"> 直接录入为【健康保底】</span>
           <span class="settings-help">仅手动录入可使用。节点不参加初次探测和智商检测，也不自动占用健康或健康备选槽位。</span>
         </label>
-        <label class="settings-field checkbox-field" for="delete-non-us-input">
-          <span><input id="delete-non-us-input" type="checkbox"> 录入探测发现非 US 出口时删除节点</span>
-          <span class="settings-help">关闭时保留节点并标记为【异常】，后续复活探测仍会按规则处理。</span>
-        </label>
         <div class="modal-actions">
           <button class="button" type="button" data-close-modal="add-modal">取消</button>
           <button id="submit-ip-button" class="button primary" type="button">录入并开始探测</button>
@@ -340,7 +336,7 @@ socks5h://username:pass@ip:port
       <div class="modal-head">
         <div>
           <h3 id="settings-modal-title">运行配置</h3>
-          <p>保存到插件 SQLite。探测/保活/复活调度类：下次启动生效。页面刷新与 grok2api 同步：立即生效。</p>
+          <p>保存到插件 SQLite。探测/保活/复活调度类：下次启动生效。实时守护阈值、页面刷新与 grok2api 同步：立即生效。</p>
         </div>
         <button class="button icon ghost" type="button" data-close-modal="settings-modal" aria-label="关闭">×</button>
       </div>
@@ -466,6 +462,31 @@ socks5h://username:pass@ip:port
             </div>
           </section>
 
+          <section class="settings-card" aria-labelledby="settings-realtime-guard-title">
+            <div class="settings-card-head">
+              <h4 id="settings-realtime-guard-title" class="settings-card-title">实时守护</h4>
+              <span class="settings-card-badge live">立即生效</span>
+            </div>
+            <p class="settings-card-help">现有 TPS hard/soft 判断均未触发后，再判断：首字（TTFB）大于阈值、首字后耗时（总耗时−首字）小于阈值、输出+思考 token 大于阈值；三项同时满足判定降智。</p>
+            <div class="settings-grid cols-3">
+              <label class="settings-field" for="realtime-guard-ttfb-seconds">
+                首字（TTFB）阈值（秒）
+                <input id="realtime-guard-ttfb-seconds" type="number" min="0.01" step="0.01" value="5" title="首字耗时大于该值才触发">
+                <span class="settings-help">严格大于 · 默认 5</span>
+              </label>
+              <label class="settings-field" for="realtime-guard-generation-seconds">
+                首字后耗时阈值（秒）
+                <input id="realtime-guard-generation-seconds" type="number" min="0.01" step="0.01" value="1.25" title="总耗时减首字耗时小于该值才触发">
+                <span class="settings-help">严格小于 · 默认 1.25</span>
+              </label>
+              <label class="settings-field" for="realtime-guard-token-threshold">
+                输出+思考 token 阈值
+                <input id="realtime-guard-token-threshold" type="number" min="1" step="1" value="300" title="输出 token 加思考 token 大于该值才触发">
+                <span class="settings-help">严格大于 · 默认 300</span>
+              </label>
+            </div>
+          </section>
+
           <section class="settings-card" aria-labelledby="settings-manager-title">
             <div class="settings-card-head">
               <h4 id="settings-manager-title" class="settings-card-title">CPA Manager 巡检</h4>
@@ -495,7 +516,7 @@ socks5h://username:pass@ip:port
               <h4 id="settings-grok2api-title" class="settings-card-title">grok2api 同步</h4>
               <span class="settings-card-badge live">立即生效</span>
             </div>
-            <p class="settings-card-help">全量推【健康】槽到 cpa_auto_proxy_{slot}，并绑定 Console 邮箱。保活两阶段结束后自动推一次；也可手动同步。</p>
+            <p class="settings-card-help">全量推【健康】槽到 cpa_auto_proxy_{slot}，并绑定 Console 邮箱。每次保活前读取远端降智节点并转入【冷却中】，处理后清理远端记录；保活结束后再同步槽位，也可手动查看或同步。</p>
             <label class="settings-checkbox-field" for="grok2api-sync-enabled">
               <input id="grok2api-sync-enabled" type="checkbox">
               启用 grok2api 同步
@@ -515,11 +536,14 @@ socks5h://username:pass@ip:port
                 <input id="grok2api-admin-password" type="password" autocomplete="current-password">
               </label>
             </div>
+            <div class="modal-actions">
+              <button id="view-grok2api-degraded-nodes-button" class="button" type="button">查看当前已降智节点</button>
+            </div>
           </section>
         </div>
 
         <div class="settings-actions">
-          <span class="help">调度类保存后下次启动生效；调试开关、grok2api 与页面刷新立即生效。</span>
+          <span class="help">调度类保存后下次启动生效；实时守护阈值、调试开关、grok2api 与页面刷新立即生效。</span>
           <button id="sync-grok2api-button" class="button" type="button">立即同步 grok2api</button>
           <button id="save-settings-button" class="button primary" type="button">保存运行配置</button>
         </div>
@@ -539,6 +563,22 @@ socks5h://username:pass@ip:port
       <div class="modal-body">
         <pre id="detail-content" class="detail"></pre>
         <div class="modal-actions"><button class="button" type="button" data-close-modal="detail-modal">关闭</button></div>
+      </div>
+    </section>
+  </div>
+
+  <div id="grok2api-degraded-nodes-modal" class="modal-layer" hidden>
+    <section class="modal" role="dialog" aria-modal="true" aria-labelledby="grok2api-degraded-nodes-modal-title">
+      <div class="modal-head">
+        <div>
+          <h3 id="grok2api-degraded-nodes-modal-title">当前已降智节点</h3>
+          <p id="grok2api-degraded-nodes-summary">正在读取 grok2api…</p>
+        </div>
+        <button class="button icon ghost" type="button" data-close-modal="grok2api-degraded-nodes-modal" aria-label="关闭">×</button>
+      </div>
+      <div class="modal-body">
+        <pre id="grok2api-degraded-nodes-content" class="detail">正在读取 grok2api…</pre>
+        <div class="modal-actions"><button class="button" type="button" data-close-modal="grok2api-degraded-nodes-modal">关闭</button></div>
       </div>
     </section>
   </div>
@@ -572,7 +612,6 @@ socks5h://username:pass@ip:port
       const logStatusLabels = { connected: "已连通", probing: "探测中", error: "账号异常" };
       const logLevelLabels = { info: "信息", warn: "警告", error: "错误" };
       const elements = {
-        deleteNonUSInput: document.getElementById("delete-non-us-input"),
         manualFallbackInput: document.getElementById("manual-fallback-input"),
         serviceDot: document.getElementById("service-dot"),
                 serviceText: document.getElementById("service-text"),
@@ -613,6 +652,9 @@ socks5h://username:pass@ip:port
         qualityProbeModel: document.getElementById("quality-probe-model"),
         qualitySoftTPS: document.getElementById("quality-soft-tps"),
         qualityHardTPS: document.getElementById("quality-hard-tps"),
+        realtimeGuardTTFBSeconds: document.getElementById("realtime-guard-ttfb-seconds"),
+        realtimeGuardGenerationSeconds: document.getElementById("realtime-guard-generation-seconds"),
+        realtimeGuardTokenThreshold: document.getElementById("realtime-guard-token-threshold"),
         qualityLLMProbeEnabled: document.getElementById("quality-llm-probe-enabled"),
         debugEnabled: document.getElementById("debug-enabled"),
         grok2apiSyncEnabled: document.getElementById("grok2api-sync-enabled"),
@@ -625,8 +667,12 @@ socks5h://username:pass@ip:port
         checkManagerAPIButton: document.getElementById("check-manager-api-button"),
         saveSettingsButton: document.getElementById("save-settings-button"),
         syncGrok2apiButton: document.getElementById("sync-grok2api-button"),
+        viewGrok2apiDegradedNodesButton: document.getElementById("view-grok2api-degraded-nodes-button"),
         addModal: document.getElementById("add-modal"),
         detailModal: document.getElementById("detail-modal"),
+        grok2apiDegradedNodesModal: document.getElementById("grok2api-degraded-nodes-modal"),
+        grok2apiDegradedNodesSummary: document.getElementById("grok2api-degraded-nodes-summary"),
+        grok2apiDegradedNodesContent: document.getElementById("grok2api-degraded-nodes-content"),
         authBindingsModal: document.getElementById("auth-bindings-modal"),
         authBindingsName: document.getElementById("auth-bindings-modal-name"),
         authBindingsSummary: document.getElementById("auth-bindings-summary"),
@@ -784,6 +830,9 @@ socks5h://username:pass@ip:port
           elements.qualityProbeModel.value = settings.qualityProbeModel || "grok-4.5";
           elements.qualitySoftTPS.value = String(settings.qualitySoftTPS);
           elements.qualityHardTPS.value = String(settings.qualityHardTPS);
+          elements.realtimeGuardTTFBSeconds.value = String(settings.realtimeGuardTTFBSeconds);
+          elements.realtimeGuardGenerationSeconds.value = String(settings.realtimeGuardGenerationSeconds);
+          elements.realtimeGuardTokenThreshold.value = String(settings.realtimeGuardTokenThreshold);
           elements.qualityLLMProbeEnabled.checked = Boolean(settings.qualityLLMProbeEnabled);
           elements.debugEnabled.checked = Boolean(settings.debugEnabled);
           elements.grok2apiSyncEnabled.checked = Boolean(settings.grok2apiSyncEnabled);
@@ -950,6 +999,11 @@ socks5h://username:pass@ip:port
         return `槽位 ${escapeHTML(node.slotId)}${originLabel}`;
       }
 
+      function renderNodeCountry(node) {
+        if (node.emptySlot) return "-";
+        return escapeHTML(node.exitCountry || "-");
+      }
+
       function renderNodeActions(node) {
         if (node.status !== "healthy") return "";
         if (node.emptySlot) {
@@ -971,15 +1025,15 @@ socks5h://username:pass@ip:port
           return;
         }
         if (status === "healthy" || status === "healthy_candidate" || status === "healthy_fallback" || status === "connected" || status === "cooldown") {
-          elements.table.innerHTML = `<table><thead><tr><th>节点名字</th><th>${renderNodeSortHeader("延迟", "latencyMs")}</th><th>${renderNodeSortHeader("槽位", "slotId")}</th><th>${renderNodeSortHeader("刷新时间", "slotRefreshAt")}</th><th>探测时间</th><th>操作</th></tr></thead><tbody>${rows.map((node) => `<tr><td class="node-name">${escapeHTML(formatNodeName(node))}</td><td class="mono">${node.latencyMs ? escapeHTML(node.latencyMs) + " ms" : "-"}</td><td>${renderNodeSlot(node)}</td><td>${renderSlotRefreshAt(node)}</td><td>${escapeHTML(formatTime(node.probeTime))}</td><td>${renderNodeActions(node)}</td></tr>`).join("")}</tbody></table>`;
+          elements.table.innerHTML = `<table><thead><tr><th>节点名字</th><th>国家</th><th>${renderNodeSortHeader("延迟", "latencyMs")}</th><th>${renderNodeSortHeader("槽位", "slotId")}</th><th>${renderNodeSortHeader("刷新时间", "slotRefreshAt")}</th><th>探测时间</th><th>操作</th></tr></thead><tbody>${rows.map((node) => `<tr><td class="node-name">${escapeHTML(formatNodeName(node))}</td><td>${renderNodeCountry(node)}</td><td class="mono">${node.latencyMs ? escapeHTML(node.latencyMs) + " ms" : "-"}</td><td>${renderNodeSlot(node)}</td><td>${renderSlotRefreshAt(node)}</td><td>${escapeHTML(formatTime(node.probeTime))}</td><td>${renderNodeActions(node)}</td></tr>`).join("")}</tbody></table>`;
           return;
         }
         if (status === "probing" || status === "keepalive_probing" || status === "quality_probing" || status === "revive_probing") {
-          elements.table.innerHTML = `<table><thead><tr><th>节点名字</th><th>处理槽位</th><th>开始时间</th></tr></thead><tbody>${rows.map((node) => `<tr><td class="node-name">${escapeHTML(formatNodeName(node))}</td><td>${renderNodeSlot(node)}</td><td>${escapeHTML(formatTime(node.probeStartedAt))}</td></tr>`).join("")}</tbody></table>`;
+          elements.table.innerHTML = `<table><thead><tr><th>节点名字</th><th>国家</th><th>处理槽位</th><th>开始时间</th></tr></thead><tbody>${rows.map((node) => `<tr><td class="node-name">${escapeHTML(formatNodeName(node))}</td><td>${renderNodeCountry(node)}</td><td>${renderNodeSlot(node)}</td><td>${escapeHTML(formatTime(node.probeStartedAt))}</td></tr>`).join("")}</tbody></table>`;
           return;
         }
         if (status === "unprobed") {
-          elements.table.innerHTML = `<table><thead><tr><th>节点名字</th><th>录入时间</th></tr></thead><tbody>${rows.map((node) => `<tr><td class="node-name">${escapeHTML(formatNodeName(node))}</td><td>${escapeHTML(formatTime(node.enteredAt))}</td></tr>`).join("")}</tbody></table>`;
+          elements.table.innerHTML = `<table><thead><tr><th>节点名字</th><th>国家</th><th>录入时间</th></tr></thead><tbody>${rows.map((node) => `<tr><td class="node-name">${escapeHTML(formatNodeName(node))}</td><td>${renderNodeCountry(node)}</td><td>${escapeHTML(formatTime(node.enteredAt))}</td></tr>`).join("")}</tbody></table>`;
           return;
         }
         const errorGroups = new Map();
@@ -990,7 +1044,7 @@ socks5h://username:pass@ip:port
           errorGroups.set(errorReason, group);
         });
         const groupActions = Array.from(errorGroups.values()).map((group) => `<div class="error-group"><div class="error-group-info"><span class="badge bad error-group-reason">${escapeHTML(group.reason)}</span><span class="error-group-count">${group.count} 个节点</span></div><button class="button" type="button" data-delete-error-reason="${escapeHTML(group.reason)}" data-delete-error-count="${group.count}">删除该原因全部节点</button></div>`).join("");
-        elements.table.innerHTML = `<div class="error-groups">${groupActions}</div><table><thead><tr><th>节点名字</th><th>异常原因</th><th>异常详情</th></tr></thead><tbody>${rows.map((node) => `<tr><td class="node-name">${escapeHTML(formatNodeName(node))}</td><td><span class="badge bad">${escapeHTML(node.errorReason || "探测失败")}</span></td><td><button class="button" type="button" data-detail-id="${escapeHTML(node.id)}">查看详情</button></td></tr>`).join("")}</tbody></table>`;
+        elements.table.innerHTML = `<div class="error-groups">${groupActions}</div><table><thead><tr><th>节点名字</th><th>国家</th><th>异常原因</th><th>异常详情</th></tr></thead><tbody>${rows.map((node) => `<tr><td class="node-name">${escapeHTML(formatNodeName(node))}</td><td>${renderNodeCountry(node)}</td><td><span class="badge bad">${escapeHTML(node.errorReason || "探测失败")}</span></td><td><button class="button" type="button" data-detail-id="${escapeHTML(node.id)}">查看详情</button></td></tr>`).join("")}</tbody></table>`;
       }
 
       function batchSortIndicator(sortKey) {
@@ -1062,7 +1116,7 @@ socks5h://username:pass@ip:port
               : `<div class="empty">当前状态筛选下没有节点。</div>`;
             return;
           }
-          elements.batches.innerHTML = `<table><thead><tr><th>节点名字</th><th>${renderBatchSortHeader("状态", "status")}</th><th>${renderBatchSortHeader("延迟", "latencyMs")}</th><th>${renderBatchSortHeader("探测时间", "probeTime")}</th></tr></thead><tbody>${visibleNodes.map((node) => `<tr><td class="node-name">${escapeHTML(formatNodeName(node))}</td><td><span class="badge ${node.status === "error" ? "bad" : node.status === "connected" || node.status === "healthy" || node.status === "healthy_candidate" || node.status === "healthy_fallback" || node.status === "cooldown" ? "good" : "info"}">${escapeHTML(statusLabels[node.status] || node.status)}</span></td><td class="mono">${node.latencyMs ? escapeHTML(node.latencyMs) + " ms" : "-"}</td><td>${escapeHTML(formatTime(node.probeTime || node.probeStartedAt))}</td></tr>`).join("")}</tbody></table>`;
+          elements.batches.innerHTML = `<table><thead><tr><th>节点名字</th><th>国家</th><th>${renderBatchSortHeader("状态", "status")}</th><th>${renderBatchSortHeader("延迟", "latencyMs")}</th><th>${renderBatchSortHeader("探测时间", "probeTime")}</th></tr></thead><tbody>${visibleNodes.map((node) => `<tr><td class="node-name">${escapeHTML(formatNodeName(node))}</td><td>${renderNodeCountry(node)}</td><td><span class="badge ${node.status === "error" ? "bad" : node.status === "connected" || node.status === "healthy" || node.status === "healthy_candidate" || node.status === "healthy_fallback" || node.status === "cooldown" ? "good" : "info"}">${escapeHTML(statusLabels[node.status] || node.status)}</span></td><td class="mono">${node.latencyMs ? escapeHTML(node.latencyMs) + " ms" : "-"}</td><td>${escapeHTML(formatTime(node.probeTime || node.probeStartedAt))}</td></tr>`).join("")}</tbody></table>`;
           return;
         }
 
@@ -1282,7 +1336,7 @@ socks5h://username:pass@ip:port
         const button = document.getElementById("submit-ip-button");
         button.disabled = true;
         try {
-          const result = await callAPI("POST", "/nodes", { text, deleteNonUS: elements.deleteNonUSInput.checked, manualFallback: elements.manualFallbackInput.checked });
+          const result = await callAPI("POST", "/nodes", { text, manualFallback: elements.manualFallbackInput.checked });
           const errors = result.errors || [];
           const errorMessage = errors.length ? `，${errors.length} 行格式错误` : "";
           const inputMode = elements.manualFallbackInput.checked ? "健康保底" : "初次探测";
@@ -1314,6 +1368,9 @@ socks5h://username:pass@ip:port
           qualityProbeModel: elements.qualityProbeModel.value.trim() || "grok-4.5",
           qualitySoftTPS: Number(elements.qualitySoftTPS.value),
           qualityHardTPS: Number(elements.qualityHardTPS.value),
+          realtimeGuardTTFBSeconds: Number(elements.realtimeGuardTTFBSeconds.value),
+          realtimeGuardGenerationSeconds: Number(elements.realtimeGuardGenerationSeconds.value),
+          realtimeGuardTokenThreshold: Number(elements.realtimeGuardTokenThreshold.value),
           qualityLLMProbeEnabled: elements.qualityLLMProbeEnabled.checked,
           debugEnabled: elements.debugEnabled.checked,
           grok2apiSyncEnabled: elements.grok2apiSyncEnabled.checked,
@@ -1323,8 +1380,8 @@ socks5h://username:pass@ip:port
           managerBaseUrl: elements.managerBaseUrl.value.trim().replace(/\/+$/, ""),
           managerManagementKey: elements.managerManagementKey.value
         };
-        if (!Number.isInteger(settings.workerCount) || settings.workerCount < 1 || settings.workerCount > 64 || !Number.isInteger(settings.refreshIntervalSeconds) || settings.refreshIntervalSeconds < minimumRefreshIntervalSeconds || settings.refreshIntervalSeconds > maximumRefreshIntervalSeconds || !Number.isInteger(settings.keepaliveWorkerCount) || settings.keepaliveWorkerCount < 1 || settings.keepaliveWorkerCount > 64 || !Number.isInteger(settings.keepaliveIntervalSeconds) || settings.keepaliveIntervalSeconds < 1 || settings.keepaliveIntervalSeconds > 86400 || !Number.isInteger(settings.reviveIntervalSeconds) || settings.reviveIntervalSeconds < 1 || settings.reviveIntervalSeconds > 86400 || !Number.isInteger(settings.probeRetryCount) || settings.probeRetryCount < 1 || settings.probeRetryCount > 10 || !Number.isInteger(settings.healthySlotCount) || settings.healthySlotCount < 1 || settings.healthySlotCount > 1000 || !Number.isInteger(settings.healthyCandidateSlotCount) || settings.healthyCandidateSlotCount < 0 || settings.healthySlotCount + settings.healthyCandidateSlotCount > 1000 || !Number.isInteger(settings.healthySlotMaxAgeMinutes) || settings.healthySlotMaxAgeMinutes < 1 || settings.healthySlotMaxAgeMinutes > 10080 || !Number.isInteger(settings.qualityWorkerCount) || settings.qualityWorkerCount < 1 || settings.qualityWorkerCount > 64 || !Number.isInteger(settings.qualityProbeTimeoutSeconds) || settings.qualityProbeTimeoutSeconds < 1 || settings.qualityProbeTimeoutSeconds > 600 || !settings.qualityProbeModel || /\s/.test(settings.qualityProbeModel) || settings.qualityProbeModel.length > 128 || !Number.isFinite(settings.qualitySoftTPS) || settings.qualitySoftTPS <= 0 || !Number.isFinite(settings.qualityHardTPS) || settings.qualityHardTPS <= settings.qualitySoftTPS) {
-          setNotice("配置范围无效：基础线程 1–64，页面刷新 5–3600 秒，保活和复活间隔 1–86400 秒，探测重试 1–10 次，总槽位 1–1000，健康槽最大占用 1–10080 分钟，智商线程 1–64，智商超时 1–600 秒，智商检测模型非空且无空格，hard TPS 必须高于 soft TPS。", "error");
+        if (!Number.isInteger(settings.workerCount) || settings.workerCount < 1 || settings.workerCount > 64 || !Number.isInteger(settings.refreshIntervalSeconds) || settings.refreshIntervalSeconds < minimumRefreshIntervalSeconds || settings.refreshIntervalSeconds > maximumRefreshIntervalSeconds || !Number.isInteger(settings.keepaliveWorkerCount) || settings.keepaliveWorkerCount < 1 || settings.keepaliveWorkerCount > 64 || !Number.isInteger(settings.keepaliveIntervalSeconds) || settings.keepaliveIntervalSeconds < 1 || settings.keepaliveIntervalSeconds > 86400 || !Number.isInteger(settings.reviveIntervalSeconds) || settings.reviveIntervalSeconds < 1 || settings.reviveIntervalSeconds > 86400 || !Number.isInteger(settings.probeRetryCount) || settings.probeRetryCount < 1 || settings.probeRetryCount > 10 || !Number.isInteger(settings.healthySlotCount) || settings.healthySlotCount < 1 || settings.healthySlotCount > 1000 || !Number.isInteger(settings.healthyCandidateSlotCount) || settings.healthyCandidateSlotCount < 0 || settings.healthySlotCount + settings.healthyCandidateSlotCount > 1000 || !Number.isInteger(settings.healthySlotMaxAgeMinutes) || settings.healthySlotMaxAgeMinutes < 1 || settings.healthySlotMaxAgeMinutes > 10080 || !Number.isInteger(settings.qualityWorkerCount) || settings.qualityWorkerCount < 1 || settings.qualityWorkerCount > 64 || !Number.isInteger(settings.qualityProbeTimeoutSeconds) || settings.qualityProbeTimeoutSeconds < 1 || settings.qualityProbeTimeoutSeconds > 600 || !settings.qualityProbeModel || /\s/.test(settings.qualityProbeModel) || settings.qualityProbeModel.length > 128 || !Number.isFinite(settings.qualitySoftTPS) || settings.qualitySoftTPS <= 0 || !Number.isFinite(settings.qualityHardTPS) || settings.qualityHardTPS <= settings.qualitySoftTPS || !Number.isFinite(settings.realtimeGuardTTFBSeconds) || settings.realtimeGuardTTFBSeconds <= 0 || !Number.isFinite(settings.realtimeGuardGenerationSeconds) || settings.realtimeGuardGenerationSeconds <= 0 || !Number.isInteger(settings.realtimeGuardTokenThreshold) || settings.realtimeGuardTokenThreshold < 1) {
+          setNotice("配置范围无效：基础线程 1–64，页面刷新 5–3600 秒，保活和复活间隔 1–86400 秒，探测重试 1–10 次，总槽位 1–1000，健康槽最大占用 1–10080 分钟，智商线程 1–64，智商超时 1–600 秒，智商检测模型非空且无空格，hard TPS 必须高于 soft TPS，实时守护阈值必须为正数，token 阈值必须为正整数。", "error");
           return;
         }
         if (settings.managerBaseUrl && !/^https?:\/\//i.test(settings.managerBaseUrl)) {
@@ -1336,7 +1393,7 @@ socks5h://username:pass@ip:port
           const savedSettings = await callAPI("PUT", "/settings", settings);
           applySettings(savedSettings, false, true);
           closeModal(elements.settingsModal);
-          setNotice("运行配置已保存；调度类配置下次启动生效，调试开关、页面刷新与 grok2api 同步配置立即生效。", "success");
+          setNotice("运行配置已保存；调度类配置下次启动生效，实时守护阈值、调试开关、页面刷新与 grok2api 同步配置立即生效。", "success");
           if (state.activeView === "logs") {
             await refresh("logs");
           }
@@ -1376,6 +1433,25 @@ socks5h://username:pass@ip:port
           setNotice(error instanceof Error ? error.message : String(error), "error");
         } finally {
           elements.syncGrok2apiButton.disabled = false;
+        }
+      }
+
+      async function showGrok2apiDegradedNodes() {
+        elements.viewGrok2apiDegradedNodesButton.disabled = true;
+        elements.grok2apiDegradedNodesSummary.textContent = "正在读取 grok2api…";
+        elements.grok2apiDegradedNodesContent.textContent = "正在读取 grok2api…";
+        openModal(elements.grok2apiDegradedNodesModal);
+        try {
+          const result = await callAPI("GET", "/grok2api/degraded-egress-nodes");
+          const nodeCount = Number(result.nodeCount || 0);
+          elements.grok2apiDegradedNodesSummary.textContent = nodeCount > 0 ? `当前 ${nodeCount} 个已降智节点，每行一个。` : "当前没有已降智节点。";
+          elements.grok2apiDegradedNodesContent.textContent = nodeCount > 0 ? result.content : "当前没有已降智节点。";
+        } catch (error) {
+          const message = error instanceof Error ? error.message : String(error);
+          elements.grok2apiDegradedNodesSummary.textContent = `读取失败：${message}`;
+          elements.grok2apiDegradedNodesContent.textContent = "读取失败。";
+        } finally {
+          elements.viewGrok2apiDegradedNodesButton.disabled = false;
         }
       }
 
@@ -1439,6 +1515,7 @@ socks5h://username:pass@ip:port
       elements.saveSettingsButton.addEventListener("click", saveSettings);
       elements.checkManagerAPIButton.addEventListener("click", checkManagerAPI);
       elements.syncGrok2apiButton.addEventListener("click", syncGrok2apiNow);
+      elements.viewGrok2apiDegradedNodesButton.addEventListener("click", showGrok2apiDegradedNodes);
             elements.keepaliveNowButton.addEventListener("click", runKeepaliveNow);
             elements.refreshButton.addEventListener("click", () => refresh());
       document.querySelector(".main-tabs").addEventListener("click", (event) => {

@@ -41,11 +41,6 @@ func (store *ipStore) ensureBatchMetadata() error {
 			return fmt.Errorf("add sqlite batch sequence: %w", err)
 		}
 	}
-	if !columns["delete_non_us"] {
-		if _, err := store.database.Exec("ALTER TABLE ip_batches ADD COLUMN delete_non_us INTEGER NOT NULL DEFAULT 0"); err != nil {
-			return fmt.Errorf("add sqlite batch delete option: %w", err)
-		}
-	}
 	initialProbeCountersAdded := false
 	if !columns["initial_probe_completed_count"] {
 		if _, err := store.database.Exec("ALTER TABLE ip_batches ADD COLUMN initial_probe_completed_count INTEGER NOT NULL DEFAULT 0"); err != nil {

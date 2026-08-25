@@ -238,16 +238,6 @@ func probeNodeWithRetries(ctx context.Context, node proxyNode, totalAttempts int
 					CountryCode:        countryCode,
 				}
 			}
-			if countryCode != "US" {
-				return probeResult{
-					Reason:             "非us出口",
-					Detail:             fmt.Sprintf("出口 IP %s，国家代码 %s", exitIP, countryCode),
-					LatencyMs:          lastResult.LatencyMs,
-					EndpointStatusCode: lastResult.EndpointStatusCode,
-					ExitIP:             exitIP,
-					CountryCode:        countryCode,
-				}
-			}
 			lastResult.ExitIP = exitIP
 			lastResult.CountryCode = countryCode
 		}
