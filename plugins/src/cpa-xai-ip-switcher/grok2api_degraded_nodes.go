@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
-	"net/url"
 	"strings"
 )
 
@@ -119,24 +118,6 @@ func parseGrok2apiDegradedEgressNodeLines(content string) []string {
 		nodes = append(nodes, node)
 	}
 	return nodes
-}
-
-func redactGrok2apiDegradedEgressNodeContent(content string) string {
-	lines := strings.Split(content, "\n")
-	for index, line := range lines {
-		node := strings.TrimSpace(line)
-		if node == "" {
-			continue
-		}
-		parsedURL, err := url.Parse(node)
-		if err == nil && parsedURL.User != nil {
-			parsedURL.User = nil
-			lines[index] = parsedURL.String()
-			continue
-		}
-		lines[index] = node
-	}
-	return strings.Join(lines, "\n")
 }
 
 func syncGrok2apiDegradedNodesBeforeKeepalive(store *ipStore, settings pluginSettings) error {

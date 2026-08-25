@@ -1393,7 +1393,7 @@ socks5h://username:pass@ip:port
           const savedSettings = await callAPI("PUT", "/settings", settings);
           applySettings(savedSettings, false, true);
           closeModal(elements.settingsModal);
-          setNotice("运行配置已保存；调度类配置下次启动生效，实时守护阈值、调试开关、页面刷新与 grok2api 同步配置立即生效。", "success");
+          setNotice("运行配置已保存；健康槽位布局、实时守护阈值、调试开关、页面刷新与 grok2api 同步配置立即生效，线程数与保活/复活间隔下次启动生效。", "success");
           if (state.activeView === "logs") {
             await refresh("logs");
           }

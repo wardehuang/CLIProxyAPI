@@ -52,6 +52,17 @@ func runKeepaliveRound(ctx context.Context, store *ipStore, settings pluginSetti
 	defer func() {
 		_ = store.pruneStoredLogs()
 	}()
+	liveSettings, err := store.settings()
+	if err != nil {
+		_ = store.appendLog(logLevelError, "keepalive.settings_read_failed", 0, "", "读取保活实时配置失败", err.Error())
+		return
+	}
+	settings.HealthySlotCount = liveSettings.HealthySlotCount
+	settings.HealthyCandidateSlotCount = liveSettings.HealthyCandidateSlotCount
+	if err := store.reconcileSlotLayout(pluginSettings{}, settings); err != nil {
+		_ = store.appendLog(logLevelError, "keepalive.slot_layout_failed", 0, "", "保活前同步健康槽位布局失败", err.Error())
+		return
+	}
 	if err := syncGrok2apiDegradedNodesBeforeKeepalive(store, settings); err != nil {
 		_ = store.appendLog(logLevelWarn, "grok2api.degraded_sync_failed", 0, "", "保活前读取降智节点失败，继续执行保活探测", err.Error())
 	}

@@ -183,8 +183,17 @@ func (controller *runtimeController) updateSettings(store *ipStore, settings plu
 	if pluginSettingsEqual(currentSettings, settings) {
 		return false, nil
 	}
+	slotLayoutChanged := currentSettings.HealthySlotCount != settings.HealthySlotCount ||
+		currentSettings.HealthyCandidateSlotCount != settings.HealthyCandidateSlotCount
 	if err := store.setSettings(settings); err != nil {
 		return false, err
+	}
+	if slotLayoutChanged {
+		controller.topologyMutex.Lock()
+		defer controller.topologyMutex.Unlock()
+		if err := store.reconcileSlotLayout(pluginSettings{}, settings); err != nil {
+			return false, fmt.Errorf("reconcile slot layout after settings update: %w", err)
+		}
 	}
 	controller.managerBaseURL = settings.ManagerBaseURL
 	controller.managerManagementKey = settings.ManagerManagementKey

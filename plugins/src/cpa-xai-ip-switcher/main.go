@@ -480,8 +480,8 @@ func updatePluginSettings(body json.RawMessage) ([]byte, error) {
 		"settings.updated",
 		0,
 		"",
-		"插件配置已保存；实时守护阈值立即生效，调度类配置下次启动生效",
-		fmt.Sprintf("探测线程数 %d，页面刷新 %d 秒，保活线程数 %d，保活间隔 %d 秒，复活间隔 %d 秒，探测重试次数 %d，实时守护首字阈值 %.2f 秒，首字后耗时阈值 %.2f 秒，token 阈值 %d，配置变化 %t；当前进程未重启", settings.WorkerCount, settings.RefreshIntervalSeconds, settings.KeepaliveWorkerCount, settings.KeepaliveIntervalSeconds, settings.ReviveIntervalSeconds, settings.ProbeRetryCount, settings.RealtimeGuardTTFBSeconds, settings.RealtimeGuardGenerationSeconds, settings.RealtimeGuardTokenThreshold, settingsSaved),
+		"插件配置已保存；健康槽位布局、实时守护阈值、调试开关、页面刷新与 grok2api 同步配置立即生效，调度线程与间隔类配置下次启动生效",
+		fmt.Sprintf("健康槽位数 %d，健康备选槽位数 %d，探测线程数 %d，页面刷新 %d 秒，保活线程数 %d，保活间隔 %d 秒，复活间隔 %d 秒，探测重试次数 %d，实时守护首字阈值 %.2f 秒，首字后耗时阈值 %.2f 秒，token 阈值 %d，配置变化 %t；当前进程未重启", settings.HealthySlotCount, settings.HealthyCandidateSlotCount, settings.WorkerCount, settings.RefreshIntervalSeconds, settings.KeepaliveWorkerCount, settings.KeepaliveIntervalSeconds, settings.ReviveIntervalSeconds, settings.ProbeRetryCount, settings.RealtimeGuardTTFBSeconds, settings.RealtimeGuardGenerationSeconds, settings.RealtimeGuardTokenThreshold, settingsSaved),
 	)
 	return managementJSON(http.StatusOK, map[string]any{"data": publicSettings(settings)})
 }
@@ -870,7 +870,7 @@ func dispatchAPIWithStore(store *ipStore, method, path string, query url.Values,
 			return managementJSON(http.StatusBadRequest, errorMessage("grok2apiDegradedNodesFailed", err.Error()))
 		}
 		return managementJSON(http.StatusOK, map[string]any{"data": map[string]any{
-			"content":   redactGrok2apiDegradedEgressNodeContent(result.Content),
+			"content":   result.Content,
 			"nodeCount": len(result.Nodes),
 		}})
 

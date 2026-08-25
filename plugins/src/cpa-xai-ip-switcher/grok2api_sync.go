@@ -14,7 +14,7 @@ import (
 )
 
 const (
-	grok2apiHTTPTimeout          = 20 * time.Second
+	grok2apiHTTPTimeout          = 120 * time.Second
 	grok2apiAuthLoginPath        = "/api/admin/v1/auth/login"
 	grok2apiAutoProxySlotsPath   = "/api/admin/v1/cpa-auto-proxy/slots"
 	grok2apiSyncTriggerKeepalive = "keepalive"
