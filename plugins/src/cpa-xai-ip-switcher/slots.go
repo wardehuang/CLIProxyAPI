@@ -48,6 +48,18 @@ type authBinding struct {
 	UpdatedAt    int64
 }
 
+type authExitIPBinding struct {
+	SlotID      int64
+	NodeID      int64
+	AuthName    string
+	AuthIndex   string
+	SyncStatus  string
+	VerifiedAt  int64
+	UpdatedAt   int64
+	ExitIP      string
+	ExitCountry string
+}
+
 func (store *ipStore) ensureSlotMetadata() error {
 	if err := ensureSQLiteColumn(store.database, "ip_nodes", "revive_target_status", "TEXT NOT NULL DEFAULT 'connected'"); err != nil {
 		return err
@@ -955,6 +967,44 @@ func (store *ipStore) listHealthyAuthBindings(nodeID int64) ([]authBinding, erro
 
 func (store *ipStore) listHealthyAuthBindingsForSlot(slotID int64) ([]authBinding, error) {
 	return store.listHealthyAuthBindingsBy("bindings.slot_id = ?", slotID)
+}
+
+func (store *ipStore) listHealthyAuthExitIPBindings() ([]authExitIPBinding, error) {
+	rows, err := store.database.Query(`
+SELECT bindings.slot_id, bindings.node_id, bindings.auth_name, bindings.auth_index,
+       bindings.sync_status, bindings.verified_at, bindings.updated_at,
+       nodes.exit_ip, nodes.exit_country
+FROM ip_slot_auth_bindings AS bindings
+JOIN ip_slots AS slots ON slots.slot_id = bindings.slot_id
+JOIN ip_nodes AS nodes ON nodes.id = bindings.node_id
+WHERE slots.slot_kind = ? AND nodes.status = ? AND bindings.node_id = slots.node_id
+ORDER BY bindings.auth_name ASC`, statusHealthy, statusHealthy)
+	if err != nil {
+		return nil, fmt.Errorf("list sqlite auth exit IP bindings: %w", err)
+	}
+	defer rows.Close()
+	items := make([]authExitIPBinding, 0)
+	for rows.Next() {
+		var item authExitIPBinding
+		if err := rows.Scan(
+			&item.SlotID,
+			&item.NodeID,
+			&item.AuthName,
+			&item.AuthIndex,
+			&item.SyncStatus,
+			&item.VerifiedAt,
+			&item.UpdatedAt,
+			&item.ExitIP,
+			&item.ExitCountry,
+		); err != nil {
+			return nil, fmt.Errorf("scan sqlite auth exit IP binding: %w", err)
+		}
+		items = append(items, item)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate sqlite auth exit IP bindings: %w", err)
+	}
+	return items, nil
 }
 
 func (store *ipStore) listHealthyAuthBindingsBy(predicate string, value int64) ([]authBinding, error) {

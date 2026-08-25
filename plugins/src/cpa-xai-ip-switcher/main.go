@@ -72,7 +72,7 @@ import (
 
 const (
 	pluginName          = "cpa-xai-ip-switcher"
-	pluginVersion       = "0.1.3"
+	pluginVersion       = "0.1.4"
 	resourcePath        = "/status"
 	managementAPIPath   = "/v0/management/cpa-xai-ip-switcher/api"
 	resourceContentType = "text/html; charset=utf-8"
@@ -714,6 +714,18 @@ func dispatchAPIWithStore(store *ipStore, method, path string, query url.Values,
 	case path == "/nodes" && method == http.MethodPost:
 		return addNodes(store, body)
 
+	case path == "/auth-bindings/exit-ips" && method == http.MethodGet:
+		items, err := store.listHealthyAuthExitIPBindings()
+		if err != nil {
+			return managementJSON(http.StatusInternalServerError, errorMessage("authExitIPBindingsFailed", err.Error()))
+		}
+		return managementJSON(http.StatusOK, map[string]any{
+			"data": map[string]any{
+				"items": publicAuthExitIPBindings(items),
+				"total": len(items),
+			},
+		})
+
 	case path == "/nodes/errors" && method == http.MethodDelete:
 		errorReason := strings.TrimSpace(query.Get("reason"))
 		if errorReason == "" {
@@ -1098,6 +1110,24 @@ func publicAuthBindings(bindings []authBinding) []map[string]any {
 			"syncError":  binding.SyncError,
 			"verifiedAt": binding.VerifiedAt,
 			"updatedAt":  binding.UpdatedAt,
+		})
+	}
+	return items
+}
+
+func publicAuthExitIPBindings(bindings []authExitIPBinding) []map[string]any {
+	items := make([]map[string]any, 0, len(bindings))
+	for _, binding := range bindings {
+		items = append(items, map[string]any{
+			"authName":    binding.AuthName,
+			"authIndex":   binding.AuthIndex,
+			"slotId":      binding.SlotID,
+			"nodeId":      binding.NodeID,
+			"syncStatus":  binding.SyncStatus,
+			"verifiedAt":  binding.VerifiedAt,
+			"updatedAt":   binding.UpdatedAt,
+			"exitIp":      binding.ExitIP,
+			"exitCountry": binding.ExitCountry,
 		})
 	}
 	return items
