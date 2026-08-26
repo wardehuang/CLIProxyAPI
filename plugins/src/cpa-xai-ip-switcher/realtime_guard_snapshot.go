@@ -28,12 +28,16 @@ func finalizeRealtimeGuardRequest(request pluginapi.RequestFinalizeRequest) (plu
 	if !request.Stream || !strings.EqualFold(realtimeGuardMetadataString(request.Metadata, executor.SelectedAuthProviderMetadataKey), "xai") {
 		return pluginapi.RequestFinalizeResponse{}, nil
 	}
+	timeoutMetadata := map[string]any{}
+	if settings, settingsErr := pluginRuntime.currentSettings(); settingsErr == nil {
+		timeoutMetadata[executor.StreamCompletionTimeoutSecondsMetadataKey] = settings.RealtimeGuardTimeoutSeconds
+	}
 
 	authID := realtimeGuardMetadataString(request.Metadata, executor.SelectedAuthMetadataKey)
 	authIndex := realtimeGuardMetadataString(request.Metadata, executor.SelectedAuthIndexMetadataKey)
 	proxyURL := realtimeGuardMetadataString(request.Metadata, executor.SelectedAuthProxyURLMetadataKey)
 	if authID == "" || proxyURL == "" {
-		return pluginapi.RequestFinalizeResponse{}, nil
+		return pluginapi.RequestFinalizeResponse{Metadata: timeoutMetadata}, nil
 	}
 
 	var snapshot realtimeGuardSourceSnapshot
@@ -43,16 +47,15 @@ func finalizeRealtimeGuardRequest(request pluginapi.RequestFinalizeRequest) (plu
 		return nil, lookupErr
 	})
 	if err != nil {
-		return pluginapi.RequestFinalizeResponse{}, nil
+		return pluginapi.RequestFinalizeResponse{Metadata: timeoutMetadata}, nil
 	}
 
-	return pluginapi.RequestFinalizeResponse{Metadata: map[string]any{
-		realtimeGuardSlotIDMetadataKey:           snapshot.SlotID,
-		realtimeGuardNodeIDMetadataKey:           snapshot.NodeID,
-		realtimeGuardAuthIdentityMetadataKey:     snapshot.AuthIdentity,
-		realtimeGuardProxyURLMetadataKey:         snapshot.ProxyURL,
-		realtimeGuardBindingUpdatedAtMetadataKey: snapshot.BindingUpdatedAt,
-	}}, nil
+	timeoutMetadata[realtimeGuardSlotIDMetadataKey] = snapshot.SlotID
+	timeoutMetadata[realtimeGuardNodeIDMetadataKey] = snapshot.NodeID
+	timeoutMetadata[realtimeGuardAuthIdentityMetadataKey] = snapshot.AuthIdentity
+	timeoutMetadata[realtimeGuardProxyURLMetadataKey] = snapshot.ProxyURL
+	timeoutMetadata[realtimeGuardBindingUpdatedAtMetadataKey] = snapshot.BindingUpdatedAt
+	return pluginapi.RequestFinalizeResponse{Metadata: timeoutMetadata}, nil
 }
 
 func (store *ipStore) lookupRealtimeGuardSource(authID, authIndex, proxyURL string) (realtimeGuardSourceSnapshot, error) {

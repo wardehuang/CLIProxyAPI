@@ -481,7 +481,7 @@ func updatePluginSettings(body json.RawMessage) ([]byte, error) {
 		0,
 		"",
 		"插件配置已保存；健康槽位布局、实时守护阈值、调试开关、页面刷新与 grok2api 同步配置立即生效，调度线程与间隔类配置下次启动生效",
-		fmt.Sprintf("健康槽位数 %d，健康备选槽位数 %d，探测线程数 %d，页面刷新 %d 秒，保活线程数 %d，保活间隔 %d 秒，复活间隔 %d 秒，探测重试次数 %d，实时守护首字阈值 %.2f 秒，首字后耗时阈值 %.2f 秒，token 阈值 %d，配置变化 %t；当前进程未重启", settings.HealthySlotCount, settings.HealthyCandidateSlotCount, settings.WorkerCount, settings.RefreshIntervalSeconds, settings.KeepaliveWorkerCount, settings.KeepaliveIntervalSeconds, settings.ReviveIntervalSeconds, settings.ProbeRetryCount, settings.RealtimeGuardTTFBSeconds, settings.RealtimeGuardGenerationSeconds, settings.RealtimeGuardTokenThreshold, settingsSaved),
+		fmt.Sprintf("健康槽位数 %d，健康备选槽位数 %d，探测线程数 %d，页面刷新 %d 秒，保活线程数 %d，保活间隔 %d 秒，复活间隔 %d 秒，探测重试次数 %d，实时守护首字阈值 %.2f 秒，首字后耗时阈值 %.2f 秒，token 阈值 %d，首字超时阈值 %d 秒，配置变化 %t；当前进程未重启", settings.HealthySlotCount, settings.HealthyCandidateSlotCount, settings.WorkerCount, settings.RefreshIntervalSeconds, settings.KeepaliveWorkerCount, settings.KeepaliveIntervalSeconds, settings.ReviveIntervalSeconds, settings.ProbeRetryCount, settings.RealtimeGuardTTFBSeconds, settings.RealtimeGuardGenerationSeconds, settings.RealtimeGuardTokenThreshold, settings.RealtimeGuardTimeoutSeconds, settingsSaved),
 	)
 	return managementJSON(http.StatusOK, map[string]any{"data": publicSettings(settings)})
 }
@@ -519,6 +519,7 @@ func settingsFromPayload(payload map[string]any) (pluginSettings, error) {
 	realtimeGuardTTFBSeconds, realtimeGuardTTFBOK := floatValue(firstValue(payload, "realtimeGuardTTFBSeconds", "realtime_guard_ttfb_seconds"))
 	realtimeGuardGenerationSeconds, realtimeGuardGenerationOK := floatValue(firstValue(payload, "realtimeGuardGenerationSeconds", "realtime_guard_generation_seconds"))
 	realtimeGuardTokenThreshold, realtimeGuardTokenOK := integerValue(firstValue(payload, "realtimeGuardTokenThreshold", "realtime_guard_token_threshold"))
+	realtimeGuardTimeoutSeconds, realtimeGuardTimeoutOK := integerValue(firstValue(payload, "realtimeGuardTimeoutSeconds", "realtime_guard_timeout_seconds"))
 	qualityLLMProbeEnabled, qualityLLMProbeOK := boolValue(firstValue(payload, "qualityLLMProbeEnabled", "quality_llm_probe_enabled"))
 	debugEnabled, debugEnabledOK := boolValue(firstValue(payload, "debugEnabled", "debug_enabled"))
 	grok2apiSyncEnabled, grok2apiSyncEnabledOK := boolValue(firstValue(payload, "grok2apiSyncEnabled", "grok2api_sync_enabled"))
@@ -528,7 +529,7 @@ func settingsFromPayload(payload map[string]any) (pluginSettings, error) {
 	managerBaseURL, managerBaseURLOK := stringValue(firstValue(payload, "managerBaseUrl", "manager_base_url"))
 	managerManagementKey, managerManagementKeyOK := stringValue(firstValue(payload, "managerManagementKey", "manager_management_key"))
 	if !workerOK || !refreshOK || !keepaliveWorkersOK || !keepaliveIntervalOK || !reviveIntervalOK || !retryOK ||
-		!healthySlotOK || !healthyCandidateSlotOK || !healthySlotMaxAgeOK || !qualityWorkerOK || !qualityTimeoutOK || !qualityModelOK || !softTPSOK || !hardTPSOK || !realtimeGuardTTFBOK || !realtimeGuardGenerationOK || !realtimeGuardTokenOK || !qualityLLMProbeOK ||
+		!healthySlotOK || !healthyCandidateSlotOK || !healthySlotMaxAgeOK || !qualityWorkerOK || !qualityTimeoutOK || !qualityModelOK || !softTPSOK || !hardTPSOK || !realtimeGuardTTFBOK || !realtimeGuardGenerationOK || !realtimeGuardTokenOK || !realtimeGuardTimeoutOK || !qualityLLMProbeOK ||
 		!debugEnabledOK || !grok2apiSyncEnabledOK || !grok2apiBaseUrlOK || !grok2apiAdminUsernameOK || !grok2apiAdminPasswordOK || !managerBaseURLOK || !managerManagementKeyOK {
 		return pluginSettings{}, fmt.Errorf("必须同时提供基础调度、健康槽位、智商探测、调试开关、grok2api 同步和 Manager API 配置")
 	}
@@ -550,6 +551,7 @@ func settingsFromPayload(payload map[string]any) (pluginSettings, error) {
 		RealtimeGuardTTFBSeconds:       realtimeGuardTTFBSeconds,
 		RealtimeGuardGenerationSeconds: realtimeGuardGenerationSeconds,
 		RealtimeGuardTokenThreshold:    realtimeGuardTokenThreshold,
+		RealtimeGuardTimeoutSeconds:    realtimeGuardTimeoutSeconds,
 		QualityLLMProbeEnabled:         qualityLLMProbeEnabled,
 		DebugEnabled:                   debugEnabled,
 		Grok2apiSyncEnabled:            grok2apiSyncEnabled,
@@ -657,6 +659,7 @@ func publicSettings(settings pluginSettings) map[string]any {
 		"realtimeGuardTTFBSeconds":       settings.RealtimeGuardTTFBSeconds,
 		"realtimeGuardGenerationSeconds": settings.RealtimeGuardGenerationSeconds,
 		"realtimeGuardTokenThreshold":    settings.RealtimeGuardTokenThreshold,
+		"realtimeGuardTimeoutSeconds":    settings.RealtimeGuardTimeoutSeconds,
 		"qualityLLMProbeEnabled":         settings.QualityLLMProbeEnabled,
 		"debugEnabled":                   settings.DebugEnabled,
 		"grok2apiSyncEnabled":            settings.Grok2apiSyncEnabled,

@@ -467,7 +467,7 @@ socks5h://username:pass@ip:port
               <h4 id="settings-realtime-guard-title" class="settings-card-title">实时守护</h4>
               <span class="settings-card-badge live">立即生效</span>
             </div>
-            <p class="settings-card-help">现有 TPS hard/soft 判断均未触发后，再判断：首字（TTFB）大于阈值、首字后耗时（总耗时−首字）小于阈值、输出+思考 token 大于阈值；三项同时满足判定降智。</p>
+            <p class="settings-card-help">首字返回前严格超过首字超时阈值，或现有 TPS hard/soft 判断均未触发后同时满足首字（TTFB）大于阈值、首字后耗时（总耗时−首字）小于阈值、输出+思考 token 大于阈值，均判定降智并换号重试。首字返回后，流持续时间不参与首字超时判定。</p>
             <div class="settings-grid cols-3">
               <label class="settings-field" for="realtime-guard-ttfb-seconds">
                 首字（TTFB）阈值（秒）
@@ -483,6 +483,11 @@ socks5h://username:pass@ip:port
                 输出+思考 token 阈值
                 <input id="realtime-guard-token-threshold" type="number" min="1" step="1" value="300" title="输出 token 加思考 token 大于该值才触发">
                 <span class="settings-help">严格大于 · 默认 300</span>
+              </label>
+              <label class="settings-field" for="realtime-guard-timeout-seconds">
+                首字超时阈值（秒）
+                <input id="realtime-guard-timeout-seconds" type="number" min="1" step="1" value="120" title="首字返回前严格超过该值时判定降智">
+                <span class="settings-help">首字返回前 · 严格大于 · 默认 120 · ≥1</span>
               </label>
             </div>
           </section>
@@ -655,6 +660,7 @@ socks5h://username:pass@ip:port
         realtimeGuardTTFBSeconds: document.getElementById("realtime-guard-ttfb-seconds"),
         realtimeGuardGenerationSeconds: document.getElementById("realtime-guard-generation-seconds"),
         realtimeGuardTokenThreshold: document.getElementById("realtime-guard-token-threshold"),
+        realtimeGuardTimeoutSeconds: document.getElementById("realtime-guard-timeout-seconds"),
         qualityLLMProbeEnabled: document.getElementById("quality-llm-probe-enabled"),
         debugEnabled: document.getElementById("debug-enabled"),
         grok2apiSyncEnabled: document.getElementById("grok2api-sync-enabled"),
@@ -833,6 +839,7 @@ socks5h://username:pass@ip:port
           elements.realtimeGuardTTFBSeconds.value = String(settings.realtimeGuardTTFBSeconds);
           elements.realtimeGuardGenerationSeconds.value = String(settings.realtimeGuardGenerationSeconds);
           elements.realtimeGuardTokenThreshold.value = String(settings.realtimeGuardTokenThreshold);
+          elements.realtimeGuardTimeoutSeconds.value = String(settings.realtimeGuardTimeoutSeconds);
           elements.qualityLLMProbeEnabled.checked = Boolean(settings.qualityLLMProbeEnabled);
           elements.debugEnabled.checked = Boolean(settings.debugEnabled);
           elements.grok2apiSyncEnabled.checked = Boolean(settings.grok2apiSyncEnabled);
@@ -1371,6 +1378,7 @@ socks5h://username:pass@ip:port
           realtimeGuardTTFBSeconds: Number(elements.realtimeGuardTTFBSeconds.value),
           realtimeGuardGenerationSeconds: Number(elements.realtimeGuardGenerationSeconds.value),
           realtimeGuardTokenThreshold: Number(elements.realtimeGuardTokenThreshold.value),
+          realtimeGuardTimeoutSeconds: Number(elements.realtimeGuardTimeoutSeconds.value),
           qualityLLMProbeEnabled: elements.qualityLLMProbeEnabled.checked,
           debugEnabled: elements.debugEnabled.checked,
           grok2apiSyncEnabled: elements.grok2apiSyncEnabled.checked,
@@ -1380,6 +1388,10 @@ socks5h://username:pass@ip:port
           managerBaseUrl: elements.managerBaseUrl.value.trim().replace(/\/+$/, ""),
           managerManagementKey: elements.managerManagementKey.value
         };
+        if (!Number.isInteger(settings.realtimeGuardTimeoutSeconds) || settings.realtimeGuardTimeoutSeconds < 1) {
+          setNotice("实时守护首字超时阈值必须为正整数。", "error");
+          return;
+        }
         if (!Number.isInteger(settings.workerCount) || settings.workerCount < 1 || settings.workerCount > 64 || !Number.isInteger(settings.refreshIntervalSeconds) || settings.refreshIntervalSeconds < minimumRefreshIntervalSeconds || settings.refreshIntervalSeconds > maximumRefreshIntervalSeconds || !Number.isInteger(settings.keepaliveWorkerCount) || settings.keepaliveWorkerCount < 1 || settings.keepaliveWorkerCount > 64 || !Number.isInteger(settings.keepaliveIntervalSeconds) || settings.keepaliveIntervalSeconds < 1 || settings.keepaliveIntervalSeconds > 86400 || !Number.isInteger(settings.reviveIntervalSeconds) || settings.reviveIntervalSeconds < 1 || settings.reviveIntervalSeconds > 86400 || !Number.isInteger(settings.probeRetryCount) || settings.probeRetryCount < 1 || settings.probeRetryCount > 10 || !Number.isInteger(settings.healthySlotCount) || settings.healthySlotCount < 1 || settings.healthySlotCount > 1000 || !Number.isInteger(settings.healthyCandidateSlotCount) || settings.healthyCandidateSlotCount < 0 || settings.healthySlotCount + settings.healthyCandidateSlotCount > 1000 || !Number.isInteger(settings.healthySlotMaxAgeMinutes) || settings.healthySlotMaxAgeMinutes < 1 || settings.healthySlotMaxAgeMinutes > 10080 || !Number.isInteger(settings.qualityWorkerCount) || settings.qualityWorkerCount < 1 || settings.qualityWorkerCount > 64 || !Number.isInteger(settings.qualityProbeTimeoutSeconds) || settings.qualityProbeTimeoutSeconds < 1 || settings.qualityProbeTimeoutSeconds > 600 || !settings.qualityProbeModel || /\s/.test(settings.qualityProbeModel) || settings.qualityProbeModel.length > 128 || !Number.isFinite(settings.qualitySoftTPS) || settings.qualitySoftTPS <= 0 || !Number.isFinite(settings.qualityHardTPS) || settings.qualityHardTPS <= settings.qualitySoftTPS || !Number.isFinite(settings.realtimeGuardTTFBSeconds) || settings.realtimeGuardTTFBSeconds <= 0 || !Number.isFinite(settings.realtimeGuardGenerationSeconds) || settings.realtimeGuardGenerationSeconds <= 0 || !Number.isInteger(settings.realtimeGuardTokenThreshold) || settings.realtimeGuardTokenThreshold < 1) {
           setNotice("配置范围无效：基础线程 1–64，页面刷新 5–3600 秒，保活和复活间隔 1–86400 秒，探测重试 1–10 次，总槽位 1–1000，健康槽最大占用 1–10080 分钟，智商线程 1–64，智商超时 1–600 秒，智商检测模型非空且无空格，hard TPS 必须高于 soft TPS，实时守护阈值必须为正数，token 阈值必须为正整数。", "error");
           return;

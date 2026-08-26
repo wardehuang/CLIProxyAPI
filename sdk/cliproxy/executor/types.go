@@ -33,6 +33,8 @@ const ServiceTierMetadataKey = "service_tier"
 const GenerateMetadataKey = "generate"
 
 const (
+	// StreamCompletionTimeoutSecondsMetadataKey stores a plugin-requested first-payload timeout.
+	StreamCompletionTimeoutSecondsMetadataKey = "stream_completion_timeout_seconds"
 	// PinnedAuthMetadataKey locks execution to a specific auth ID.
 	PinnedAuthMetadataKey = "pinned_auth_id"
 	// SelectedAuthMetadataKey stores the auth ID selected by the scheduler.

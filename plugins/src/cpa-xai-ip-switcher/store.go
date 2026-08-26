@@ -33,6 +33,7 @@ const (
 	defaultRealtimeGuardTTFBSeconds       = 5.0
 	defaultRealtimeGuardGenerationSeconds = 1.25
 	defaultRealtimeGuardTokenThreshold    = 300
+	defaultRealtimeGuardTimeoutSeconds    = 120
 	maxProbeWorkers                       = 64
 	maxRefreshIntervalSeconds             = 3600
 	maxKeepaliveIntervalSeconds           = 86400
@@ -102,6 +103,7 @@ type pluginSettings struct {
 	RealtimeGuardTTFBSeconds       float64
 	RealtimeGuardGenerationSeconds float64
 	RealtimeGuardTokenThreshold    int
+	RealtimeGuardTimeoutSeconds    int
 	DebugEnabled                   bool
 	Grok2apiSyncEnabled            bool
 	Grok2apiBaseUrl                string
@@ -381,7 +383,8 @@ INSERT OR IGNORE INTO plugin_settings(setting_key, setting_value) VALUES
     ('quality_llm_probe_enabled', '0'),
     ('realtime_guard_ttfb_seconds', '5'),
     ('realtime_guard_generation_seconds', '1.25'),
-    ('realtime_guard_token_threshold', '300');
+    ('realtime_guard_token_threshold', '300'),
+    ('realtime_guard_timeout_seconds', '120');
 `)
 	if err != nil {
 		return fmt.Errorf("initialize sqlite database: %w", err)
@@ -1510,7 +1513,7 @@ WHERE setting_key IN (
     'revive_interval_seconds', 'probe_retry_count', 'healthy_slot_count', 'healthy_candidate_slot_count',
     'healthy_slot_max_age_minutes',
     'quality_worker_count', 'quality_probe_timeout_seconds', 'quality_probe_model', 'quality_soft_tps', 'quality_hard_tps',
-    'quality_llm_probe_enabled', 'realtime_guard_ttfb_seconds', 'realtime_guard_generation_seconds', 'realtime_guard_token_threshold',
+    'quality_llm_probe_enabled', 'realtime_guard_ttfb_seconds', 'realtime_guard_generation_seconds', 'realtime_guard_token_threshold', 'realtime_guard_timeout_seconds',
     'debug_enabled',
     'grok2api_sync_enabled', 'grok2api_base_url', 'grok2api_admin_username', 'grok2api_admin_password',
     'manager_base_url', 'manager_management_key', 'manager_database_path'
@@ -1588,6 +1591,8 @@ WHERE setting_key IN (
 				settings.QualityProbeTimeoutSeconds = value
 			case "realtime_guard_token_threshold":
 				settings.RealtimeGuardTokenThreshold = value
+			case "realtime_guard_timeout_seconds":
+				settings.RealtimeGuardTimeoutSeconds = value
 			}
 		}
 	}
@@ -1635,6 +1640,7 @@ func (store *ipStore) setSettings(settings pluginSettings) error {
 		"realtime_guard_ttfb_seconds":       strconv.FormatFloat(settings.RealtimeGuardTTFBSeconds, 'f', -1, 64),
 		"realtime_guard_generation_seconds": strconv.FormatFloat(settings.RealtimeGuardGenerationSeconds, 'f', -1, 64),
 		"realtime_guard_token_threshold":    strconv.Itoa(settings.RealtimeGuardTokenThreshold),
+		"realtime_guard_timeout_seconds":    strconv.Itoa(settings.RealtimeGuardTimeoutSeconds),
 		"debug_enabled":                     formatSettingBool(settings.DebugEnabled),
 		"grok2api_sync_enabled":             formatSettingBool(settings.Grok2apiSyncEnabled),
 		"grok2api_base_url":                 normalizeGrok2apiBaseURL(settings.Grok2apiBaseUrl),
@@ -1674,6 +1680,9 @@ func validatePluginSettings(settings pluginSettings) error {
 	}
 	if settings.ProbeRetryCount < 1 || settings.ProbeRetryCount > maxProbeRetryCount {
 		return fmt.Errorf("probe retry count must be between 1 and %d", maxProbeRetryCount)
+	}
+	if settings.RealtimeGuardTimeoutSeconds < 1 {
+		return fmt.Errorf("realtime guard first-payload timeout must be at least 1 second")
 	}
 	return validateSlotSettings(settings)
 }

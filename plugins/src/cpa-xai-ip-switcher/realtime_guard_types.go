@@ -53,6 +53,7 @@ type realtimeGuardDecision struct {
 	Classification      realtimeGuardClassification
 	QualityLevel        realtimeGuardQualityLevel
 	TPS                 float64
+	TotalDurationMs     int64
 	TTFBMs              int64
 	GenerationMs        int64
 	TotalTokens         int64

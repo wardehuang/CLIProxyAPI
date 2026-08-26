@@ -51,12 +51,25 @@ func (e *XAIExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Auth
 	httpReq.Header = finalizedRequest.Headers
 	setRequestBody(httpReq, finalizedRequest.Body)
 	applyFinalizedXAIRequest(prepared, finalizedRequest)
+	requestContext, cancelRequest := context.WithCancel(ctx)
+	var firstPayloadTimer *time.Timer
+	if finalizedRequest.FirstPayloadTimeout > 0 {
+		firstPayloadTimer = time.AfterFunc(finalizedRequest.FirstPayloadTimeout, cancelRequest)
+	}
+	stopFirstPayloadTimer := func() {
+		if firstPayloadTimer != nil {
+			firstPayloadTimer.Stop()
+		}
+	}
+	httpReq = httpReq.WithContext(requestContext)
 	e.recordXAIRequest(ctx, auth, url, httpReq.Header.Clone(), prepared.body)
 
 	httpClient := helps.NewProxyAwareHTTPClient(ctx, e.cfg, auth, 0)
 	httpClient = reporter.TrackHTTPClient(httpClient)
 	httpResp, err := httpClient.Do(httpReq)
 	if err != nil {
+		stopFirstPayloadTimer()
+		cancelRequest()
 		helps.RecordAPIResponseError(ctx, e.cfg, err)
 		return nil, err
 	}
@@ -67,9 +80,13 @@ func (e *XAIExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Auth
 			log.Errorf("xai executor: close response body error: %v", errClose)
 		}
 		if errRead != nil {
+			stopFirstPayloadTimer()
+			cancelRequest()
 			helps.RecordAPIResponseError(ctx, e.cfg, errRead)
 			return nil, errRead
 		}
+		stopFirstPayloadTimer()
+		cancelRequest()
 		helps.AppendAPIResponseChunk(ctx, e.cfg, data)
 		helps.LogWithRequestID(ctx).Debugf("request error, error status: %d, error message: %s", httpResp.StatusCode, helps.SummarizeErrorBody(httpResp.Header.Get("Content-Type"), data))
 		return nil, xaiStatusErr(httpResp.StatusCode, data)
@@ -78,6 +95,8 @@ func (e *XAIExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Auth
 	out := make(chan cliproxyexecutor.StreamChunk)
 	completion := make(chan cliproxyexecutor.StreamCompletion, 1)
 	go func() {
+		defer stopFirstPayloadTimer()
+		defer cancelRequest()
 		completionState := cliproxyexecutor.StreamCompletion{}
 		var completedUsage cliproxyusage.Detail
 		hasCompletedUsage := false
@@ -105,15 +124,19 @@ func (e *XAIExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Auth
 		var outputItemsFallback [][]byte
 		responseFilter := newXAIInternalXSearchResponseFilter(prepared.filterInternalXSearch, prepared.clientDeclaredTools)
 		var pendingEventLine []byte
+		markFirstPayload := func() {
+			if completionState.FirstPayloadAt.IsZero() {
+				completionState.FirstPayloadAt = time.Now()
+				stopFirstPayloadTimer()
+			}
+		}
 		emitTranslatedLine := func(translatedLine []byte) bool {
-			chunks := helps.TranslateStreamWithClaudeInputTokens(ctx, prepared.to, prepared.responseFormat, req.Model, prepared.originalPayload, prepared.body, translatedLine, &param, claudeInputTokens)
+			chunks := helps.TranslateStreamWithClaudeInputTokens(requestContext, prepared.to, prepared.responseFormat, req.Model, prepared.originalPayload, prepared.body, translatedLine, &param, claudeInputTokens)
 			for i := range chunks {
-				if completionState.FirstPayloadAt.IsZero() {
-					completionState.FirstPayloadAt = time.Now()
-				}
 				select {
 				case out <- cliproxyexecutor.StreamChunk{Payload: chunks[i]}:
-				case <-ctx.Done():
+					markFirstPayload()
+				case <-requestContext.Done():
 					return false
 				}
 			}
@@ -200,7 +223,7 @@ func (e *XAIExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Auth
 			reporter.PublishFailure(ctx, errScan)
 			select {
 			case out <- cliproxyexecutor.StreamChunk{Err: errScan}:
-			case <-ctx.Done():
+			case <-requestContext.Done():
 			}
 		}
 	}()

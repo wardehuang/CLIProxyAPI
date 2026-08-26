@@ -84,6 +84,10 @@ func (h *BaseAPIHandler) executeBufferedStreamWithGuard(
 		retryCount := 0
 		currentResult := initialResult
 		currentErr := initialErr
+		attemptStartedAt := lifecycle.startedAt()
+		if attemptStartedAt.IsZero() {
+			attemptStartedAt = time.Now()
+		}
 		for {
 			if ctx != nil && ctx.Err() != nil {
 				completionOutcome = pluginapi.RequestCompletionCanceled
@@ -92,11 +96,12 @@ func (h *BaseAPIHandler) executeBufferedStreamWithGuard(
 				return
 			}
 			if currentErr == nil && currentResult == nil {
+				attemptStartedAt = time.Now()
 				currentResult, currentErr = h.AuthManager.ExecuteStream(ctx, providers, req, opts)
 			}
 			mergeStreamAttemptAuthMetadata(opts.Metadata, currentResult)
 
-			attempt := collectBufferedStreamAttempt(ctx, interceptorHost, streamInterceptorsActive, responseProtocol, normalizedModel, originalRequestedModel, req, opts, currentResult, currentErr, execOptions.SkipInterceptorPluginID)
+			attempt := collectBufferedStreamAttempt(ctx, interceptorHost, streamInterceptorsActive, responseProtocol, normalizedModel, originalRequestedModel, req, opts, currentResult, currentErr, attemptStartedAt, execOptions.SkipInterceptorPluginID)
 			decision, guardErr := completionHost.InterceptStreamCompletionRequired(ctx, buildStreamCompletionRequest(lifecycle, providers, responseProtocol, normalizedModel, originalRequestedModel, req, opts, attempt, retryCount))
 			if guardErr != nil {
 				decision = pluginapi.StreamCompletionInterceptResponse{
@@ -147,6 +152,7 @@ func (h *BaseAPIHandler) executeBufferedStreamWithGuard(
 					sendBufferedStreamError(ctx, errChan, failure)
 					return
 				}
+				attemptStartedAt = time.Now()
 				currentResult, currentErr = h.AuthManager.ExecuteStream(ctx, providers, req, opts)
 				continue
 			case pluginapi.StreamCompletionActionFail:
@@ -194,12 +200,16 @@ func collectBufferedStreamAttempt(
 	opts coreexecutor.Options,
 	streamResult *coreexecutor.StreamResult,
 	streamErr error,
+	startedAt time.Time,
 	skipPluginID string,
 ) bufferedStreamAttempt {
 	attempt := bufferedStreamAttempt{
-		StartedAt:  time.Now(),
+		StartedAt:  startedAt,
 		StatusCode: http.StatusOK,
 		Err:        streamErr,
+	}
+	if attempt.StartedAt.IsZero() {
+		attempt.StartedAt = time.Now()
 	}
 	if streamErr != nil {
 		attempt.StatusCode = statusFromError(streamErr)

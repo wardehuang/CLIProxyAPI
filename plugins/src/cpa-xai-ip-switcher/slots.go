@@ -233,6 +233,7 @@ func defaultPluginSettings() pluginSettings {
 		RealtimeGuardTTFBSeconds:       defaultRealtimeGuardTTFBSeconds,
 		RealtimeGuardGenerationSeconds: defaultRealtimeGuardGenerationSeconds,
 		RealtimeGuardTokenThreshold:    defaultRealtimeGuardTokenThreshold,
+		RealtimeGuardTimeoutSeconds:    defaultRealtimeGuardTimeoutSeconds,
 		DebugEnabled:                   false,
 		Grok2apiSyncEnabled:            false,
 		Grok2apiBaseUrl:                "",

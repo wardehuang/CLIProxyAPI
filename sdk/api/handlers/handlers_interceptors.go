@@ -110,6 +110,13 @@ func (t *requestLifecycleTracker) requestID() string {
 	return t.completion.RequestID
 }
 
+func (t *requestLifecycleTracker) startedAt() time.Time {
+	if t == nil {
+		return time.Time{}
+	}
+	return t.completion.StartedAt
+}
+
 func (t *requestLifecycleTracker) complete(outcome pluginapi.RequestCompletionOutcome, statusCode int, err error) {
 	if t == nil {
 		return

@@ -134,6 +134,7 @@ func pluginSettingsEqual(left, right pluginSettings) bool {
 		left.RealtimeGuardTTFBSeconds == right.RealtimeGuardTTFBSeconds &&
 		left.RealtimeGuardGenerationSeconds == right.RealtimeGuardGenerationSeconds &&
 		left.RealtimeGuardTokenThreshold == right.RealtimeGuardTokenThreshold &&
+		left.RealtimeGuardTimeoutSeconds == right.RealtimeGuardTimeoutSeconds &&
 		left.DebugEnabled == right.DebugEnabled &&
 		left.Grok2apiSyncEnabled == right.Grok2apiSyncEnabled &&
 		left.Grok2apiBaseUrl == right.Grok2apiBaseUrl &&

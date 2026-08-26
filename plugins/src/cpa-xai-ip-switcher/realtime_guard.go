@@ -169,6 +169,22 @@ func classifyRealtimeGuardProbeWithSettings(probe realtimeGuardProbe, settings p
 		QualityLevel:   realtimeGuardQualityHealthy,
 		Reason:         "within_threshold",
 	}
+	requestFinishedAt := probe.FinishedAt
+	if requestFinishedAt.IsZero() {
+		requestFinishedAt = time.Now()
+	}
+	if !probe.StartedAt.IsZero() {
+		requestDuration := requestFinishedAt.Sub(probe.StartedAt)
+		decision.TotalDurationMs = requestDuration.Milliseconds()
+		if probe.FirstPayloadAt.IsZero() && requestDuration > time.Duration(settings.RealtimeGuardTimeoutSeconds)*time.Second {
+			decision.Action = realtimeGuardActionRetry
+			decision.Classification = realtimeGuardClassificationDegradation
+			decision.QualityLevel = realtimeGuardQualitySoft
+			decision.Reason = "first_payload_timeout"
+			decision.Error = fmt.Sprintf("实时守护首字超过 %d 秒未返回", settings.RealtimeGuardTimeoutSeconds)
+			return decision
+		}
+	}
 	if strings.TrimSpace(probe.Error) != "" {
 		return realtimeGuardUnknownDecision("upstream_error", probe.Error)
 	}
@@ -501,7 +517,7 @@ func (store *ipStore) logRealtimeDegradationDetected(probe realtimeGuardProbe, d
 		probe.SourceSnapshot.NodeID,
 		"",
 		fmt.Sprintf("【检测到降智】auth:%s，节点:%s，原因:%s", probe.AuthFileName, probe.ProxyURL, decision.Reason),
-		fmt.Sprintf("request_id=%s；auth_file=%s；auth_index=%s；节点代理=%s；HTTP=%d；等级=%s；TPS=%.2f；TTFB=%dms；首字后耗时=%dms；输出+思考tokens=%d", probe.RequestID, probe.AuthFileName, probe.AuthIndex, probe.ProxyURL, probe.StatusCode, decision.QualityLevel, decision.TPS, decision.TTFBMs, decision.GenerationMs, decision.TotalTokens),
+		fmt.Sprintf("request_id=%s；auth_file=%s；auth_index=%s；节点代理=%s；HTTP=%d；等级=%s；总耗时=%dms；TPS=%.2f；TTFB=%dms；首字后耗时=%dms；输出+思考tokens=%d", probe.RequestID, probe.AuthFileName, probe.AuthIndex, probe.ProxyURL, probe.StatusCode, decision.QualityLevel, decision.TotalDurationMs, decision.TPS, decision.TTFBMs, decision.GenerationMs, decision.TotalTokens),
 	)
 }
 
@@ -535,6 +551,6 @@ func (store *ipStore) logRealtimeGuard(probe realtimeGuardProbe, decision realti
 		originalNode.ID,
 		originalNode.Name,
 		"实时守护发现异常并已处理",
-		fmt.Sprintf("request_id=%s；auth_id=%s；auth_index=%s；HTTP=%d；分类=%s；等级=%s；TPS=%.2f；TTFB=%dms；首字后耗时=%dms；输出+思考tokens=%d；原节点=%d；原代理=%s；替换节点=%d；替换代理=%s；动作=%s；重试=%d/%d；错误=%s", probe.RequestID, probe.AuthID, probe.AuthIndex, probe.StatusCode, decision.Classification, decision.QualityLevel, decision.TPS, decision.TTFBMs, decision.GenerationMs, decision.TotalTokens, originalNode.ID, originalNode.ProxyURL, replacementNode.ID, replacementNode.ProxyURL, decision.Action, probe.RetryCount, probe.MaxRetries, decision.Error),
+		fmt.Sprintf("request_id=%s；auth_id=%s；auth_index=%s；HTTP=%d；分类=%s；等级=%s；总耗时=%dms；TPS=%.2f；TTFB=%dms；首字后耗时=%dms；输出+思考tokens=%d；原节点=%d；原代理=%s；替换节点=%d；替换代理=%s；动作=%s；重试=%d/%d；错误=%s", probe.RequestID, probe.AuthID, probe.AuthIndex, probe.StatusCode, decision.Classification, decision.QualityLevel, decision.TotalDurationMs, decision.TPS, decision.TTFBMs, decision.GenerationMs, decision.TotalTokens, originalNode.ID, originalNode.ProxyURL, replacementNode.ID, replacementNode.ProxyURL, decision.Action, probe.RetryCount, probe.MaxRetries, decision.Error),
 	)
 }
