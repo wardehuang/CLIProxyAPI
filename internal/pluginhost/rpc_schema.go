@@ -43,6 +43,7 @@ type rpcCapabilities struct {
 	ResponseInterceptor           bool                         `json:"response_interceptor"`
 	StreamChunkInterceptor        bool                         `json:"response_stream_interceptor"`
 	StreamCompletionInterceptor   bool                         `json:"response_stream_completion_interceptor"`
+	WebSocketResponseObserver     bool                         `json:"websocket_response_observer"`
 	ThinkingApplier               bool                         `json:"thinking_applier"`
 	UsagePlugin                   bool                         `json:"usage_plugin"`
 	CommandLinePlugin             bool                         `json:"command_line_plugin"`
@@ -134,6 +135,11 @@ type rpcStreamCompletionInterceptRequest struct {
 	HostCallbackID string `json:"host_callback_id,omitempty"`
 }
 
+type rpcWebSocketResponseEvent struct {
+	pluginapi.WebSocketResponseEvent
+	HostCallbackID string `json:"host_callback_id,omitempty"`
+}
+
 type rpcThinkingApplyRequest struct {
 	pluginapi.ThinkingApplyRequest
 	HostCallbackID string `json:"host_callback_id,omitempty"`
@@ -178,6 +184,7 @@ func rpcCapabilitiesFromPlugin(plugin pluginapi.Plugin) rpcCapabilities {
 		ResponseInterceptor:           caps.ResponseInterceptor != nil,
 		StreamChunkInterceptor:        caps.StreamChunkInterceptor != nil,
 		StreamCompletionInterceptor:   caps.StreamCompletionInterceptor != nil,
+		WebSocketResponseObserver:     caps.WebSocketResponseObserver != nil,
 		ThinkingApplier:               caps.ThinkingApplier != nil,
 		UsagePlugin:                   caps.UsagePlugin != nil,
 		CommandLinePlugin:             caps.CommandLinePlugin != nil,

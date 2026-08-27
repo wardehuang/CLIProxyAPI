@@ -123,6 +123,7 @@ func (e *XAIExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Auth
 		outputItemsByIndex := make(map[int64][]byte)
 		var outputItemsFallback [][]byte
 		responseFilter := newXAIInternalXSearchResponseFilter(prepared.filterInternalXSearch, prepared.clientDeclaredTools)
+		namespaceRestorer := newXAINamespaceRestorer(prepared.namespaceTools)
 		var pendingEventLine []byte
 		markFirstPayload := func() {
 			if completionState.FirstPayloadAt.IsZero() {
@@ -162,7 +163,7 @@ func (e *XAIExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Auth
 						completionState.Completed = true
 						completionState.Body = append([]byte("data: "), eventData...)
 					}
-					eventData = restoreXAINamespaceToolCalls(eventData, prepared.namespaceTools)
+					eventData = namespaceRestorer.restore(eventData)
 					eventData = responseFilter.apply(eventData)
 					if len(eventData) == 0 {
 						if hasPendingEventLine && i == 0 {

@@ -30,6 +30,7 @@ var _ RequestFinalizer = (*compileTimePlugin)(nil)
 var _ RequestLifecyclePlugin = (*compileTimePlugin)(nil)
 var _ ResponseInterceptor = (*compileTimePlugin)(nil)
 var _ StreamChunkInterceptor = (*compileTimePlugin)(nil)
+var _ WebSocketResponseObserver = (*compileTimePlugin)(nil)
 var _ ThinkingApplier = (*compileTimePlugin)(nil)
 var _ UsagePlugin = (*compileTimePlugin)(nil)
 var _ CommandLinePlugin = (*compileTimePlugin)(nil)
@@ -542,6 +543,10 @@ func (compileTimePlugin) InterceptResponse(context.Context, ResponseInterceptReq
 
 func (compileTimePlugin) InterceptStreamChunk(context.Context, StreamChunkInterceptRequest) (StreamChunkInterceptResponse, error) {
 	return StreamChunkInterceptResponse{}, nil
+}
+
+func (compileTimePlugin) ObserveWebSocketResponseEvent(context.Context, WebSocketResponseEvent) error {
+	return nil
 }
 
 func (compileTimePlugin) ApplyThinking(context.Context, ThinkingApplyRequest) (PayloadResponse, error) {

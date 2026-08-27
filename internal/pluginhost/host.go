@@ -1057,6 +1057,7 @@ func validPlugin(plugin pluginapi.Plugin) bool {
 		caps.ResponseInterceptor != nil ||
 		caps.StreamChunkInterceptor != nil ||
 		caps.StreamCompletionInterceptor != nil ||
+		caps.WebSocketResponseObserver != nil ||
 		caps.ThinkingApplier != nil ||
 		caps.UsagePlugin != nil ||
 		caps.CommandLinePlugin != nil ||
