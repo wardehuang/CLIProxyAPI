@@ -2,9 +2,11 @@ package handlers
 
 import (
 	"bytes"
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/interfaces"
@@ -13,7 +15,132 @@ import (
 	"golang.org/x/net/context"
 )
 
-const maxRealtimeGuardDegradedAccounts = 5
+const (
+	maxRealtimeGuardDegradedAccounts      = 5
+	realtimeGuardVirtualHeartbeatInterval = 10 * time.Second
+)
+
+type virtualResponsesStreamResponse struct {
+	ID         string `json:"id"`
+	Object     string `json:"object"`
+	CreatedAt  int64  `json:"created_at"`
+	Status     string `json:"status"`
+	Background bool   `json:"background"`
+	Error      any    `json:"error"`
+	Output     []any  `json:"output"`
+	Model      string `json:"model,omitempty"`
+}
+
+type virtualResponsesStreamEvent struct {
+	Type           string                         `json:"type"`
+	SequenceNumber int64                          `json:"sequence_number"`
+	Response       virtualResponsesStreamResponse `json:"response"`
+}
+
+type virtualResponsesStreamHeartbeat struct {
+	responseID   string
+	model        string
+	createdAt    int64
+	nextSequence int64
+	stopChan     chan struct{}
+	doneChan     chan struct{}
+	stopOnce     sync.Once
+	started      bool
+}
+
+func newVirtualResponsesStreamHeartbeat(model string, lifecycle *requestLifecycleTracker) virtualResponsesStreamHeartbeat {
+	return virtualResponsesStreamHeartbeat{
+		responseID: "resp_" + lifecycle.requestID(),
+		model:      model,
+		createdAt:  time.Now().Unix(),
+		stopChan:   make(chan struct{}),
+		doneChan:   make(chan struct{}),
+	}
+}
+
+func (h *virtualResponsesStreamHeartbeat) event(eventType string, sequenceNumber int64) []byte {
+	payload := virtualResponsesStreamEvent{
+		Type:           eventType,
+		SequenceNumber: sequenceNumber,
+		Response: virtualResponsesStreamResponse{
+			ID:         h.responseID,
+			Object:     "response",
+			CreatedAt:  h.createdAt,
+			Status:     "in_progress",
+			Background: false,
+			Error:      nil,
+			Output:     []any{},
+			Model:      h.model,
+		},
+	}
+	data, _ := json.Marshal(payload)
+	return []byte(fmt.Sprintf("event: %s\ndata: %s\n\n", eventType, data))
+}
+
+func (h *virtualResponsesStreamHeartbeat) bootstrap(ctx context.Context, dataChan chan<- []byte) bool {
+	for _, eventType := range []string{"response.created", "response.in_progress"} {
+		if !sendBufferedStreamPayload(ctx, dataChan, h.event(eventType, h.nextSequence)) {
+			return false
+		}
+		h.nextSequence++
+	}
+	h.started = true
+	go h.run(ctx, dataChan)
+	return true
+}
+
+func (h *virtualResponsesStreamHeartbeat) run(ctx context.Context, dataChan chan<- []byte) {
+	defer close(h.doneChan)
+	ticker := time.NewTicker(realtimeGuardVirtualHeartbeatInterval)
+	defer ticker.Stop()
+	var done <-chan struct{}
+	if ctx != nil {
+		done = ctx.Done()
+	}
+	for {
+		select {
+		case <-h.stopChan:
+			return
+		case <-done:
+			return
+		case <-ticker.C:
+			payload := h.event("response.in_progress", h.nextSequence)
+			h.nextSequence++
+			if !sendVirtualResponsesHeartbeatPayload(ctx, h.stopChan, dataChan, payload) {
+				return
+			}
+		}
+	}
+}
+
+func (h *virtualResponsesStreamHeartbeat) stopAndWait() {
+	if !h.started {
+		return
+	}
+	h.stopOnce.Do(func() {
+		close(h.stopChan)
+	})
+	<-h.doneChan
+}
+
+func sendVirtualResponsesHeartbeatPayload(ctx context.Context, stop <-chan struct{}, dataChan chan<- []byte, payload []byte) bool {
+	if ctx == nil {
+		select {
+		case <-stop:
+			return false
+		case dataChan <- payload:
+			return true
+		}
+	}
+	select {
+	case <-stop:
+		return false
+	case <-ctx.Done():
+		return false
+	case dataChan <- payload:
+		return true
+	}
+}
 
 type streamCompletionHost interface {
 	InterceptStreamCompletion(context.Context, pluginapi.StreamCompletionInterceptRequest) pluginapi.StreamCompletionInterceptResponse
@@ -80,6 +207,8 @@ func (h *BaseAPIHandler) executeBufferedStreamWithGuard(
 			close(dataChan)
 			close(errChan)
 		}()
+		virtualHeartbeat := newVirtualResponsesStreamHeartbeat(normalizedModel, lifecycle)
+		defer virtualHeartbeat.stopAndWait()
 
 		retryCount := 0
 		currentResult := initialResult
@@ -100,6 +229,16 @@ func (h *BaseAPIHandler) executeBufferedStreamWithGuard(
 				currentResult, currentErr = h.AuthManager.ExecuteStream(ctx, providers, req, opts)
 			}
 			mergeStreamAttemptAuthMetadata(opts.Metadata, currentResult)
+			if responseProtocol == "openai-response" && strings.EqualFold(streamCompletionProvider(providers, opts.Metadata), "xai") && currentErr == nil && currentResult != nil && !virtualHeartbeat.started {
+				if !virtualHeartbeat.bootstrap(ctx, dataChan) {
+					completionOutcome = pluginapi.RequestCompletionCanceled
+					completionStatus = 0
+					if ctx != nil {
+						completionErr = ctx.Err()
+					}
+					return
+				}
+			}
 
 			attempt := collectBufferedStreamAttempt(ctx, interceptorHost, streamInterceptorsActive, responseProtocol, normalizedModel, originalRequestedModel, req, opts, currentResult, currentErr, attemptStartedAt, execOptions.SkipInterceptorPluginID)
 			decision, guardErr := completionHost.InterceptStreamCompletionRequired(ctx, buildStreamCompletionRequest(lifecycle, providers, responseProtocol, normalizedModel, originalRequestedModel, req, opts, attempt, retryCount))
@@ -118,12 +257,14 @@ func (h *BaseAPIHandler) executeBufferedStreamWithGuard(
 			switch decision.Action {
 			case pluginapi.StreamCompletionActionFlush:
 				if attempt.Err != nil {
+					virtualHeartbeat.stopAndWait()
 					completionOutcome = pluginapi.RequestCompletionFailed
 					completionStatus = attempt.StatusCode
 					completionErr = attempt.Err
 					sendBufferedStreamError(ctx, errChan, &interfaces.ErrorMessage{StatusCode: attempt.StatusCode, Error: attempt.Err})
 					return
 				}
+				virtualHeartbeat.stopAndWait()
 				for _, payload := range attempt.Payloads {
 					if !sendBufferedStreamPayload(ctx, dataChan, payload) {
 						completionOutcome = pluginapi.RequestCompletionCanceled
@@ -136,6 +277,7 @@ func (h *BaseAPIHandler) executeBufferedStreamWithGuard(
 			case pluginapi.StreamCompletionActionRetry:
 				degradedAccountCount := retryCount + 1
 				if degradedAccountCount >= maxRealtimeGuardDegradedAccounts {
+					virtualHeartbeat.stopAndWait()
 					failure := realtimeGuardFailure(decision, "实时降智守护已处理 5 个降智账号")
 					completionOutcome = pluginapi.RequestCompletionFailed
 					completionStatus = failure.StatusCode
@@ -145,6 +287,7 @@ func (h *BaseAPIHandler) executeBufferedStreamWithGuard(
 				}
 				retryCount++
 				if errReload := h.reloadSelectedAuthForStreamRetry(ctx, opts.Metadata); errReload != nil {
+					virtualHeartbeat.stopAndWait()
 					failure := realtimeGuardFailure(decision, errReload.Error())
 					completionOutcome = pluginapi.RequestCompletionFailed
 					completionStatus = failure.StatusCode
@@ -156,6 +299,7 @@ func (h *BaseAPIHandler) executeBufferedStreamWithGuard(
 				currentResult, currentErr = h.AuthManager.ExecuteStream(ctx, providers, req, opts)
 				continue
 			case pluginapi.StreamCompletionActionFail:
+				virtualHeartbeat.stopAndWait()
 				failure := realtimeGuardFailure(decision, attemptErrorMessage(attempt))
 				completionOutcome = pluginapi.RequestCompletionFailed
 				completionStatus = failure.StatusCode
@@ -163,6 +307,7 @@ func (h *BaseAPIHandler) executeBufferedStreamWithGuard(
 				sendBufferedStreamError(ctx, errChan, failure)
 				return
 			default:
+				virtualHeartbeat.stopAndWait()
 				failure := realtimeGuardFailure(decision, "实时降智守护返回了未知动作")
 				completionOutcome = pluginapi.RequestCompletionFailed
 				completionStatus = failure.StatusCode
