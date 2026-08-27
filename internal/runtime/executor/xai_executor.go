@@ -96,7 +96,7 @@ func (e *XAIExecutor) PrepareRequest(req *http.Request, auth *cliproxyauth.Auth)
 
 // HttpRequest injects xAI credentials into the request and executes it.
 func (e *XAIExecutor) HttpRequest(ctx context.Context, auth *cliproxyauth.Auth, req *http.Request) (*http.Response, error) {
-	if errProxy := waitForXAIAuthProxyURL(ctx, auth); errProxy != nil {
+	if errProxy := requireXAIAuthProxyURL(auth); errProxy != nil {
 		return nil, errProxy
 	}
 	if req == nil {

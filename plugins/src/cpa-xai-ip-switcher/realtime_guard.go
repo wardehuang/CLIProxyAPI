@@ -52,6 +52,7 @@ func handleStreamCompletionIntercept(completion pluginapi.StreamCompletionInterc
 		_, _ = pluginRuntime.withStore(func(store *ipStore) ([]byte, error) {
 			return nil, store.clearRealtimeDegradationFailure(probe.ProxyURL)
 		})
+		notifyManagerRealtimeHealthyAsync(probe)
 		return pluginapi.StreamCompletionInterceptResponse{
 			Action:     pluginapi.StreamCompletionAction(decision.Action),
 			Reason:     decision.Reason,
@@ -499,7 +500,8 @@ func ensureRealtimeGuardReplacementAuth(degradedAuthIndex string) error {
 		return fmt.Errorf("读取可重试 xAI auth: %w", err)
 	}
 	for _, auth := range authFiles {
-		if auth.Index == degradedAuthIndex || auth.Disabled || auth.AccessToken() == "" || auth.Priority == managerAccountAbnormalPriority {
+		negativePriority := auth.PrioritySet && auth.Priority < 0
+		if auth.Index == degradedAuthIndex || auth.Disabled || auth.AccessToken() == "" || negativePriority {
 			continue
 		}
 		return nil

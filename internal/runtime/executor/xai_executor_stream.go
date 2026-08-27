@@ -18,7 +18,7 @@ import (
 )
 
 func (e *XAIExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Auth, req cliproxyexecutor.Request, opts cliproxyexecutor.Options) (_ *cliproxyexecutor.StreamResult, err error) {
-	if errProxy := waitForXAIAuthProxyURL(ctx, auth); errProxy != nil {
+	if errProxy := requireXAIAuthProxyURL(auth); errProxy != nil {
 		return nil, errProxy
 	}
 	if opts.Alt == "responses/compact" {

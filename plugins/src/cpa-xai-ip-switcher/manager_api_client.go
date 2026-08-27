@@ -14,6 +14,7 @@ import (
 const managerAccountAbnormalPriority = -8
 
 const managerRealtimeDegradationEndpoint = "/v0/management/wxai-inspection/realtime-degradation"
+const managerRealtimeHealthyEndpoint = "/v0/management/wxai-inspection/realtime-healthy"
 const managerLatestScheduledRunEndpoint = "/v0/management/wxai-inspection/scheduled/latest-completed"
 
 type managerAPIClient struct {
@@ -41,6 +42,17 @@ type managerRealtimeDegradationRequest struct {
 	TokensPerSecond  float64 `json:"tokensPerSecond"`
 	RequestID        string  `json:"requestId"`
 	ProxyURL         string  `json:"proxyUrl"`
+}
+
+type managerRealtimeHealthyRequest struct {
+	AccountKey string `json:"accountKey"`
+	FileName   string `json:"fileName"`
+	AuthIndex  string `json:"authIndex"`
+	AccountID  string `json:"accountId"`
+}
+
+type managerRealtimeHealthyResponse struct {
+	Cleared bool `json:"cleared"`
 }
 
 func (controller *runtimeController) managerAPISettings() (string, string) {
@@ -92,6 +104,78 @@ func syncManagerRealtimeDegradation(managerBaseURL, managerManagementKey string,
 		return err
 	}
 	return client.execute(request, nil)
+}
+
+func syncManagerRealtimeHealthy(managerBaseURL, managerManagementKey string, auth authFile) (bool, error) {
+	client, err := newManagerAPIClient(managerBaseURL, managerManagementKey)
+	if err != nil {
+		return false, err
+	}
+	accountKey, _, accountID := managerAccountIdentity(auth)
+	payload := managerRealtimeHealthyRequest{
+		AccountKey: accountKey,
+		FileName:   auth.Name,
+		AuthIndex:  auth.Index,
+		AccountID:  accountID,
+	}
+	request, err := client.newRequest(http.MethodPost, managerRealtimeHealthyEndpoint, payload)
+	if err != nil {
+		return false, err
+	}
+	var response managerRealtimeHealthyResponse
+	if err := client.execute(request, &response); err != nil {
+		return false, err
+	}
+	return response.Cleared, nil
+}
+
+func notifyManagerRealtimeHealthyAsync(probe realtimeGuardProbe) {
+	go func() {
+		shouldSync := false
+		if _, err := pluginRuntime.withStore(func(store *ipStore) ([]byte, error) {
+			marked, markedErr := store.hasRealtimeDegradedAuth(probe.AuthIndex)
+			shouldSync = marked
+			return nil, markedErr
+		}); err != nil {
+			logManagerRealtimeHealthyFailure(probe, err)
+			return
+		}
+		if !shouldSync {
+			return
+		}
+		auth, err := getAuthFile(probe.AuthIndex)
+		if err != nil {
+			logManagerRealtimeHealthyFailure(probe, err)
+			return
+		}
+		managerBaseURL, managerManagementKey := pluginRuntime.managerAPISettings()
+		cleared, syncErr := syncManagerRealtimeHealthy(managerBaseURL, managerManagementKey, auth)
+		if syncErr != nil {
+			logManagerRealtimeHealthyFailure(probe, syncErr)
+			return
+		}
+		if !cleared {
+			return
+		}
+		if _, clearErr := pluginRuntime.withStore(func(store *ipStore) ([]byte, error) {
+			return nil, store.clearRealtimeDegradedAuth(probe.AuthIndex)
+		}); clearErr != nil {
+			logManagerRealtimeHealthyFailure(probe, clearErr)
+		}
+	}()
+}
+
+func logManagerRealtimeHealthyFailure(probe realtimeGuardProbe, err error) {
+	_, _ = pluginRuntime.withStore(func(store *ipStore) ([]byte, error) {
+		return nil, store.appendLog(
+			logLevelWarn,
+			"realtime_guard.manager_healthy_sync_failed",
+			0,
+			probe.ProxyURL,
+			"实时正常结果已下发，但 Manager 连续降智次数清零通知失败",
+			fmt.Sprintf("request_id=%s；auth_index=%s；error=%v", probe.RequestID, probe.AuthIndex, err),
+		)
+	})
 }
 
 func newManagerAPIClient(managerBaseURL, managerManagementKey string) (managerAPIClient, error) {

@@ -80,6 +80,26 @@ VALUES (?, ?, ?, ?)`, auth.Index, originalPriority, now, now); err != nil {
 	return &auth.Priority, nil
 }
 
+func (store *ipStore) hasRealtimeDegradedAuth(authIndex string) (bool, error) {
+	var count int
+	if err := store.database.QueryRow(`
+SELECT COUNT(*)
+FROM realtime_degraded_auths
+WHERE auth_index = ?`, strings.TrimSpace(authIndex)).Scan(&count); err != nil {
+		return false, fmt.Errorf("读取实时降智账号标记: %w", err)
+	}
+	return count > 0, nil
+}
+
+func (store *ipStore) clearRealtimeDegradedAuth(authIndex string) error {
+	if _, err := store.database.Exec(`
+DELETE FROM realtime_degraded_auths
+WHERE auth_index = ?`, strings.TrimSpace(authIndex)); err != nil {
+		return fmt.Errorf("清理实时降智账号标记: %w", err)
+	}
+	return nil
+}
+
 func (store *ipStore) recordRealtimeDegradationFailure(probe realtimeGuardProbe, decision realtimeGuardDecision) (realtimeDegradationFailure, error) {
 	proxyURL := strings.TrimSpace(probe.ProxyURL)
 	if proxyURL == "" {
