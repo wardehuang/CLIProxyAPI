@@ -214,6 +214,7 @@ func synthesizeFileAuths(ctx *SynthesisContext, fullPath string, data []byte) ([
 	// CPA extension: keep antigravity family priorities available to scheduler plugins.
 	copyIntegerMetadataAttribute(a.Attributes, metadata, "priority_claude")
 	copyIntegerMetadataAttribute(a.Attributes, metadata, "priority_gemini")
+	copyPositiveIntegerMetadataAttribute(a.Attributes, metadata, "schedule_group")
 	if errWeight := coreauth.ApplyAuthWeightMetadata(a, metadata); errWeight != nil {
 		return nil, fmt.Errorf("invalid auth weight in %s: %w", filepath.Base(fullPath), errWeight)
 	}
@@ -258,6 +259,32 @@ func copyIntegerMetadataAttribute(attrs map[string]string, metadata map[string]a
 		if _, errAtoi := strconv.Atoi(trimmed); errAtoi == nil {
 			attrs[key] = trimmed
 		}
+	}
+}
+
+func copyPositiveIntegerMetadataAttribute(attrs map[string]string, metadata map[string]any, key string) {
+	if attrs == nil || metadata == nil || strings.TrimSpace(key) == "" {
+		return
+	}
+	rawValue, ok := metadata[key]
+	if !ok {
+		return
+	}
+	var parsed int
+	switch value := rawValue.(type) {
+	case float64:
+		parsed = int(value)
+	case string:
+		var err error
+		parsed, err = strconv.Atoi(strings.TrimSpace(value))
+		if err != nil {
+			return
+		}
+	default:
+		return
+	}
+	if parsed > 0 {
+		attrs[key] = strconv.Itoa(parsed)
 	}
 }
 

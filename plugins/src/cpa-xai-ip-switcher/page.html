@@ -364,6 +364,11 @@ socks5h://username:pass@ip:port
                 <input id="probe-retry-count" type="number" min="1" max="10" step="1" value="3" title="含首次；全部失败才归【异常】，1–10">
                 <span class="settings-help">含首次 · 全失败才异常 · 1–10</span>
               </label>
+              <label class="settings-field" for="schedule-group-count">
+                xAI 调度组数
+                <input id="schedule-group-count" type="number" min="1" max="1000" step="1" value="4" title="组级最大并发数；有请求占用调度组时禁止修改，1–1000">
+                <span class="settings-help">组级最大并发 · 忙碌时不可修改 · 1–1000 · 立即生效</span>
+              </label>
               <label class="settings-field" for="refresh-interval">
                 页面刷新（秒）
                 <input id="refresh-interval" type="number" min="5" max="3600" step="5" value="30" title="仅刷新页面数据，不发起探测；立即生效">
@@ -649,6 +654,7 @@ socks5h://username:pass@ip:port
         keepaliveInterval: document.getElementById("keepalive-interval"),
         reviveInterval: document.getElementById("revive-interval"),
         probeRetryCount: document.getElementById("probe-retry-count"),
+        scheduleGroupCount: document.getElementById("schedule-group-count"),
         healthySlotCount: document.getElementById("healthy-slot-count"),
         healthyCandidateSlotCount: document.getElementById("healthy-candidate-slot-count"),
         healthySlotMaxAgeMinutes: document.getElementById("healthy-slot-max-age-minutes"),
@@ -828,6 +834,7 @@ socks5h://username:pass@ip:port
           elements.keepaliveInterval.value = String(settings.keepaliveIntervalSeconds);
           elements.reviveInterval.value = String(settings.reviveIntervalSeconds);
           elements.probeRetryCount.value = String(settings.probeRetryCount);
+          elements.scheduleGroupCount.value = String(settings.scheduleGroupCount);
           elements.healthySlotCount.value = String(settings.healthySlotCount);
           elements.healthyCandidateSlotCount.value = String(settings.healthyCandidateSlotCount);
           elements.healthySlotMaxAgeMinutes.value = String(settings.healthySlotMaxAgeMinutes);
@@ -1367,6 +1374,7 @@ socks5h://username:pass@ip:port
           keepaliveIntervalSeconds: Number(elements.keepaliveInterval.value),
           reviveIntervalSeconds: Number(elements.reviveInterval.value),
           probeRetryCount: Number(elements.probeRetryCount.value),
+          scheduleGroupCount: Number(elements.scheduleGroupCount.value),
           healthySlotCount: Number(elements.healthySlotCount.value),
           healthyCandidateSlotCount: Number(elements.healthyCandidateSlotCount.value),
           healthySlotMaxAgeMinutes: Number(elements.healthySlotMaxAgeMinutes.value),
@@ -1392,8 +1400,8 @@ socks5h://username:pass@ip:port
           setNotice("实时守护首字超时阈值必须为正整数。", "error");
           return;
         }
-        if (!Number.isInteger(settings.workerCount) || settings.workerCount < 1 || settings.workerCount > 64 || !Number.isInteger(settings.refreshIntervalSeconds) || settings.refreshIntervalSeconds < minimumRefreshIntervalSeconds || settings.refreshIntervalSeconds > maximumRefreshIntervalSeconds || !Number.isInteger(settings.keepaliveWorkerCount) || settings.keepaliveWorkerCount < 1 || settings.keepaliveWorkerCount > 64 || !Number.isInteger(settings.keepaliveIntervalSeconds) || settings.keepaliveIntervalSeconds < 1 || settings.keepaliveIntervalSeconds > 86400 || !Number.isInteger(settings.reviveIntervalSeconds) || settings.reviveIntervalSeconds < 1 || settings.reviveIntervalSeconds > 86400 || !Number.isInteger(settings.probeRetryCount) || settings.probeRetryCount < 1 || settings.probeRetryCount > 10 || !Number.isInteger(settings.healthySlotCount) || settings.healthySlotCount < 1 || settings.healthySlotCount > 1000 || !Number.isInteger(settings.healthyCandidateSlotCount) || settings.healthyCandidateSlotCount < 0 || settings.healthySlotCount + settings.healthyCandidateSlotCount > 1000 || !Number.isInteger(settings.healthySlotMaxAgeMinutes) || settings.healthySlotMaxAgeMinutes < 1 || settings.healthySlotMaxAgeMinutes > 10080 || !Number.isInteger(settings.qualityWorkerCount) || settings.qualityWorkerCount < 1 || settings.qualityWorkerCount > 64 || !Number.isInteger(settings.qualityProbeTimeoutSeconds) || settings.qualityProbeTimeoutSeconds < 1 || settings.qualityProbeTimeoutSeconds > 600 || !settings.qualityProbeModel || /\s/.test(settings.qualityProbeModel) || settings.qualityProbeModel.length > 128 || !Number.isFinite(settings.qualitySoftTPS) || settings.qualitySoftTPS <= 0 || !Number.isFinite(settings.qualityHardTPS) || settings.qualityHardTPS <= settings.qualitySoftTPS || !Number.isFinite(settings.realtimeGuardTTFBSeconds) || settings.realtimeGuardTTFBSeconds <= 0 || !Number.isFinite(settings.realtimeGuardGenerationSeconds) || settings.realtimeGuardGenerationSeconds <= 0 || !Number.isInteger(settings.realtimeGuardTokenThreshold) || settings.realtimeGuardTokenThreshold < 1) {
-          setNotice("配置范围无效：基础线程 1–64，页面刷新 5–3600 秒，保活和复活间隔 1–86400 秒，探测重试 1–10 次，总槽位 1–1000，健康槽最大占用 1–10080 分钟，智商线程 1–64，智商超时 1–600 秒，智商检测模型非空且无空格，hard TPS 必须高于 soft TPS，实时守护阈值必须为正数，token 阈值必须为正整数。", "error");
+        if (!Number.isInteger(settings.workerCount) || settings.workerCount < 1 || settings.workerCount > 64 || !Number.isInteger(settings.refreshIntervalSeconds) || settings.refreshIntervalSeconds < minimumRefreshIntervalSeconds || settings.refreshIntervalSeconds > maximumRefreshIntervalSeconds || !Number.isInteger(settings.keepaliveWorkerCount) || settings.keepaliveWorkerCount < 1 || settings.keepaliveWorkerCount > 64 || !Number.isInteger(settings.keepaliveIntervalSeconds) || settings.keepaliveIntervalSeconds < 1 || settings.keepaliveIntervalSeconds > 86400 || !Number.isInteger(settings.reviveIntervalSeconds) || settings.reviveIntervalSeconds < 1 || settings.reviveIntervalSeconds > 86400 || !Number.isInteger(settings.probeRetryCount) || settings.probeRetryCount < 1 || settings.probeRetryCount > 10 || !Number.isInteger(settings.scheduleGroupCount) || settings.scheduleGroupCount < 1 || settings.scheduleGroupCount > 1000 || !Number.isInteger(settings.healthySlotCount) || settings.healthySlotCount < 1 || settings.healthySlotCount > 1000 || !Number.isInteger(settings.healthyCandidateSlotCount) || settings.healthyCandidateSlotCount < 0 || settings.healthySlotCount + settings.healthyCandidateSlotCount > 1000 || !Number.isInteger(settings.healthySlotMaxAgeMinutes) || settings.healthySlotMaxAgeMinutes < 1 || settings.healthySlotMaxAgeMinutes > 10080 || !Number.isInteger(settings.qualityWorkerCount) || settings.qualityWorkerCount < 1 || settings.qualityWorkerCount > 64 || !Number.isInteger(settings.qualityProbeTimeoutSeconds) || settings.qualityProbeTimeoutSeconds < 1 || settings.qualityProbeTimeoutSeconds > 600 || !settings.qualityProbeModel || /\s/.test(settings.qualityProbeModel) || settings.qualityProbeModel.length > 128 || !Number.isFinite(settings.qualitySoftTPS) || settings.qualitySoftTPS <= 0 || !Number.isFinite(settings.qualityHardTPS) || settings.qualityHardTPS <= settings.qualitySoftTPS || !Number.isFinite(settings.realtimeGuardTTFBSeconds) || settings.realtimeGuardTTFBSeconds <= 0 || !Number.isFinite(settings.realtimeGuardGenerationSeconds) || settings.realtimeGuardGenerationSeconds <= 0 || !Number.isInteger(settings.realtimeGuardTokenThreshold) || settings.realtimeGuardTokenThreshold < 1) {
+          setNotice("配置范围无效：基础线程 1–64，页面刷新 5–3600 秒，保活和复活间隔 1–86400 秒，探测重试 1–10 次，xAI 调度组 1–1000，总槽位 1–1000，健康槽最大占用 1–10080 分钟，智商线程 1–64，智商超时 1–600 秒，智商检测模型非空且无空格，hard TPS 必须高于 soft TPS，实时守护阈值必须为正数，token 阈值必须为正整数。", "error");
           return;
         }
         if (settings.managerBaseUrl && !/^https?:\/\//i.test(settings.managerBaseUrl)) {
@@ -1405,7 +1413,7 @@ socks5h://username:pass@ip:port
           const savedSettings = await callAPI("PUT", "/settings", settings);
           applySettings(savedSettings, false, true);
           closeModal(elements.settingsModal);
-          setNotice("运行配置已保存；健康槽位布局、实时守护阈值、调试开关、页面刷新与 grok2api 同步配置立即生效，线程数与保活/复活间隔下次启动生效。", "success");
+          setNotice("运行配置已保存；xAI 调度组数、健康槽位布局、实时守护阈值、调试开关、页面刷新与 grok2api 同步配置立即生效，线程数与保活/复活间隔下次启动生效。", "success");
           if (state.activeView === "logs") {
             await refresh("logs");
           }

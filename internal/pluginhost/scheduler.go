@@ -9,43 +9,40 @@ import (
 )
 
 func (h *Host) PickAuth(ctx context.Context, req pluginapi.SchedulerPickRequest) (pluginapi.SchedulerPickResponse, bool, error) {
-	record := h.schedulerRecord()
-	if record == nil {
-		return pluginapi.SchedulerPickResponse{}, false, nil
-	}
-
-	resp, handled, errPick := h.callScheduler(ctx, *record, req)
-	if errPick != nil || !handled {
-		return resp, handled, errPick
-	}
-	if !resp.Handled {
-		return pluginapi.SchedulerPickResponse{}, false, nil
-	}
-
-	resp, valid, reason := normalizeSchedulerResponse(resp, req)
-	if !valid {
-		log.WithField("plugin_id", record.id).Warnf("pluginhost: scheduler returned invalid response: %s", reason)
-		return pluginapi.SchedulerPickResponse{}, false, nil
-	}
-	return resp, true, nil
-}
-
-func (h *Host) HasScheduler() bool {
-	return h.schedulerRecord() != nil
-}
-
-func (h *Host) schedulerRecord() *capabilityRecord {
 	if h == nil {
-		return nil
+		return pluginapi.SchedulerPickResponse{}, false, nil
 	}
 	for _, record := range h.activeRecords() {
 		if h.isPluginFused(record.id) || record.plugin.Capabilities.Scheduler == nil {
 			continue
 		}
-		copyRecord := record
-		return &copyRecord
+		resp, invoked, errPick := h.callScheduler(ctx, record, req)
+		if errPick != nil {
+			return resp, true, errPick
+		}
+		if !invoked || !resp.Handled {
+			continue
+		}
+		resp, valid, reason := normalizeSchedulerResponse(resp, req)
+		if !valid {
+			log.WithField("plugin_id", record.id).Warnf("pluginhost: scheduler returned invalid response: %s", reason)
+			continue
+		}
+		return resp, true, nil
 	}
-	return nil
+	return pluginapi.SchedulerPickResponse{}, false, nil
+}
+
+func (h *Host) HasScheduler() bool {
+	if h == nil {
+		return false
+	}
+	for _, record := range h.activeRecords() {
+		if !h.isPluginFused(record.id) && record.plugin.Capabilities.Scheduler != nil {
+			return true
+		}
+	}
+	return false
 }
 
 func (h *Host) callScheduler(ctx context.Context, record capabilityRecord, req pluginapi.SchedulerPickRequest) (resp pluginapi.SchedulerPickResponse, handled bool, err error) {
@@ -77,12 +74,34 @@ func normalizeSchedulerResponse(resp pluginapi.SchedulerPickResponse, req plugin
 
 	hasAuthID := resp.AuthID != ""
 	hasDelegate := resp.DelegateBuiltin != ""
-	if !hasAuthID && !hasDelegate {
-		return pluginapi.SchedulerPickResponse{}, false, "missing auth id or delegate"
+	hasRejection := resp.Rejection != nil
+	decisionCount := 0
+	if hasAuthID {
+		decisionCount++
+	}
+	if hasDelegate {
+		decisionCount++
+	}
+	if hasRejection {
+		decisionCount++
+	}
+	if decisionCount != 1 {
+		return pluginapi.SchedulerPickResponse{}, false, "scheduler response must contain exactly one decision"
 	}
 	if hasAuthID {
-		if !schedulerCandidateExists(req.Candidates, resp.AuthID) {
+		if !schedulerCandidateExists(req.Candidates, resp.AuthID) && !schedulerCandidateExists(req.AllCandidates, resp.AuthID) {
 			return pluginapi.SchedulerPickResponse{}, false, "unknown auth id"
+		}
+		return resp, true, ""
+	}
+	if hasRejection {
+		resp.Rejection.Code = strings.TrimSpace(resp.Rejection.Code)
+		resp.Rejection.Message = strings.TrimSpace(resp.Rejection.Message)
+		if resp.Rejection.Code == "" || resp.Rejection.Message == "" {
+			return pluginapi.SchedulerPickResponse{}, false, "rejection code and message are required"
+		}
+		if resp.Rejection.HTTPStatus < 100 || resp.Rejection.HTTPStatus > 599 {
+			return pluginapi.SchedulerPickResponse{}, false, "invalid rejection http status"
 		}
 		return resp, true, ""
 	}

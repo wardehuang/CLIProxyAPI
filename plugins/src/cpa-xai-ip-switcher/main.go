@@ -58,6 +58,7 @@ import "C"
 import (
 	_ "embed"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/url"
@@ -72,7 +73,7 @@ import (
 
 const (
 	pluginName          = "cpa-xai-ip-switcher"
-	pluginVersion       = "0.1.5"
+	pluginVersion       = "0.1.6"
 	resourcePath        = "/status"
 	managementAPIPath   = "/v0/management/cpa-xai-ip-switcher/api"
 	resourceContentType = "text/html; charset=utf-8"
@@ -104,6 +105,7 @@ type pluginConfig struct {
 	ManagerBaseURL       string `yaml:"manager_base_url" json:"manager_base_url"`
 	ManagerManagementKey string `yaml:"manager_management_key" json:"manager_management_key"`
 	WorkerCount          int    `yaml:"worker_count" json:"worker_count"`
+	ScheduleGroupCount   int    `yaml:"schedule_group_count" json:"schedule_group_count"`
 }
 
 type registration struct {
@@ -116,6 +118,9 @@ type registrationCapabilities struct {
 	ManagementAPI               bool `json:"management_api"`
 	RequestFinalizer            bool `json:"request_finalizer"`
 	StreamCompletionInterceptor bool `json:"response_stream_completion_interceptor"`
+	Scheduler                   bool `json:"scheduler"`
+	RequestMetadataEnricher     bool `json:"request_metadata_enricher"`
+	RequestLifecyclePlugin      bool `json:"request_lifecycle_plugin"`
 }
 
 type managementRegistration struct {
@@ -284,6 +289,39 @@ func handleMethod(method string, request []byte) ([]byte, error) {
 		})
 	case pluginabi.MethodManagementHandle:
 		return handleManagement(request)
+	case pluginabi.MethodRequestMetadataEnrich:
+		var enrichRequest pluginapi.RequestMetadataEnrichRequest
+		if len(request) > 0 {
+			if err := json.Unmarshal(request, &enrichRequest); err != nil {
+				return nil, fmt.Errorf("decode request metadata enrich request: %w", err)
+			}
+		}
+		response, err := enrichScheduleTurnMetadata(enrichRequest)
+		if err != nil {
+			return nil, err
+		}
+		return okEnvelope(response)
+	case pluginabi.MethodSchedulerPick:
+		var pickRequest pluginapi.SchedulerPickRequest
+		if len(request) > 0 {
+			if err := json.Unmarshal(request, &pickRequest); err != nil {
+				return nil, fmt.Errorf("decode scheduler pick request: %w", err)
+			}
+		}
+		response, err := pluginRuntime.schedulerPick(pickRequest)
+		if err != nil {
+			return nil, err
+		}
+		return okEnvelope(response)
+	case pluginabi.MethodRequestComplete:
+		var completion pluginapi.RequestCompletion
+		if len(request) > 0 {
+			if err := json.Unmarshal(request, &completion); err != nil {
+				return nil, fmt.Errorf("decode request completion: %w", err)
+			}
+		}
+		pluginRuntime.scheduleGroups.release(completion)
+		return okEnvelope(map[string]any{})
 	case pluginabi.MethodRequestFinalize:
 		var finalizeRequest pluginapi.RequestFinalizeRequest
 		if len(request) > 0 {
@@ -328,6 +366,9 @@ func parsePluginConfig(raw []byte) (pluginConfig, error) {
 	if config.WorkerCount < 0 || config.WorkerCount > maxProbeWorkers {
 		return pluginConfig{}, fmt.Errorf("worker_count must be between 0 and %d", maxProbeWorkers)
 	}
+	if config.ScheduleGroupCount < 0 || config.ScheduleGroupCount > maxSlotCount {
+		return pluginConfig{}, fmt.Errorf("schedule_group_count must be between 0 and %d", maxSlotCount)
+	}
 	return config, nil
 }
 
@@ -360,12 +401,20 @@ func pluginRegistration() registration {
 					Type:        pluginapi.ConfigFieldTypeInteger,
 					Description: "启动时的探测线程数；0 表示使用 SQLite 中保存的界面设置。",
 				},
+				{
+					Name:        "schedule_group_count",
+					Type:        pluginapi.ConfigFieldTypeInteger,
+					Description: "xAI 调度组数量；0 表示使用 SQLite 中保存的界面设置，正整数表示最大组级并发数。",
+				},
 			},
 		},
 		Capabilities: registrationCapabilities{
 			ManagementAPI:               true,
 			RequestFinalizer:            true,
 			StreamCompletionInterceptor: true,
+			Scheduler:                   true,
+			RequestMetadataEnricher:     true,
+			RequestLifecyclePlugin:      true,
 		},
 	}
 }
@@ -473,6 +522,9 @@ func updatePluginSettings(body json.RawMessage) ([]byte, error) {
 	settingsSaved, err := pluginRuntime.updateSettings(store, settings)
 	if err != nil {
 		_ = store.appendLog(logLevelError, "settings.update_failed", 0, "", "更新插件配置失败", err.Error())
+		if errors.Is(err, errScheduleGroupCountBusy) {
+			return managementJSON(http.StatusConflict, errorMessage("scheduleGroupsBusy", err.Error()))
+		}
 		return managementJSON(http.StatusInternalServerError, errorMessage("settingsFailed", err.Error()))
 	}
 	_ = store.appendLog(
@@ -508,6 +560,7 @@ func settingsFromPayload(payload map[string]any) (pluginSettings, error) {
 	keepaliveIntervalSeconds, keepaliveIntervalOK := integerValue(firstValue(payload, "keepaliveIntervalSeconds", "keepalive_interval_seconds"))
 	reviveIntervalSeconds, reviveIntervalOK := integerValue(firstValue(payload, "reviveIntervalSeconds", "revive_interval_seconds"))
 	probeRetryCount, retryOK := integerValue(firstValue(payload, "probeRetryCount", "probe_retry_count"))
+	scheduleGroupCount, scheduleGroupCountOK := integerValue(firstValue(payload, "scheduleGroupCount", "schedule_group_count"))
 	healthySlotCount, healthySlotOK := integerValue(firstValue(payload, "healthySlotCount", "healthy_slot_count"))
 	healthyCandidateSlotCount, healthyCandidateSlotOK := integerValue(firstValue(payload, "healthyCandidateSlotCount", "healthy_candidate_slot_count"))
 	healthySlotMaxAgeMinutes, healthySlotMaxAgeOK := integerValue(firstValue(payload, "healthySlotMaxAgeMinutes", "healthy_slot_max_age_minutes"))
@@ -528,7 +581,7 @@ func settingsFromPayload(payload map[string]any) (pluginSettings, error) {
 	grok2apiAdminPassword, grok2apiAdminPasswordOK := stringValue(firstValue(payload, "grok2apiAdminPassword", "grok2api_admin_password"))
 	managerBaseURL, managerBaseURLOK := stringValue(firstValue(payload, "managerBaseUrl", "manager_base_url"))
 	managerManagementKey, managerManagementKeyOK := stringValue(firstValue(payload, "managerManagementKey", "manager_management_key"))
-	if !workerOK || !refreshOK || !keepaliveWorkersOK || !keepaliveIntervalOK || !reviveIntervalOK || !retryOK ||
+	if !workerOK || !refreshOK || !keepaliveWorkersOK || !keepaliveIntervalOK || !reviveIntervalOK || !retryOK || !scheduleGroupCountOK ||
 		!healthySlotOK || !healthyCandidateSlotOK || !healthySlotMaxAgeOK || !qualityWorkerOK || !qualityTimeoutOK || !qualityModelOK || !softTPSOK || !hardTPSOK || !realtimeGuardTTFBOK || !realtimeGuardGenerationOK || !realtimeGuardTokenOK || !realtimeGuardTimeoutOK || !qualityLLMProbeOK ||
 		!debugEnabledOK || !grok2apiSyncEnabledOK || !grok2apiBaseUrlOK || !grok2apiAdminUsernameOK || !grok2apiAdminPasswordOK || !managerBaseURLOK || !managerManagementKeyOK {
 		return pluginSettings{}, fmt.Errorf("必须同时提供基础调度、健康槽位、智商探测、调试开关、grok2api 同步和 Manager API 配置")
@@ -540,6 +593,7 @@ func settingsFromPayload(payload map[string]any) (pluginSettings, error) {
 		KeepaliveIntervalSeconds:       keepaliveIntervalSeconds,
 		ReviveIntervalSeconds:          reviveIntervalSeconds,
 		ProbeRetryCount:                probeRetryCount,
+		ScheduleGroupCount:             scheduleGroupCount,
 		HealthySlotCount:               healthySlotCount,
 		HealthyCandidateSlotCount:      healthyCandidateSlotCount,
 		HealthySlotMaxAgeMinutes:       healthySlotMaxAgeMinutes,
@@ -648,6 +702,7 @@ func publicSettings(settings pluginSettings) map[string]any {
 		"keepaliveIntervalSeconds":       settings.KeepaliveIntervalSeconds,
 		"reviveIntervalSeconds":          settings.ReviveIntervalSeconds,
 		"probeRetryCount":                settings.ProbeRetryCount,
+		"scheduleGroupCount":             settings.ScheduleGroupCount,
 		"healthySlotCount":               settings.HealthySlotCount,
 		"healthyCandidateSlotCount":      settings.HealthyCandidateSlotCount,
 		"healthySlotMaxAgeMinutes":       settings.HealthySlotMaxAgeMinutes,
@@ -679,6 +734,21 @@ func dispatchAPIWithStore(store *ipStore, method, path string, query url.Values,
 	parts := strings.Split(strings.Trim(path, "/"), "/")
 
 	switch {
+	case path == "/schedule-groups/config" && method == http.MethodGet:
+		settings, err := store.settings()
+		if err != nil {
+			return managementJSON(http.StatusInternalServerError, errorMessage("scheduleGroupConfigFailed", err.Error()))
+		}
+		return managementJSON(http.StatusOK, map[string]any{
+			"data": map[string]any{"groupCount": settings.ScheduleGroupCount},
+		})
+
+	case path == "/schedule-groups/counters/reset" && method == http.MethodPost:
+		if err := store.resetScheduleGroupCounters(); err != nil {
+			return managementJSON(http.StatusInternalServerError, errorMessage("scheduleGroupResetFailed", err.Error()))
+		}
+		return managementJSON(http.StatusOK, map[string]any{"data": map[string]any{"reset": true}})
+
 	case path == "/batches" && method == http.MethodGet:
 		items, err := store.listBatches()
 		if err != nil {

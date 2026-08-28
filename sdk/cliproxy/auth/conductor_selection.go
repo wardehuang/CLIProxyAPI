@@ -370,29 +370,23 @@ func (m *Manager) availableAuthsForRouteModelWithPriorityMode(ctx context.Contex
 	return availableAuthsFromPriorityBuckets(availableByPriority, allPriorities), nil
 }
 
-// availableAuthsForSelector reports the candidates handed to priority-scoped consumers such as
-// the plugin scheduler, plus the candidates handed to the configured selector. Both are equal
-// unless session affinity is active, in which case the selector additionally receives lower
-// priority tiers so an established binding can be validated instead of being preempted by a
+// availableAuthsForSelector reports the highest-priority candidates, every selectable priority
+// tier, and the candidates handed to the configured selector. Session affinity receives every
+// priority tier so an established binding can be validated instead of being preempted by a
 // recovered higher-priority credential.
-func (m *Manager) availableAuthsForSelector(ctx context.Context, selector Selector, auths []*Auth, provider, routeModel string, now time.Time) (priorityAuths, selectorAuths []*Auth, err error) {
-	if _, sessionAffinity := selector.(*SessionAffinitySelector); !sessionAffinity {
-		priorityAuths, err = m.availableAuthsForRouteModel(ctx, auths, provider, routeModel, now)
-		if err != nil {
-			return nil, nil, err
-		}
-		priorityAuths = cloneAuthSlice(priorityAuths)
-		return priorityAuths, priorityAuths, nil
-	}
-
-	// One availability pass and one clone pass serve both lists: the highest priority tier is a
-	// subset of the across-priority candidates, so it is narrowed from the same cloned auths.
-	selectorAuths, err = m.availableAuthsForRouteModelAcrossPriorities(ctx, auths, provider, routeModel, now)
+func (m *Manager) availableAuthsForSelector(ctx context.Context, selector Selector, auths []*Auth, provider, routeModel string, now time.Time) (priorityAuths, allAuths, selectorAuths []*Auth, err error) {
+	allAuths, err = m.availableAuthsForRouteModelAcrossPriorities(ctx, auths, provider, routeModel, now)
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, nil, err
 	}
-	selectorAuths = cloneAuthSlice(selectorAuths)
-	return highestPriorityAuths(selectorAuths), selectorAuths, nil
+	allAuths = cloneAuthSlice(allAuths)
+	priorityAuths = highestPriorityAuths(allAuths)
+	if _, sessionAffinity := selector.(*SessionAffinitySelector); sessionAffinity {
+		selectorAuths = allAuths
+	} else {
+		selectorAuths = priorityAuths
+	}
+	return priorityAuths, allAuths, selectorAuths, nil
 }
 
 func selectionArgForSelector(selector Selector, routeModel string) string {
@@ -580,8 +574,8 @@ func (m *Manager) pickViaBuiltinScheduler(ctx context.Context, strategy schedule
 	return selected, true, nil
 }
 
-func (m *Manager) pickViaPluginScheduler(ctx context.Context, scheduler PluginScheduler, provider string, providers []string, model string, opts cliproxyexecutor.Options, tried map[string]struct{}, candidates []*Auth) (*Auth, bool, error) {
-	if scheduler == nil || len(candidates) == 0 {
+func (m *Manager) pickViaPluginScheduler(ctx context.Context, scheduler PluginScheduler, provider string, providers []string, model string, opts cliproxyexecutor.Options, tried map[string]struct{}, candidates, allCandidates []*Auth) (*Auth, bool, error) {
+	if scheduler == nil || len(allCandidates) == 0 {
 		return nil, false, nil
 	}
 	providerKey := strings.ToLower(strings.TrimSpace(provider))
@@ -594,8 +588,9 @@ func (m *Manager) pickViaPluginScheduler(ctx context.Context, scheduler PluginSc
 		Providers:  schedulerProviders(providerKey, providers),
 		Model:      model,
 		Stream:     opts.Stream,
-		Options:    schedulerOptions(opts),
-		Candidates: schedulerAuthCandidates(candidates),
+		Options:       schedulerOptions(opts),
+		Candidates:    schedulerAuthCandidates(candidates),
+		AllCandidates: schedulerAuthCandidates(allCandidates),
 	}
 	resp, handled, errPick := scheduler.PickAuth(ctx, req)
 	if errPick != nil {
@@ -604,7 +599,15 @@ func (m *Manager) pickViaPluginScheduler(ctx context.Context, scheduler PluginSc
 	if !handled || !resp.Handled {
 		return nil, false, nil
 	}
-	if selected := pickSchedulerAuthByID(candidates, resp.AuthID); selected != nil {
+	if resp.Rejection != nil {
+		return nil, true, &Error{
+			Code:       resp.Rejection.Code,
+			Message:    resp.Rejection.Message,
+			Retryable:  resp.Rejection.Retryable,
+			HTTPStatus: resp.Rejection.HTTPStatus,
+		}
+	}
+	if selected := pickSchedulerAuthByID(allCandidates, resp.AuthID); selected != nil {
 		return selected, true, nil
 	}
 
@@ -1278,7 +1281,7 @@ func (m *Manager) pickNextLegacy(ctx context.Context, provider, model string, op
 		m.mu.RUnlock()
 		return nil, nil, &Error{Code: "auth_not_found", Message: "no auth available"}
 	}
-	available, selectorAuths, errAvailable := m.availableAuthsForSelector(ctx, selector, candidates, provider, model, time.Now())
+	available, allAvailable, selectorAuths, errAvailable := m.availableAuthsForSelector(ctx, selector, candidates, provider, model, time.Now())
 	if errAvailable != nil {
 		m.mu.RUnlock()
 		m.warnLogAuthUnavailable(ctx, []string{provider}, model, opts, tried, errAvailable)
@@ -1286,7 +1289,7 @@ func (m *Manager) pickNextLegacy(ctx context.Context, provider, model string, op
 	}
 	m.mu.RUnlock()
 
-	selected, handled, errPick := m.pickViaPluginScheduler(ctx, pluginScheduler, provider, []string{provider}, model, opts, tried, available)
+	selected, handled, errPick := m.pickViaPluginScheduler(ctx, pluginScheduler, provider, []string{provider}, model, opts, tried, available, allAvailable)
 	if errPick != nil {
 		m.warnLogAuthUnavailable(ctx, []string{provider}, model, opts, tried, errPick)
 		return nil, nil, errPick
@@ -1612,7 +1615,7 @@ func (m *Manager) pickNextMixedLegacy(ctx context.Context, providers []string, m
 		m.mu.RUnlock()
 		return nil, nil, "", &Error{Code: "auth_not_found", Message: "no auth available"}
 	}
-	available, selectorAuths, errAvailable := m.availableAuthsForSelector(ctx, selector, candidates, "mixed", model, time.Now())
+	available, allAvailable, selectorAuths, errAvailable := m.availableAuthsForSelector(ctx, selector, candidates, "mixed", model, time.Now())
 	if errAvailable != nil {
 		m.mu.RUnlock()
 		m.warnLogAuthUnavailable(ctx, providers, model, opts, tried, errAvailable)
@@ -1620,7 +1623,7 @@ func (m *Manager) pickNextMixedLegacy(ctx context.Context, providers []string, m
 	}
 	m.mu.RUnlock()
 
-	selected, handled, errPick := m.pickViaPluginScheduler(ctx, pluginScheduler, "mixed", providers, model, opts, tried, available)
+	selected, handled, errPick := m.pickViaPluginScheduler(ctx, pluginScheduler, "mixed", providers, model, opts, tried, available, allAvailable)
 	if errPick != nil {
 		m.warnLogAuthUnavailable(ctx, providers, model, opts, tried, errPick)
 		return nil, nil, "", errPick

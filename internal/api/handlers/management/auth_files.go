@@ -263,6 +263,7 @@ func (h *Handler) listAuthFilesFromDisk(c *gin.Context) {
 				}
 				exposeIntegerJSONFileValue(fileData, data, "priority_claude")
 				exposeIntegerJSONFileValue(fileData, data, "priority_gemini")
+				exposeIntegerJSONFileValue(fileData, data, "schedule_group")
 				if wv := gjson.GetBytes(data, coreauth.AttributeWeight); wv.Exists() {
 					var rawWeight string
 					switch wv.Type {
@@ -440,6 +441,7 @@ func (h *Handler) buildAuthFileEntryLocked(auth *coreauth.Auth) gin.H {
 	}
 	exposeIntegerAuthFileEntryValue(entry, auth, path, "priority_claude")
 	exposeIntegerAuthFileEntryValue(entry, auth, path, "priority_gemini")
+	exposeIntegerAuthFileEntryValue(entry, auth, path, "schedule_group")
 	exposeAntigravityCreditsHint(entry, auth)
 	// Expose note from Attributes (set by synthesizer from JSON "note" field).
 	// Fall back to Metadata for auths registered via UploadAuthFile (no synthesizer).

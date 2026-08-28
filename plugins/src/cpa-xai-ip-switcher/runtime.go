@@ -8,7 +8,7 @@ import (
 	"time"
 )
 
-var pluginRuntime = &runtimeController{}
+var pluginRuntime = &runtimeController{scheduleGroups: newScheduleGroupState()}
 
 type runtimeController struct {
 	mutex                sync.RWMutex
@@ -20,6 +20,7 @@ type runtimeController struct {
 	workerCancel         context.CancelFunc
 	workerGroup          sync.WaitGroup
 	keepalive            *keepaliveScheduleState
+	scheduleGroups       *scheduleGroupState
 }
 
 func (controller *runtimeController) configure(config pluginConfig) error {
@@ -51,8 +52,21 @@ func (controller *runtimeController) configureLocked(config pluginConfig) error 
 		if config.WorkerCount != 0 {
 			settings.WorkerCount = config.WorkerCount
 		}
+		groupCountChanged := config.ScheduleGroupCount != 0 && config.ScheduleGroupCount != settings.ScheduleGroupCount
+		if groupCountChanged {
+			if controller.scheduleGroups.hasBusy() {
+				return errScheduleGroupCountBusy
+			}
+			settings.ScheduleGroupCount = config.ScheduleGroupCount
+		}
 		if err := controller.store.setSettings(settings); err != nil {
 			return err
+		}
+		if groupCountChanged {
+			if err := controller.store.reconcileScheduleGroupCounters(settings.ScheduleGroupCount); err != nil {
+				return err
+			}
+			controller.scheduleGroups.resetRuntime()
 		}
 		controller.managerBaseURL = settings.ManagerBaseURL
 		controller.managerManagementKey = settings.ManagerManagementKey
@@ -74,13 +88,16 @@ func (controller *runtimeController) configureLocked(config pluginConfig) error 
 	if config.WorkerCount != 0 {
 		settings.WorkerCount = config.WorkerCount
 	}
+	if config.ScheduleGroupCount != 0 {
+		settings.ScheduleGroupCount = config.ScheduleGroupCount
+	}
 	if configuredManagerBaseURL := strings.TrimSpace(config.ManagerBaseURL); configuredManagerBaseURL != "" {
 		settings.ManagerBaseURL = strings.TrimRight(configuredManagerBaseURL, "/")
 	}
 	if configuredManagerManagementKey := strings.TrimSpace(config.ManagerManagementKey); configuredManagerManagementKey != "" {
 		settings.ManagerManagementKey = configuredManagerManagementKey
 	}
-	if config.WorkerCount != 0 || strings.TrimSpace(config.ManagerBaseURL) != "" || strings.TrimSpace(config.ManagerManagementKey) != "" {
+	if config.WorkerCount != 0 || config.ScheduleGroupCount != 0 || strings.TrimSpace(config.ManagerBaseURL) != "" || strings.TrimSpace(config.ManagerManagementKey) != "" {
 		if err := store.setSettings(settings); err != nil {
 			_ = store.close()
 			return err
@@ -90,10 +107,15 @@ func (controller *runtimeController) configureLocked(config pluginConfig) error 
 		_ = store.close()
 		return err
 	}
+	if err := store.reconcileScheduleGroupCounters(settings.ScheduleGroupCount); err != nil {
+		_ = store.close()
+		return err
+	}
 
 	controller.store = store
 	controller.managerBaseURL = settings.ManagerBaseURL
 	controller.managerManagementKey = settings.ManagerManagementKey
+	controller.scheduleGroups.resetRuntime()
 	if controller.keepalive == nil {
 		controller.keepalive = newKeepaliveScheduleState()
 	}
@@ -122,6 +144,7 @@ func pluginSettingsEqual(left, right pluginSettings) bool {
 		left.KeepaliveIntervalSeconds == right.KeepaliveIntervalSeconds &&
 		left.ReviveIntervalSeconds == right.ReviveIntervalSeconds &&
 		left.ProbeRetryCount == right.ProbeRetryCount &&
+		left.ScheduleGroupCount == right.ScheduleGroupCount &&
 		left.HealthySlotCount == right.HealthySlotCount &&
 		left.HealthyCandidateSlotCount == right.HealthyCandidateSlotCount &&
 		left.HealthySlotMaxAgeMinutes == right.HealthySlotMaxAgeMinutes &&
@@ -184,10 +207,20 @@ func (controller *runtimeController) updateSettings(store *ipStore, settings plu
 	if pluginSettingsEqual(currentSettings, settings) {
 		return false, nil
 	}
+	groupCountChanged := currentSettings.ScheduleGroupCount != settings.ScheduleGroupCount
+	if groupCountChanged && controller.scheduleGroups.hasBusy() {
+		return false, errScheduleGroupCountBusy
+	}
 	slotLayoutChanged := currentSettings.HealthySlotCount != settings.HealthySlotCount ||
 		currentSettings.HealthyCandidateSlotCount != settings.HealthyCandidateSlotCount
 	if err := store.setSettings(settings); err != nil {
 		return false, err
+	}
+	if groupCountChanged {
+		if err := store.reconcileScheduleGroupCounters(settings.ScheduleGroupCount); err != nil {
+			return false, err
+		}
+		controller.scheduleGroups.resetRuntime()
 	}
 	if slotLayoutChanged {
 		controller.topologyMutex.Lock()
@@ -241,4 +274,5 @@ func (controller *runtimeController) shutdown() {
 		_ = controller.store.close()
 		controller.store = nil
 	}
+	controller.scheduleGroups.resetRuntime()
 }

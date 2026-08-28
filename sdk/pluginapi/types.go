@@ -500,6 +500,9 @@ type SchedulerPickRequest struct {
 	Options SchedulerOptions
 	// Candidates contains auth records available for selection.
 	Candidates []SchedulerAuthCandidate
+	// AllCandidates contains every currently selectable auth across priority tiers.
+	// Candidates remains the highest-priority subset for backward compatibility.
+	AllCandidates []SchedulerAuthCandidate
 }
 
 // SchedulerOptions carries request-scoped scheduler inputs.
@@ -532,8 +535,18 @@ type SchedulerPickResponse struct {
 	AuthID string
 	// DelegateBuiltin asks the host to use a named built-in scheduler.
 	DelegateBuiltin string
+	// Rejection asks the host to reject the request with a structured auth error.
+	Rejection *SchedulerRejection
 	// Handled reports whether the plugin made a scheduling decision.
 	Handled bool
+}
+
+// SchedulerRejection describes a terminal scheduler rejection.
+type SchedulerRejection struct {
+	Code       string
+	Message    string
+	HTTPStatus int
+	Retryable  bool
 }
 
 // ModelRouteRequest describes the original request context offered to a model router plugin.

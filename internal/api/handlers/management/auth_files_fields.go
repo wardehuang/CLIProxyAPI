@@ -561,6 +561,9 @@ func syncAuthFileMetadataFields(auth *coreauth.Auth, touchedRoots map[string]str
 	if _, ok := touchedRoots["priority_gemini"]; ok {
 		syncAuthFileIntegerAttribute(auth, "priority_gemini")
 	}
+	if _, ok := touchedRoots["schedule_group"]; ok {
+		syncAuthFilePositiveIntegerAttribute(auth, "schedule_group")
+	}
 	if _, ok := touchedRoots[coreauth.AttributeWeight]; ok {
 		syncAuthFileWeightAttribute(auth)
 	}
@@ -624,6 +627,21 @@ func syncAuthFileIntegerAttribute(auth *coreauth.Auth, key string) {
 		return
 	}
 	auth.Attributes[key] = strconv.Itoa(priority)
+}
+
+func syncAuthFilePositiveIntegerAttribute(auth *coreauth.Auth, key string) {
+	if auth == nil || key == "" {
+		return
+	}
+	if auth.Attributes == nil {
+		auth.Attributes = make(map[string]string)
+	}
+	value, ok := authFileIntValue(auth.Metadata[key])
+	if !ok || value <= 0 {
+		delete(auth.Attributes, key)
+		return
+	}
+	auth.Attributes[key] = strconv.Itoa(value)
 }
 
 func syncAuthFileWeightAttribute(auth *coreauth.Auth) {

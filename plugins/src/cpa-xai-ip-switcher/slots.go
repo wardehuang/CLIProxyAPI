@@ -221,6 +221,7 @@ func defaultPluginSettings() pluginSettings {
 		KeepaliveIntervalSeconds:       defaultKeepaliveIntervalSeconds,
 		ReviveIntervalSeconds:          defaultReviveIntervalSeconds,
 		ProbeRetryCount:                defaultProbeRetryCount,
+		ScheduleGroupCount:             defaultScheduleGroupCount,
 		HealthySlotCount:               defaultHealthySlotCount,
 		HealthyCandidateSlotCount:      defaultHealthyCandidateCount,
 		HealthySlotMaxAgeMinutes:       defaultHealthySlotMaxAgeMinutes,

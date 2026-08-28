@@ -20,6 +20,7 @@ const (
 	defaultKeepaliveIntervalSeconds       = 1800
 	defaultReviveIntervalSeconds          = 1800
 	defaultProbeRetryCount                = 3
+	defaultScheduleGroupCount             = 4
 	defaultHealthySlotCount               = 50
 	defaultHealthyCandidateCount          = 20
 	defaultHealthySlotMaxAgeMinutes       = 350
@@ -91,6 +92,7 @@ type pluginSettings struct {
 	KeepaliveIntervalSeconds       int
 	ReviveIntervalSeconds          int
 	ProbeRetryCount                int
+	ScheduleGroupCount             int
 	HealthySlotCount               int
 	HealthyCandidateSlotCount      int
 	HealthySlotMaxAgeMinutes       int
@@ -426,6 +428,9 @@ INSERT OR IGNORE INTO plugin_settings(setting_key, setting_value) VALUES
 		return err
 	}
 	if err := store.ensureRealtimeDegradationFailureStorage(); err != nil {
+		return err
+	}
+	if err := store.ensureScheduleGroupStorage(); err != nil {
 		return err
 	}
 	if err := store.clearAutomaticFallbackNodes(); err != nil {
@@ -1510,7 +1515,7 @@ SELECT setting_key, setting_value
 FROM plugin_settings
 WHERE setting_key IN (
     'worker_count', 'refresh_interval_seconds', 'keepalive_worker_count', 'keepalive_interval_seconds',
-    'revive_interval_seconds', 'probe_retry_count', 'healthy_slot_count', 'healthy_candidate_slot_count',
+    'revive_interval_seconds', 'probe_retry_count', 'schedule_group_count', 'healthy_slot_count', 'healthy_candidate_slot_count',
     'healthy_slot_max_age_minutes',
     'quality_worker_count', 'quality_probe_timeout_seconds', 'quality_probe_model', 'quality_soft_tps', 'quality_hard_tps',
     'quality_llm_probe_enabled', 'realtime_guard_ttfb_seconds', 'realtime_guard_generation_seconds', 'realtime_guard_token_threshold', 'realtime_guard_timeout_seconds',
@@ -1579,6 +1584,8 @@ WHERE setting_key IN (
 				settings.ReviveIntervalSeconds = value
 			case "probe_retry_count":
 				settings.ProbeRetryCount = value
+			case "schedule_group_count":
+				settings.ScheduleGroupCount = value
 			case "healthy_slot_count":
 				settings.HealthySlotCount = value
 			case "healthy_candidate_slot_count":
@@ -1628,6 +1635,7 @@ func (store *ipStore) setSettings(settings pluginSettings) error {
 		"keepalive_interval_seconds":        strconv.Itoa(settings.KeepaliveIntervalSeconds),
 		"revive_interval_seconds":           strconv.Itoa(settings.ReviveIntervalSeconds),
 		"probe_retry_count":                 strconv.Itoa(settings.ProbeRetryCount),
+		"schedule_group_count":              strconv.Itoa(settings.ScheduleGroupCount),
 		"healthy_slot_count":                strconv.Itoa(settings.HealthySlotCount),
 		"healthy_candidate_slot_count":      strconv.Itoa(settings.HealthyCandidateSlotCount),
 		"healthy_slot_max_age_minutes":      strconv.Itoa(settings.HealthySlotMaxAgeMinutes),
@@ -1680,6 +1688,9 @@ func validatePluginSettings(settings pluginSettings) error {
 	}
 	if settings.ProbeRetryCount < 1 || settings.ProbeRetryCount > maxProbeRetryCount {
 		return fmt.Errorf("probe retry count must be between 1 and %d", maxProbeRetryCount)
+	}
+	if settings.ScheduleGroupCount < 1 || settings.ScheduleGroupCount > maxSlotCount {
+		return fmt.Errorf("schedule group count must be between 1 and %d", maxSlotCount)
 	}
 	if settings.RealtimeGuardTimeoutSeconds < 1 {
 		return fmt.Errorf("realtime guard first-payload timeout must be at least 1 second")
