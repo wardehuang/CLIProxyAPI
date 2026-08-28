@@ -37,6 +37,8 @@ const (
 	StreamCompletionTimeoutSecondsMetadataKey = "stream_completion_timeout_seconds"
 	// PinnedAuthMetadataKey locks execution to a specific auth ID.
 	PinnedAuthMetadataKey = "pinned_auth_id"
+	// ExcludedAuthIDsMetadataKey stores auth IDs that credential selection must skip.
+	ExcludedAuthIDsMetadataKey = "excluded_auth_ids"
 	// SelectedAuthMetadataKey stores the auth ID selected by the scheduler.
 	SelectedAuthMetadataKey = "selected_auth_id"
 	// SelectedAuthCallbackMetadataKey carries an optional callback invoked with the selected auth ID.

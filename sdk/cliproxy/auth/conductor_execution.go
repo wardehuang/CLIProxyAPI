@@ -314,6 +314,9 @@ func (m *Manager) executeMixedOnce(ctx context.Context, providers []string, req 
 	homeMode := m.HomeEnabled()
 	homeAuthCount := 1
 	tried := make(map[string]struct{})
+	for _, authID := range excludedAuthIDsFromMetadata(opts.Metadata) {
+		tried[authID] = struct{}{}
+	}
 	if !homeMode {
 		for authID := range m.requestRetryRoundExclusions(retryRound, defaultRequestRetry) {
 			tried[authID] = struct{}{}
@@ -492,6 +495,9 @@ func (m *Manager) executeCountMixedOnce(ctx context.Context, providers []string,
 	homeMode := m.HomeEnabled()
 	homeAuthCount := 1
 	tried := make(map[string]struct{})
+	for _, authID := range excludedAuthIDsFromMetadata(opts.Metadata) {
+		tried[authID] = struct{}{}
+	}
 	if !homeMode {
 		for authID := range m.requestRetryRoundExclusions(retryRound, defaultRequestRetry) {
 			tried[authID] = struct{}{}
@@ -675,12 +681,18 @@ func (m *Manager) executeStreamMixedOnce(ctx context.Context, providers []string
 	homeMode := m.HomeEnabled()
 	homeAuthCount := 1
 	tried := make(map[string]struct{})
+	for _, authID := range excludedAuthIDsFromMetadata(opts.Metadata) {
+		tried[authID] = struct{}{}
+	}
 	if !homeMode {
 		for authID := range m.requestRetryRoundExclusions(retryRound, defaultRequestRetry) {
 			tried[authID] = struct{}{}
 		}
 	}
-	homeExcludedAuthIDs := make(map[string]struct{})
+	homeExcludedAuthIDs := make(map[string]struct{}, len(tried))
+	for authID := range tried {
+		homeExcludedAuthIDs[authID] = struct{}{}
+	}
 	homeSameAuthRetries := make(map[string]int)
 	lastHomeAuthID := ""
 	homeSameAuthRetryPending := false
@@ -1071,7 +1083,7 @@ func withHomeExcludedAuthIDs(opts cliproxyexecutor.Options, tried map[string]str
 		meta[key] = value
 	}
 	excluded := make(map[string]struct{})
-	for _, authID := range homeExcludedAuthIDsFromMetadata(meta) {
+	for _, authID := range excludedAuthIDsFromMetadata(meta) {
 		excluded[authID] = struct{}{}
 	}
 	for authID := range tried {
@@ -1114,11 +1126,11 @@ func homeAuthCountFromMetadata(meta map[string]any) int {
 	return 1
 }
 
-func homeExcludedAuthIDsFromMetadata(meta map[string]any) []string {
+func excludedAuthIDsFromMetadata(meta map[string]any) []string {
 	if len(meta) == 0 {
 		return nil
 	}
-	raw, ok := meta[ExcludedAuthIDsMetadataKey]
+	raw, ok := meta[cliproxyexecutor.ExcludedAuthIDsMetadataKey]
 	if !ok {
 		return nil
 	}

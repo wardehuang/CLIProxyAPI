@@ -23,7 +23,7 @@ const (
 	homeRetryRoundMetadataKey = "request_retry_round"
 	// ExcludedAuthIDsMetadataKey stores credential IDs already attempted in the
 	// current request retry round.
-	ExcludedAuthIDsMetadataKey = "excluded_auth_ids"
+	ExcludedAuthIDsMetadataKey = cliproxyexecutor.ExcludedAuthIDsMetadataKey
 	// CloseAllExecutionSessionsID asks an executor to release all active execution sessions.
 	// Executors that do not support this marker may ignore it.
 	CloseAllExecutionSessionsID = "__all_execution_sessions__"
@@ -920,7 +920,7 @@ func (m *Manager) pickHomeDispatchSelection(ctx context.Context, model string, o
 	}
 	pinnedAuthID := pinnedAuthIDFromMetadata(opts.Metadata)
 	retryRound := homeRetryRoundFromMetadata(opts.Metadata)
-	excludedAuthIDList := homeExcludedAuthIDsFromMetadata(opts.Metadata)
+	excludedAuthIDList := excludedAuthIDsFromMetadata(opts.Metadata)
 	excludedAuthIDs := make(map[string]struct{}, len(excludedAuthIDList))
 	for _, authID := range excludedAuthIDList {
 		excludedAuthIDs[authID] = struct{}{}

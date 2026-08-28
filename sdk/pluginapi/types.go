@@ -972,6 +972,9 @@ type StreamCompletionInterceptor interface {
 // StreamCompletionAction identifies the terminal decision for a buffered stream.
 type StreamCompletionAction string
 
+// StreamCompletionRetryMode identifies how the host prepares credential selection before a retry.
+type StreamCompletionRetryMode string
+
 const (
 	// StreamCompletionActionFlush delivers the buffered stream to the downstream client.
 	StreamCompletionActionFlush StreamCompletionAction = "flush"
@@ -979,6 +982,10 @@ const (
 	StreamCompletionActionRetry StreamCompletionAction = "retry"
 	// StreamCompletionActionFail discards the buffered stream and reports an error downstream.
 	StreamCompletionActionFail StreamCompletionAction = "fail"
+	// StreamCompletionRetryModeReloadSelectedAuth reloads the selected auth after a plugin rewrites it.
+	StreamCompletionRetryModeReloadSelectedAuth StreamCompletionRetryMode = "reload_selected_auth"
+	// StreamCompletionRetryModeExcludeSelectedAuth retries with a different auth without changing account state.
+	StreamCompletionRetryModeExcludeSelectedAuth StreamCompletionRetryMode = "exclude_selected_auth"
 )
 
 // StreamCompletionInterceptRequest describes one completed or failed upstream stream.
@@ -1012,6 +1019,7 @@ type StreamCompletionInterceptRequest struct {
 // StreamCompletionInterceptResponse returns a flush, retry, or fail decision.
 type StreamCompletionInterceptResponse struct {
 	Action     StreamCompletionAction
+	RetryMode  StreamCompletionRetryMode
 	Reason     string
 	StatusCode int
 	Error      string

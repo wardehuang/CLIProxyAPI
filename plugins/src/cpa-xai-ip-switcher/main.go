@@ -72,7 +72,7 @@ import (
 
 const (
 	pluginName          = "cpa-xai-ip-switcher"
-	pluginVersion       = "0.1.4"
+	pluginVersion       = "0.1.5"
 	resourcePath        = "/status"
 	managementAPIPath   = "/v0/management/cpa-xai-ip-switcher/api"
 	resourceContentType = "text/html; charset=utf-8"

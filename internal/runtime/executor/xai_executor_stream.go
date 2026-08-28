@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"fmt"
 	"io"
 	"net/http"
 	"strings"
@@ -205,6 +206,12 @@ func (e *XAIExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Auth
 					if !emitTranslatedLine(append([]byte("data: "), eventData...)) {
 						return
 					}
+					if normalizedEventName == "error" {
+						completionState.Err = xaiResponsesStreamError(eventData)
+						helps.RecordAPIResponseError(ctx, e.cfg, completionState.Err)
+						reporter.PublishFailure(ctx, completionState.Err)
+						return
+					}
 				}
 				continue
 			}
@@ -233,4 +240,12 @@ func (e *XAIExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Auth
 		}
 	}()
 	return &cliproxyexecutor.StreamResult{Headers: httpResp.Header.Clone(), Chunks: out, Completion: completion}, nil
+}
+
+func xaiResponsesStreamError(eventData []byte) error {
+	message := strings.TrimSpace(gjson.GetBytes(eventData, "message").String())
+	if message == "" {
+		return fmt.Errorf("xAI responses stream returned error event without message")
+	}
+	return fmt.Errorf("%s", message)
 }

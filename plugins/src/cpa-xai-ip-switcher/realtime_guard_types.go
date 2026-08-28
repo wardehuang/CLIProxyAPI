@@ -12,6 +12,7 @@ type realtimeGuardQualityLevel string
 const (
 	realtimeGuardClassificationUnknown     realtimeGuardClassification = "unknown"
 	realtimeGuardClassificationDegradation realtimeGuardClassification = "suspected_degradation"
+	realtimeGuardClassificationTransient   realtimeGuardClassification = "transient_upstream_error"
 	realtimeGuardClassificationNormal      realtimeGuardClassification = "normal"
 	realtimeGuardQualityUnknown            realtimeGuardQualityLevel   = "unknown"
 	realtimeGuardQualityHard               realtimeGuardQualityLevel   = "hard"

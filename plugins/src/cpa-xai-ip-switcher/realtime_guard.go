@@ -60,6 +60,15 @@ func handleStreamCompletionIntercept(completion pluginapi.StreamCompletionInterc
 			Error:      decision.Error,
 		}, nil
 	}
+	if decision.Classification == realtimeGuardClassificationTransient {
+		return pluginapi.StreamCompletionInterceptResponse{
+			Action:     pluginapi.StreamCompletionActionRetry,
+			RetryMode:  pluginapi.StreamCompletionRetryModeExcludeSelectedAuth,
+			Reason:     decision.Reason,
+			StatusCode: http.StatusBadGateway,
+			Error:      decision.Error,
+		}, nil
+	}
 	if decision.Classification == realtimeGuardClassificationUnknown {
 		return pluginapi.StreamCompletionInterceptResponse{
 			Action:     pluginapi.StreamCompletionActionFail,
@@ -117,6 +126,7 @@ func handleStreamCompletionIntercept(completion pluginapi.StreamCompletionInterc
 	}
 	return pluginapi.StreamCompletionInterceptResponse{
 		Action:     pluginapi.StreamCompletionAction(decision.Action),
+		RetryMode:  pluginapi.StreamCompletionRetryModeReloadSelectedAuth,
 		Reason:     decision.Reason,
 		StatusCode: http.StatusBadGateway,
 		Error:      decision.Error,
@@ -187,6 +197,15 @@ func classifyRealtimeGuardProbeWithSettings(probe realtimeGuardProbe, settings p
 		}
 	}
 	if strings.TrimSpace(probe.Error) != "" {
+		if isRealtimeGuardTransientUpstreamError(probe.Error) {
+			return realtimeGuardDecision{
+				Action:         realtimeGuardActionRetry,
+				Reason:         "upstream_temporarily_unavailable",
+				Classification: realtimeGuardClassificationTransient,
+				QualityLevel:   realtimeGuardQualityUnknown,
+				Error:          probe.Error,
+			}
+		}
 		return realtimeGuardUnknownDecision("upstream_error", probe.Error)
 	}
 	if probe.StatusCode < http.StatusOK || probe.StatusCode >= http.StatusMultipleChoices {
@@ -242,6 +261,13 @@ func classifyRealtimeGuardProbeWithSettings(probe realtimeGuardProbe, settings p
 		decision.Reason = "ttfb_downgrade"
 	}
 	return decision
+}
+
+func isRealtimeGuardTransientUpstreamError(message string) bool {
+	return strings.EqualFold(
+		strings.TrimSpace(message),
+		"Service temporarily unavailable. The model's availability is currently degraded.",
+	)
 }
 
 func realtimeGuardUnknownDecision(reason, detail string) realtimeGuardDecision {

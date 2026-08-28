@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -275,10 +276,10 @@ func (h *BaseAPIHandler) executeBufferedStreamWithGuard(
 				}
 				return
 			case pluginapi.StreamCompletionActionRetry:
-				degradedAccountCount := retryCount + 1
-				if degradedAccountCount >= maxRealtimeGuardDegradedAccounts {
+				attemptedAccountCount := retryCount + 1
+				if attemptedAccountCount >= maxRealtimeGuardDegradedAccounts {
 					virtualHeartbeat.stopAndWait()
-					failure := realtimeGuardFailure(decision, "实时降智守护已处理 5 个降智账号")
+					failure := realtimeGuardFailure(decision, "xAI 流重试已处理 5 个账号")
 					completionOutcome = pluginapi.RequestCompletionFailed
 					completionStatus = failure.StatusCode
 					completionErr = failure.Error
@@ -286,9 +287,9 @@ func (h *BaseAPIHandler) executeBufferedStreamWithGuard(
 					return
 				}
 				retryCount++
-				if errReload := h.reloadSelectedAuthForStreamRetry(ctx, opts.Metadata); errReload != nil {
+				if errPrepare := h.prepareSelectedAuthForStreamRetry(ctx, opts.Metadata, decision.RetryMode); errPrepare != nil {
 					virtualHeartbeat.stopAndWait()
-					failure := realtimeGuardFailure(decision, errReload.Error())
+					failure := realtimeGuardFailure(decision, errPrepare.Error())
 					completionOutcome = pluginapi.RequestCompletionFailed
 					completionStatus = failure.StatusCode
 					completionErr = failure.Error
@@ -561,11 +562,56 @@ func (h *BaseAPIHandler) reloadSelectedAuthForStreamRetry(ctx context.Context, m
 	if _, errReload := h.AuthManager.ReloadAuthRuntimeFromFile(ctx, authID); errReload != nil {
 		return errReload
 	}
+	clearSelectedAuthMetadata(metadata)
+	return nil
+}
+
+func (h *BaseAPIHandler) prepareSelectedAuthForStreamRetry(ctx context.Context, metadata map[string]any, retryMode pluginapi.StreamCompletionRetryMode) error {
+	switch retryMode {
+	case pluginapi.StreamCompletionRetryModeReloadSelectedAuth:
+		return h.reloadSelectedAuthForStreamRetry(ctx, metadata)
+	case pluginapi.StreamCompletionRetryModeExcludeSelectedAuth:
+		return excludeSelectedAuthForStreamRetry(metadata)
+	default:
+		return fmt.Errorf("实时流重试模式无效: %q", retryMode)
+	}
+}
+
+func excludeSelectedAuthForStreamRetry(metadata map[string]any) error {
+	authID := metadataString(metadata, coreexecutor.SelectedAuthMetadataKey)
+	if authID == "" {
+		return fmt.Errorf("实时流换号重试缺少当前 auth")
+	}
+	excluded := make(map[string]struct{})
+	if raw, exists := metadata[coreexecutor.ExcludedAuthIDsMetadataKey]; exists {
+		authIDs, ok := raw.([]string)
+		if !ok {
+			return fmt.Errorf("实时流换号重试的 excluded_auth_ids 类型无效")
+		}
+		for _, excludedAuthID := range authIDs {
+			excludedAuthID = strings.TrimSpace(excludedAuthID)
+			if excludedAuthID != "" {
+				excluded[excludedAuthID] = struct{}{}
+			}
+		}
+	}
+	excluded[authID] = struct{}{}
+	authIDs := make([]string, 0, len(excluded))
+	for excludedAuthID := range excluded {
+		authIDs = append(authIDs, excludedAuthID)
+	}
+	sort.Strings(authIDs)
+	metadata[coreexecutor.ExcludedAuthIDsMetadataKey] = authIDs
+	clearSelectedAuthMetadata(metadata)
+	return nil
+}
+
+func clearSelectedAuthMetadata(metadata map[string]any) {
 	delete(metadata, coreexecutor.SelectedAuthMetadataKey)
 	delete(metadata, coreexecutor.SelectedAuthIndexMetadataKey)
 	delete(metadata, coreexecutor.SelectedAuthProxyURLMetadataKey)
 	delete(metadata, coreexecutor.SelectedAuthProviderMetadataKey)
-	return nil
+	delete(metadata, coreexecutor.SelectedAuthFileNameMetadataKey)
 }
 
 func realtimeGuardFailure(decision pluginapi.StreamCompletionInterceptResponse, fallback string) *interfaces.ErrorMessage {
