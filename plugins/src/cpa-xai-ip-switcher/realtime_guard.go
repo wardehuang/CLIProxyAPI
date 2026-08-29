@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginapi"
 )
@@ -152,6 +153,7 @@ func realtimeGuardProbeFromCompletion(completion pluginapi.StreamCompletionInter
 		Completed:       completion.Completed,
 		StartedAt:       completion.StartedAt,
 		FirstPayloadAt:  completion.FirstPayloadAt,
+		FirstVisibleAt:  completion.FirstVisibleAt,
 		FinishedAt:      completion.FinishedAt,
 		RetryCount:      completion.RetryCount,
 		MaxRetries:      completion.MaxRetries,
@@ -215,7 +217,7 @@ func classifyRealtimeGuardProbeWithSettings(probe realtimeGuardProbe, settings p
 		return realtimeGuardUnknownDecision("sse_incomplete", "SSE 流未完整结束")
 	}
 
-	outputTokens, reasoningTokens, thinkingDelta, sseErr := parseRealtimeGuardSSE(probe.Body)
+	evidence, sseErr := parseRealtimeGuardSSE(probe.Body)
 	if sseErr != nil {
 		return realtimeGuardUnknownDecision("sse_failed", sseErr.Error())
 	}
@@ -236,7 +238,15 @@ func classifyRealtimeGuardProbeWithSettings(probe realtimeGuardProbe, settings p
 	ttfbDuration = time.Duration(ttfbDuration.Milliseconds()) * time.Millisecond
 	decision.TTFBMs = ttfbDuration.Milliseconds()
 	decision.GenerationMs = generationDuration.Milliseconds()
-	decision.TotalTokens = outputTokens + reasoningTokens
+	evidence = evaluateRealtimeGuardThinking(evidence, probe, settings)
+	decision.TotalTokens = evidence.OutputTokens + evidence.ReasoningTokens
+	decision.IsRealThinking = evidence.IsRealThinking
+	decision.RealThinkingReason = evidence.Reason
+	decision.SummaryChars = evidence.SummaryChars
+	decision.EncryptedBytes = evidence.EncryptedBytes
+	decision.EncryptedFloor = evidence.EncryptedFloor
+	decision.VisibleTokens = evidence.VisibleTokens
+	decision.VisibleFlushMs = evidence.VisibleFlushMs
 	decision.TPS = float64(decision.TotalTokens) / generationDuration.Seconds()
 	if decision.TPS >= settings.QualityHardTPS {
 		decision.Action = realtimeGuardActionRetry
@@ -245,11 +255,11 @@ func classifyRealtimeGuardProbeWithSettings(probe realtimeGuardProbe, settings p
 		decision.Reason = "hard_tps"
 		return decision
 	}
-	if decision.TPS >= settings.QualitySoftTPS && !thinkingDelta {
+	if decision.TPS > settings.QualitySoftTPS && decision.TPS < settings.QualityHardTPS && !decision.IsRealThinking {
 		decision.Action = realtimeGuardActionRetry
 		decision.Classification = realtimeGuardClassificationDegradation
 		decision.QualityLevel = realtimeGuardQualitySoft
-		decision.Reason = "soft_tps_missing_thinking_delta"
+		decision.Reason = "soft_tps_missing_real_thinking"
 		return decision
 	}
 	if ttfbDuration.Seconds() > settings.RealtimeGuardTTFBSeconds &&
@@ -280,13 +290,31 @@ func realtimeGuardUnknownDecision(reason, detail string) realtimeGuardDecision {
 	}
 }
 
-func parseRealtimeGuardSSE(body []byte) (int64, int64, bool, error) {
+type realtimeGuardThinkingEvidence struct {
+	OutputTokens           int64
+	ReasoningTokens        int64
+	SummaryChars           int
+	SummaryText            string
+	EncryptedBytes         int
+	ReasoningItemID        string
+	ReasoningItemStarted   bool
+	ReasoningItemCompleted bool
+	ReasoningMetadataError bool
+	VisibleTextChars       int
+	FunctionCallCount      int
+	VisibleTokens          int64
+	VisibleFlushMs         int64
+	EncryptedFloor         int
+	IsRealThinking         bool
+	Reason                 string
+}
+
+func parseRealtimeGuardSSE(body []byte) (realtimeGuardThinkingEvidence, error) {
 	if len(body) == 0 {
-		return 0, 0, false, fmt.Errorf("SSE 响应为空")
+		return realtimeGuardThinkingEvidence{}, fmt.Errorf("SSE 响应为空")
 	}
-	var outputTokens int64
-	var reasoningTokens int64
-	thinkingDelta := false
+	evidence := realtimeGuardThinkingEvidence{VisibleFlushMs: -1}
+	var summaryDelta strings.Builder
 	completed := false
 	for _, event := range strings.Split(string(body), "\n\n") {
 		for _, line := range strings.Split(event, "\n") {
@@ -301,17 +329,34 @@ func parseRealtimeGuardSSE(body []byte) (int64, int64, bool, error) {
 			}
 			var message map[string]any
 			if err := json.Unmarshal([]byte(payload), &message); err != nil {
-				return 0, 0, false, fmt.Errorf("解析 SSE 事件失败: %w", err)
+				return realtimeGuardThinkingEvidence{}, fmt.Errorf("解析 SSE 事件失败: %w", err)
 			}
 			eventType := strings.ToLower(stringField(message, "type"))
 			if strings.Contains(eventType, "failed") || strings.Contains(eventType, "incomplete") || eventType == "error" {
-				return 0, 0, false, fmt.Errorf("SSE 事件异常: %s", eventType)
+				return realtimeGuardThinkingEvidence{}, fmt.Errorf("SSE 事件异常: %s", eventType)
 			}
-			if eventType == "response.reasoning_summary_text.delta" ||
-				eventType == "response.reasoning_text.delta" ||
-				strings.EqualFold(stringField(message, "delta_type"), "thinking_delta") ||
-				qualityDeltaTypeIsThinking(message) {
-				thinkingDelta = true
+			switch eventType {
+			case "response.reasoning_summary_text.delta", "response.reasoning_text.delta":
+				recordRealtimeGuardReasoningItemID(stringField(message, "item_id"), &evidence)
+				summaryDelta.WriteString(stringField(message, "delta"))
+			case "response.reasoning_summary_text.done", "response.reasoning_text.done":
+				recordRealtimeGuardReasoningItemID(stringField(message, "item_id"), &evidence)
+				recordRealtimeGuardSummary(stringField(message, "text"), &evidence)
+			case "response.reasoning_summary_part.done":
+				recordRealtimeGuardReasoningItemID(stringField(message, "item_id"), &evidence)
+				if part, ok := message["part"].(map[string]any); ok && strings.EqualFold(stringField(part, "type"), "summary_text") {
+					recordRealtimeGuardSummary(stringField(part, "text"), &evidence)
+				}
+			case "response.output_text.delta":
+				evidence.VisibleTextChars += utf8.RuneCountInString(stringField(message, "delta"))
+			case "response.output_item.added":
+				if item, ok := message["item"].(map[string]any); ok {
+					collectRealtimeGuardOutputItem(item, &evidence, false)
+				}
+			case "response.output_item.done":
+				if item, ok := message["item"].(map[string]any); ok {
+					collectRealtimeGuardOutputItem(item, &evidence, true)
+				}
 			}
 			if eventType != "response.completed" {
 				continue
@@ -325,17 +370,162 @@ func parseRealtimeGuardSSE(body []byte) (int64, int64, bool, error) {
 				}
 			}
 			if usage != nil {
-				outputTokens = int64(integerField(usage, "output_tokens"))
+				evidence.OutputTokens = int64(integerField(usage, "output_tokens"))
 				if outputDetails, ok := usage["output_tokens_details"].(map[string]any); ok {
-					reasoningTokens = int64(integerField(outputDetails, "reasoning_tokens"))
+					evidence.ReasoningTokens = int64(integerField(outputDetails, "reasoning_tokens"))
+				}
+			}
+			if response, ok := message["response"].(map[string]any); ok {
+				if output, ok := response["output"].([]any); ok {
+					for _, rawItem := range output {
+						if item, itemOK := rawItem.(map[string]any); itemOK {
+							collectRealtimeGuardOutputItem(item, &evidence, true)
+						}
+					}
 				}
 			}
 		}
 	}
 	if !completed {
-		return 0, 0, false, fmt.Errorf("SSE 流未收到 response.completed 或 [DONE]")
+		return realtimeGuardThinkingEvidence{}, fmt.Errorf("SSE 流未收到 response.completed 或 [DONE]")
 	}
-	return outputTokens, reasoningTokens, thinkingDelta, nil
+	recordRealtimeGuardSummary(summaryDelta.String(), &evidence)
+	return evidence, nil
+}
+
+func collectRealtimeGuardOutputItem(item map[string]any, evidence *realtimeGuardThinkingEvidence, terminal bool) {
+	if evidence == nil {
+		return
+	}
+	switch strings.ToLower(stringField(item, "type")) {
+	case "reasoning":
+		recordRealtimeGuardReasoningItemID(stringField(item, "id"), evidence)
+		if terminal || strings.EqualFold(stringField(item, "status"), "completed") {
+			evidence.ReasoningItemCompleted = true
+		}
+		evidence.EncryptedBytes = maxRealtimeGuardInt(evidence.EncryptedBytes, len([]byte(strings.TrimSpace(stringField(item, "encrypted_content")))))
+		if summaries, ok := item["summary"].([]any); ok {
+			for _, rawSummary := range summaries {
+				summary, summaryOK := rawSummary.(map[string]any)
+				if !summaryOK || !strings.EqualFold(stringField(summary, "type"), "summary_text") {
+					continue
+				}
+				recordRealtimeGuardSummary(stringField(summary, "text"), evidence)
+			}
+		}
+	case "message":
+		if content, ok := item["content"].([]any); ok {
+			visibleChars := 0
+			for _, rawContent := range content {
+				part, partOK := rawContent.(map[string]any)
+				if !partOK {
+					continue
+				}
+				text := stringField(part, "text")
+				if text == "" {
+					text = stringField(part, "refusal")
+				}
+				visibleChars += utf8.RuneCountInString(text)
+			}
+			evidence.VisibleTextChars = maxRealtimeGuardInt(evidence.VisibleTextChars, visibleChars)
+		}
+	case "function_call":
+		if strings.EqualFold(stringField(item, "status"), "completed") && strings.TrimSpace(stringField(item, "call_id")) != "" && strings.TrimSpace(stringField(item, "name")) != "" {
+			evidence.FunctionCallCount++
+		}
+	}
+}
+
+func recordRealtimeGuardReasoningItemID(itemID string, evidence *realtimeGuardThinkingEvidence) {
+	if evidence == nil {
+		return
+	}
+	itemID = strings.TrimSpace(itemID)
+	evidence.ReasoningItemStarted = true
+	if itemID == "" {
+		evidence.ReasoningMetadataError = true
+		return
+	}
+	if evidence.ReasoningItemID == "" {
+		evidence.ReasoningItemID = itemID
+		return
+	}
+	if evidence.ReasoningItemID != itemID {
+		evidence.ReasoningMetadataError = true
+	}
+}
+
+func recordRealtimeGuardSummary(text string, evidence *realtimeGuardThinkingEvidence) {
+	if evidence == nil {
+		return
+	}
+	text = strings.TrimSpace(text)
+	chars := utf8.RuneCountInString(text)
+	if chars > evidence.SummaryChars {
+		evidence.SummaryChars = chars
+		evidence.SummaryText = text
+	}
+}
+
+func isRealtimeGuardPlaceholderSummary(text string) bool {
+	switch strings.ToLower(strings.TrimSpace(text)) {
+	case "thinking", "thinking...", "thinking…":
+		return true
+	default:
+		return false
+	}
+}
+
+func evaluateRealtimeGuardThinking(evidence realtimeGuardThinkingEvidence, probe realtimeGuardProbe, settings pluginSettings) realtimeGuardThinkingEvidence {
+	if evidence.OutputTokens < int64(settings.RealtimeGuardMinOutputTokens) {
+		evidence.IsRealThinking = true
+		evidence.Reason = "below_minimum_output_tokens"
+		return evidence
+	}
+	evidence.VisibleTokens = evidence.OutputTokens - evidence.ReasoningTokens
+	if evidence.VisibleTokens < 0 {
+		evidence.VisibleTokens = 0
+	}
+	evidence.EncryptedFloor = settings.RealtimeGuardMinEncryptedBytes
+	dynamicFloor := int(evidence.ReasoningTokens) * settings.RealtimeGuardEncryptedBytesPerReasoningToken
+	if dynamicFloor > evidence.EncryptedFloor {
+		evidence.EncryptedFloor = dynamicFloor
+	}
+	if !probe.FirstVisibleAt.IsZero() && !probe.FinishedAt.IsZero() {
+		evidence.VisibleFlushMs = probe.FinishedAt.Sub(probe.FirstVisibleAt).Milliseconds()
+	}
+	hasSummaryEvidence := !evidence.ReasoningMetadataError &&
+		evidence.SummaryChars >= settings.RealtimeGuardMinSummaryChars &&
+		!isRealtimeGuardPlaceholderSummary(evidence.SummaryText)
+	hasEncryptedEvidence := !evidence.ReasoningMetadataError && evidence.ReasoningItemCompleted && evidence.EncryptedBytes >= evidence.EncryptedFloor
+	burstDump := evidence.ReasoningTokens >= int64(settings.RealtimeGuardBurstMinReasoningTokens) &&
+		evidence.VisibleTokens > 0 && evidence.VisibleTokens < int64(settings.RealtimeGuardBurstMaxVisibleTokens) &&
+		evidence.VisibleFlushMs >= 0 && evidence.VisibleFlushMs < int64(settings.RealtimeGuardBurstMaxWindowMS)
+	evidence.IsRealThinking = (hasSummaryEvidence || hasEncryptedEvidence) && !burstDump
+	switch {
+	case burstDump:
+		evidence.Reason = "burst_dump"
+	case evidence.ReasoningMetadataError:
+		evidence.Reason = "reasoning_metadata_invalid"
+	case hasSummaryEvidence && hasEncryptedEvidence:
+		evidence.Reason = "summary_and_encrypted_evidence"
+	case hasSummaryEvidence:
+		evidence.Reason = "summary_evidence"
+	case hasEncryptedEvidence:
+		evidence.Reason = "encrypted_evidence"
+	case evidence.ReasoningTokens > 0:
+		evidence.Reason = "reasoning_tokens_without_evidence"
+	default:
+		evidence.Reason = "missing_thinking_evidence"
+	}
+	return evidence
+}
+
+func maxRealtimeGuardInt(left, right int) int {
+	if left > right {
+		return left
+	}
+	return right
 }
 
 func (store *ipStore) applyRealtimeGuard(probe realtimeGuardProbe, decision *realtimeGuardDecision) error {
@@ -546,7 +736,7 @@ func (store *ipStore) logRealtimeDegradationDetected(probe realtimeGuardProbe, d
 		probe.SourceSnapshot.NodeID,
 		"",
 		fmt.Sprintf("【检测到降智】auth:%s，节点:%s，原因:%s", authIdentity, probe.ProxyURL, decision.Reason),
-		fmt.Sprintf("request_id=%s；auth_file=%s；auth_index=%s；节点代理=%s；HTTP=%d；等级=%s；总耗时=%dms；TPS=%.2f；TTFB=%dms；首字后耗时=%dms；输出+思考tokens=%d", probe.RequestID, authIdentity, probe.AuthIndex, probe.ProxyURL, probe.StatusCode, decision.QualityLevel, decision.TotalDurationMs, decision.TPS, decision.TTFBMs, decision.GenerationMs, decision.TotalTokens),
+		fmt.Sprintf("request_id=%s；auth_file=%s；auth_index=%s；节点代理=%s；HTTP=%d；等级=%s；总耗时=%dms；TPS=%.2f；TTFB=%dms；首字后耗时=%dms；输出+思考tokens=%d；isRealThinking=%t；thinking原因=%s；summary字符=%d；encrypted=%d/%d字节；可见tokens=%d；可见倾倒=%dms", probe.RequestID, authIdentity, probe.AuthIndex, probe.ProxyURL, probe.StatusCode, decision.QualityLevel, decision.TotalDurationMs, decision.TPS, decision.TTFBMs, decision.GenerationMs, decision.TotalTokens, decision.IsRealThinking, decision.RealThinkingReason, decision.SummaryChars, decision.EncryptedBytes, decision.EncryptedFloor, decision.VisibleTokens, decision.VisibleFlushMs),
 	)
 }
 
@@ -590,6 +780,6 @@ func (store *ipStore) logRealtimeGuard(probe realtimeGuardProbe, decision realti
 		originalNode.ID,
 		originalNode.Name,
 		"实时守护发现异常并已处理",
-		fmt.Sprintf("request_id=%s；auth_id=%s；auth_index=%s；HTTP=%d；分类=%s；等级=%s；总耗时=%dms；TPS=%.2f；TTFB=%dms；首字后耗时=%dms；输出+思考tokens=%d；原节点=%d；原代理=%s；替换节点=%d；替换代理=%s；动作=%s；重试=%d/%d；错误=%s", probe.RequestID, probe.AuthID, probe.AuthIndex, probe.StatusCode, decision.Classification, decision.QualityLevel, decision.TotalDurationMs, decision.TPS, decision.TTFBMs, decision.GenerationMs, decision.TotalTokens, originalNode.ID, originalNode.ProxyURL, replacementNode.ID, replacementNode.ProxyURL, decision.Action, probe.RetryCount, probe.MaxRetries, decision.Error),
+		fmt.Sprintf("request_id=%s；auth_id=%s；auth_index=%s；HTTP=%d；分类=%s；等级=%s；总耗时=%dms；TPS=%.2f；TTFB=%dms；首字后耗时=%dms；输出+思考tokens=%d；isRealThinking=%t；thinking原因=%s；summary字符=%d；encrypted=%d/%d字节；可见tokens=%d；可见倾倒=%dms；原节点=%d；原代理=%s；替换节点=%d；替换代理=%s；动作=%s；重试=%d/%d；错误=%s", probe.RequestID, probe.AuthID, probe.AuthIndex, probe.StatusCode, decision.Classification, decision.QualityLevel, decision.TotalDurationMs, decision.TPS, decision.TTFBMs, decision.GenerationMs, decision.TotalTokens, decision.IsRealThinking, decision.RealThinkingReason, decision.SummaryChars, decision.EncryptedBytes, decision.EncryptedFloor, decision.VisibleTokens, decision.VisibleFlushMs, originalNode.ID, originalNode.ProxyURL, replacementNode.ID, replacementNode.ProxyURL, decision.Action, probe.RetryCount, probe.MaxRetries, decision.Error),
 	)
 }

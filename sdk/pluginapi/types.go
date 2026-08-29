@@ -1023,6 +1023,7 @@ type StreamCompletionInterceptRequest struct {
 	Completed       bool
 	StartedAt       time.Time
 	FirstPayloadAt  time.Time
+	FirstVisibleAt  time.Time
 	FinishedAt      time.Time
 	RetryCount      int
 	MaxRetries      int

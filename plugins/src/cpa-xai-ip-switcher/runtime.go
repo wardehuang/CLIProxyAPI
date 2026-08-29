@@ -158,6 +158,13 @@ func pluginSettingsEqual(left, right pluginSettings) bool {
 		left.RealtimeGuardGenerationSeconds == right.RealtimeGuardGenerationSeconds &&
 		left.RealtimeGuardTokenThreshold == right.RealtimeGuardTokenThreshold &&
 		left.RealtimeGuardTimeoutSeconds == right.RealtimeGuardTimeoutSeconds &&
+		left.RealtimeGuardMinSummaryChars == right.RealtimeGuardMinSummaryChars &&
+		left.RealtimeGuardMinEncryptedBytes == right.RealtimeGuardMinEncryptedBytes &&
+		left.RealtimeGuardEncryptedBytesPerReasoningToken == right.RealtimeGuardEncryptedBytesPerReasoningToken &&
+		left.RealtimeGuardMinOutputTokens == right.RealtimeGuardMinOutputTokens &&
+		left.RealtimeGuardBurstMinReasoningTokens == right.RealtimeGuardBurstMinReasoningTokens &&
+		left.RealtimeGuardBurstMaxVisibleTokens == right.RealtimeGuardBurstMaxVisibleTokens &&
+		left.RealtimeGuardBurstMaxWindowMS == right.RealtimeGuardBurstMaxWindowMS &&
 		left.DebugEnabled == right.DebugEnabled &&
 		left.Grok2apiSyncEnabled == right.Grok2apiSyncEnabled &&
 		left.Grok2apiBaseUrl == right.Grok2apiBaseUrl &&

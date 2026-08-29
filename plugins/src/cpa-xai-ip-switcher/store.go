@@ -13,41 +13,48 @@ import (
 )
 
 const (
-	defaultDatabasePath                   = "/opt/cli-proxy-api/plugin-data/cpa-xai-ip-switcher/ip-switcher.sqlite3"
-	defaultWorkerCount                    = 4
-	defaultRefreshIntervalSeconds         = 30
-	defaultKeepaliveWorkerCount           = 8
-	defaultKeepaliveIntervalSeconds       = 1800
-	defaultReviveIntervalSeconds          = 1800
-	defaultProbeRetryCount                = 3
-	defaultScheduleGroupCount             = 4
-	defaultHealthySlotCount               = 50
-	defaultHealthyCandidateCount          = 20
-	defaultHealthySlotMaxAgeMinutes       = 350
-	maxHealthySlotMaxAgeMinutes           = 10080
-	defaultQualityWorkerCount             = 8
-	defaultQualityProbeTimeout            = 25
-	defaultQualityProbeModel              = "grok-4.5"
-	defaultQualitySoftTPS                 = 500.0
-	defaultQualityHardTPS                 = 1000.0
-	defaultQualityLLMProbeEnabled         = false
-	defaultRealtimeGuardTTFBSeconds       = 5.0
-	defaultRealtimeGuardGenerationSeconds = 1.25
-	defaultRealtimeGuardTokenThreshold    = 300
-	defaultRealtimeGuardTimeoutSeconds    = 120
-	maxProbeWorkers                       = 64
-	maxRefreshIntervalSeconds             = 3600
-	maxKeepaliveIntervalSeconds           = 86400
-	maxProbeRetryCount                    = 10
-	maxReviveFailureCount                 = 3
-	maxSlotCount                          = 1000
-	maxQualityProbeTimeoutSeconds         = 600
-	maxQualityProbeModelLength            = 128
-	settingsDefaultsVersion               = "4"
-	maxPluginLogs                         = 1000
-	maxRealtimeGuardLogs                  = 100
-	maxGroupedLogSets                     = 10
-	maxStoredBatches                      = 5
+	defaultDatabasePath                                 = "/opt/cli-proxy-api/plugin-data/cpa-xai-ip-switcher/ip-switcher.sqlite3"
+	defaultWorkerCount                                  = 4
+	defaultRefreshIntervalSeconds                       = 30
+	defaultKeepaliveWorkerCount                         = 8
+	defaultKeepaliveIntervalSeconds                     = 1800
+	defaultReviveIntervalSeconds                        = 1800
+	defaultProbeRetryCount                              = 3
+	defaultScheduleGroupCount                           = 4
+	defaultHealthySlotCount                             = 50
+	defaultHealthyCandidateCount                        = 20
+	defaultHealthySlotMaxAgeMinutes                     = 350
+	maxHealthySlotMaxAgeMinutes                         = 10080
+	defaultQualityWorkerCount                           = 8
+	defaultQualityProbeTimeout                          = 25
+	defaultQualityProbeModel                            = "grok-4.5"
+	defaultQualitySoftTPS                               = 500.0
+	defaultQualityHardTPS                               = 1000.0
+	defaultQualityLLMProbeEnabled                       = false
+	defaultRealtimeGuardTTFBSeconds                     = 5.0
+	defaultRealtimeGuardGenerationSeconds               = 1.25
+	defaultRealtimeGuardTokenThreshold                  = 300
+	defaultRealtimeGuardTimeoutSeconds                  = 120
+	defaultRealtimeGuardMinSummaryChars                 = 32
+	defaultRealtimeGuardMinEncryptedBytes               = 256
+	defaultRealtimeGuardEncryptedBytesPerReasoningToken = 4
+	defaultRealtimeGuardMinOutputTokens                 = 8
+	defaultRealtimeGuardBurstMinReasoningTokens         = 80
+	defaultRealtimeGuardBurstMaxVisibleTokens           = 32
+	defaultRealtimeGuardBurstMaxWindowMS                = 1000
+	maxProbeWorkers                                     = 64
+	maxRefreshIntervalSeconds                           = 3600
+	maxKeepaliveIntervalSeconds                         = 86400
+	maxProbeRetryCount                                  = 10
+	maxReviveFailureCount                               = 3
+	maxSlotCount                                        = 1000
+	maxQualityProbeTimeoutSeconds                       = 600
+	maxQualityProbeModelLength                          = 128
+	settingsDefaultsVersion                             = "4"
+	maxPluginLogs                                       = 1000
+	maxRealtimeGuardLogs                                = 100
+	maxGroupedLogSets                                   = 10
+	maxStoredBatches                                    = 5
 
 	logLevelInfo  = "info"
 	logLevelWarn  = "warn"
@@ -86,33 +93,40 @@ const (
 )
 
 type pluginSettings struct {
-	WorkerCount                    int
-	RefreshIntervalSeconds         int
-	KeepaliveWorkerCount           int
-	KeepaliveIntervalSeconds       int
-	ReviveIntervalSeconds          int
-	ProbeRetryCount                int
-	ScheduleGroupCount             int
-	HealthySlotCount               int
-	HealthyCandidateSlotCount      int
-	HealthySlotMaxAgeMinutes       int
-	QualityWorkerCount             int
-	QualityProbeTimeoutSeconds     int
-	QualityProbeModel              string
-	QualitySoftTPS                 float64
-	QualityHardTPS                 float64
-	QualityLLMProbeEnabled         bool
-	RealtimeGuardTTFBSeconds       float64
-	RealtimeGuardGenerationSeconds float64
-	RealtimeGuardTokenThreshold    int
-	RealtimeGuardTimeoutSeconds    int
-	DebugEnabled                   bool
-	Grok2apiSyncEnabled            bool
-	Grok2apiBaseUrl                string
-	Grok2apiAdminUsername          string
-	Grok2apiAdminPassword          string
-	ManagerBaseURL                 string
-	ManagerManagementKey           string
+	WorkerCount                                  int
+	RefreshIntervalSeconds                       int
+	KeepaliveWorkerCount                         int
+	KeepaliveIntervalSeconds                     int
+	ReviveIntervalSeconds                        int
+	ProbeRetryCount                              int
+	ScheduleGroupCount                           int
+	HealthySlotCount                             int
+	HealthyCandidateSlotCount                    int
+	HealthySlotMaxAgeMinutes                     int
+	QualityWorkerCount                           int
+	QualityProbeTimeoutSeconds                   int
+	QualityProbeModel                            string
+	QualitySoftTPS                               float64
+	QualityHardTPS                               float64
+	QualityLLMProbeEnabled                       bool
+	RealtimeGuardTTFBSeconds                     float64
+	RealtimeGuardGenerationSeconds               float64
+	RealtimeGuardTokenThreshold                  int
+	RealtimeGuardTimeoutSeconds                  int
+	RealtimeGuardMinSummaryChars                 int
+	RealtimeGuardMinEncryptedBytes               int
+	RealtimeGuardEncryptedBytesPerReasoningToken int
+	RealtimeGuardMinOutputTokens                 int
+	RealtimeGuardBurstMinReasoningTokens         int
+	RealtimeGuardBurstMaxVisibleTokens           int
+	RealtimeGuardBurstMaxWindowMS                int
+	DebugEnabled                                 bool
+	Grok2apiSyncEnabled                          bool
+	Grok2apiBaseUrl                              string
+	Grok2apiAdminUsername                        string
+	Grok2apiAdminPassword                        string
+	ManagerBaseURL                               string
+	ManagerManagementKey                         string
 }
 
 type proxyNode struct {
@@ -386,7 +400,14 @@ INSERT OR IGNORE INTO plugin_settings(setting_key, setting_value) VALUES
     ('realtime_guard_ttfb_seconds', '5'),
     ('realtime_guard_generation_seconds', '1.25'),
     ('realtime_guard_token_threshold', '300'),
-    ('realtime_guard_timeout_seconds', '120');
+    ('realtime_guard_timeout_seconds', '120'),
+    ('realtime_guard_min_summary_chars', '32'),
+    ('realtime_guard_min_encrypted_bytes', '256'),
+    ('realtime_guard_encrypted_bytes_per_reasoning_token', '4'),
+    ('realtime_guard_min_output_tokens', '8'),
+    ('realtime_guard_burst_min_reasoning_tokens', '80'),
+    ('realtime_guard_burst_max_visible_tokens', '32'),
+    ('realtime_guard_burst_max_window_ms', '1000');
 `)
 	if err != nil {
 		return fmt.Errorf("initialize sqlite database: %w", err)
@@ -1519,6 +1540,8 @@ WHERE setting_key IN (
     'healthy_slot_max_age_minutes',
     'quality_worker_count', 'quality_probe_timeout_seconds', 'quality_probe_model', 'quality_soft_tps', 'quality_hard_tps',
     'quality_llm_probe_enabled', 'realtime_guard_ttfb_seconds', 'realtime_guard_generation_seconds', 'realtime_guard_token_threshold', 'realtime_guard_timeout_seconds',
+    'realtime_guard_min_summary_chars', 'realtime_guard_min_encrypted_bytes', 'realtime_guard_encrypted_bytes_per_reasoning_token',
+    'realtime_guard_min_output_tokens', 'realtime_guard_burst_min_reasoning_tokens', 'realtime_guard_burst_max_visible_tokens', 'realtime_guard_burst_max_window_ms',
     'debug_enabled',
     'grok2api_sync_enabled', 'grok2api_base_url', 'grok2api_admin_username', 'grok2api_admin_password',
     'manager_base_url', 'manager_management_key', 'manager_database_path'
@@ -1600,6 +1623,20 @@ WHERE setting_key IN (
 				settings.RealtimeGuardTokenThreshold = value
 			case "realtime_guard_timeout_seconds":
 				settings.RealtimeGuardTimeoutSeconds = value
+			case "realtime_guard_min_summary_chars":
+				settings.RealtimeGuardMinSummaryChars = value
+			case "realtime_guard_min_encrypted_bytes":
+				settings.RealtimeGuardMinEncryptedBytes = value
+			case "realtime_guard_encrypted_bytes_per_reasoning_token":
+				settings.RealtimeGuardEncryptedBytesPerReasoningToken = value
+			case "realtime_guard_min_output_tokens":
+				settings.RealtimeGuardMinOutputTokens = value
+			case "realtime_guard_burst_min_reasoning_tokens":
+				settings.RealtimeGuardBurstMinReasoningTokens = value
+			case "realtime_guard_burst_max_visible_tokens":
+				settings.RealtimeGuardBurstMaxVisibleTokens = value
+			case "realtime_guard_burst_max_window_ms":
+				settings.RealtimeGuardBurstMaxWindowMS = value
 			}
 		}
 	}
@@ -1629,33 +1666,40 @@ func (store *ipStore) setSettings(settings pluginSettings) error {
 	defer transaction.Rollback()
 
 	settingsToSave := map[string]string{
-		"worker_count":                      strconv.Itoa(settings.WorkerCount),
-		"refresh_interval_seconds":          strconv.Itoa(settings.RefreshIntervalSeconds),
-		"keepalive_worker_count":            strconv.Itoa(settings.KeepaliveWorkerCount),
-		"keepalive_interval_seconds":        strconv.Itoa(settings.KeepaliveIntervalSeconds),
-		"revive_interval_seconds":           strconv.Itoa(settings.ReviveIntervalSeconds),
-		"probe_retry_count":                 strconv.Itoa(settings.ProbeRetryCount),
-		"schedule_group_count":              strconv.Itoa(settings.ScheduleGroupCount),
-		"healthy_slot_count":                strconv.Itoa(settings.HealthySlotCount),
-		"healthy_candidate_slot_count":      strconv.Itoa(settings.HealthyCandidateSlotCount),
-		"healthy_slot_max_age_minutes":      strconv.Itoa(settings.HealthySlotMaxAgeMinutes),
-		"quality_worker_count":              strconv.Itoa(settings.QualityWorkerCount),
-		"quality_probe_timeout_seconds":     strconv.Itoa(settings.QualityProbeTimeoutSeconds),
-		"quality_probe_model":               normalizeQualityProbeModel(settings.QualityProbeModel),
-		"quality_soft_tps":                  strconv.FormatFloat(settings.QualitySoftTPS, 'f', -1, 64),
-		"quality_hard_tps":                  strconv.FormatFloat(settings.QualityHardTPS, 'f', -1, 64),
-		"quality_llm_probe_enabled":         formatSettingBool(settings.QualityLLMProbeEnabled),
-		"realtime_guard_ttfb_seconds":       strconv.FormatFloat(settings.RealtimeGuardTTFBSeconds, 'f', -1, 64),
-		"realtime_guard_generation_seconds": strconv.FormatFloat(settings.RealtimeGuardGenerationSeconds, 'f', -1, 64),
-		"realtime_guard_token_threshold":    strconv.Itoa(settings.RealtimeGuardTokenThreshold),
-		"realtime_guard_timeout_seconds":    strconv.Itoa(settings.RealtimeGuardTimeoutSeconds),
-		"debug_enabled":                     formatSettingBool(settings.DebugEnabled),
-		"grok2api_sync_enabled":             formatSettingBool(settings.Grok2apiSyncEnabled),
-		"grok2api_base_url":                 normalizeGrok2apiBaseURL(settings.Grok2apiBaseUrl),
-		"grok2api_admin_username":           strings.TrimSpace(settings.Grok2apiAdminUsername),
-		"grok2api_admin_password":           settings.Grok2apiAdminPassword,
-		"manager_base_url":                  strings.TrimRight(strings.TrimSpace(settings.ManagerBaseURL), "/"),
-		"manager_management_key":            settings.ManagerManagementKey,
+		"worker_count":                                       strconv.Itoa(settings.WorkerCount),
+		"refresh_interval_seconds":                           strconv.Itoa(settings.RefreshIntervalSeconds),
+		"keepalive_worker_count":                             strconv.Itoa(settings.KeepaliveWorkerCount),
+		"keepalive_interval_seconds":                         strconv.Itoa(settings.KeepaliveIntervalSeconds),
+		"revive_interval_seconds":                            strconv.Itoa(settings.ReviveIntervalSeconds),
+		"probe_retry_count":                                  strconv.Itoa(settings.ProbeRetryCount),
+		"schedule_group_count":                               strconv.Itoa(settings.ScheduleGroupCount),
+		"healthy_slot_count":                                 strconv.Itoa(settings.HealthySlotCount),
+		"healthy_candidate_slot_count":                       strconv.Itoa(settings.HealthyCandidateSlotCount),
+		"healthy_slot_max_age_minutes":                       strconv.Itoa(settings.HealthySlotMaxAgeMinutes),
+		"quality_worker_count":                               strconv.Itoa(settings.QualityWorkerCount),
+		"quality_probe_timeout_seconds":                      strconv.Itoa(settings.QualityProbeTimeoutSeconds),
+		"quality_probe_model":                                normalizeQualityProbeModel(settings.QualityProbeModel),
+		"quality_soft_tps":                                   strconv.FormatFloat(settings.QualitySoftTPS, 'f', -1, 64),
+		"quality_hard_tps":                                   strconv.FormatFloat(settings.QualityHardTPS, 'f', -1, 64),
+		"quality_llm_probe_enabled":                          formatSettingBool(settings.QualityLLMProbeEnabled),
+		"realtime_guard_ttfb_seconds":                        strconv.FormatFloat(settings.RealtimeGuardTTFBSeconds, 'f', -1, 64),
+		"realtime_guard_generation_seconds":                  strconv.FormatFloat(settings.RealtimeGuardGenerationSeconds, 'f', -1, 64),
+		"realtime_guard_token_threshold":                     strconv.Itoa(settings.RealtimeGuardTokenThreshold),
+		"realtime_guard_timeout_seconds":                     strconv.Itoa(settings.RealtimeGuardTimeoutSeconds),
+		"realtime_guard_min_summary_chars":                   strconv.Itoa(settings.RealtimeGuardMinSummaryChars),
+		"realtime_guard_min_encrypted_bytes":                 strconv.Itoa(settings.RealtimeGuardMinEncryptedBytes),
+		"realtime_guard_encrypted_bytes_per_reasoning_token": strconv.Itoa(settings.RealtimeGuardEncryptedBytesPerReasoningToken),
+		"realtime_guard_min_output_tokens":                   strconv.Itoa(settings.RealtimeGuardMinOutputTokens),
+		"realtime_guard_burst_min_reasoning_tokens":          strconv.Itoa(settings.RealtimeGuardBurstMinReasoningTokens),
+		"realtime_guard_burst_max_visible_tokens":            strconv.Itoa(settings.RealtimeGuardBurstMaxVisibleTokens),
+		"realtime_guard_burst_max_window_ms":                 strconv.Itoa(settings.RealtimeGuardBurstMaxWindowMS),
+		"debug_enabled":                                      formatSettingBool(settings.DebugEnabled),
+		"grok2api_sync_enabled":                              formatSettingBool(settings.Grok2apiSyncEnabled),
+		"grok2api_base_url":                                  normalizeGrok2apiBaseURL(settings.Grok2apiBaseUrl),
+		"grok2api_admin_username":                            strings.TrimSpace(settings.Grok2apiAdminUsername),
+		"grok2api_admin_password":                            settings.Grok2apiAdminPassword,
+		"manager_base_url":                                   strings.TrimRight(strings.TrimSpace(settings.ManagerBaseURL), "/"),
+		"manager_management_key":                             settings.ManagerManagementKey,
 	}
 	for settingKey, settingValue := range settingsToSave {
 		if _, err := transaction.Exec(`

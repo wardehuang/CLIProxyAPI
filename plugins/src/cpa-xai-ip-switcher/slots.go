@@ -215,31 +215,38 @@ func ensureSQLiteColumn(database *sql.DB, tableName, columnName, columnDefinitio
 
 func defaultPluginSettings() pluginSettings {
 	return pluginSettings{
-		WorkerCount:                    defaultWorkerCount,
-		RefreshIntervalSeconds:         defaultRefreshIntervalSeconds,
-		KeepaliveWorkerCount:           defaultKeepaliveWorkerCount,
-		KeepaliveIntervalSeconds:       defaultKeepaliveIntervalSeconds,
-		ReviveIntervalSeconds:          defaultReviveIntervalSeconds,
-		ProbeRetryCount:                defaultProbeRetryCount,
-		ScheduleGroupCount:             defaultScheduleGroupCount,
-		HealthySlotCount:               defaultHealthySlotCount,
-		HealthyCandidateSlotCount:      defaultHealthyCandidateCount,
-		HealthySlotMaxAgeMinutes:       defaultHealthySlotMaxAgeMinutes,
-		QualityWorkerCount:             defaultQualityWorkerCount,
-		QualityProbeTimeoutSeconds:     defaultQualityProbeTimeout,
-		QualityProbeModel:              defaultQualityProbeModel,
-		QualitySoftTPS:                 defaultQualitySoftTPS,
-		QualityHardTPS:                 defaultQualityHardTPS,
-		QualityLLMProbeEnabled:         defaultQualityLLMProbeEnabled,
-		RealtimeGuardTTFBSeconds:       defaultRealtimeGuardTTFBSeconds,
-		RealtimeGuardGenerationSeconds: defaultRealtimeGuardGenerationSeconds,
-		RealtimeGuardTokenThreshold:    defaultRealtimeGuardTokenThreshold,
-		RealtimeGuardTimeoutSeconds:    defaultRealtimeGuardTimeoutSeconds,
-		DebugEnabled:                   false,
-		Grok2apiSyncEnabled:            false,
-		Grok2apiBaseUrl:                "",
-		Grok2apiAdminUsername:          "",
-		Grok2apiAdminPassword:          "",
+		WorkerCount:                                  defaultWorkerCount,
+		RefreshIntervalSeconds:                       defaultRefreshIntervalSeconds,
+		KeepaliveWorkerCount:                         defaultKeepaliveWorkerCount,
+		KeepaliveIntervalSeconds:                     defaultKeepaliveIntervalSeconds,
+		ReviveIntervalSeconds:                        defaultReviveIntervalSeconds,
+		ProbeRetryCount:                              defaultProbeRetryCount,
+		ScheduleGroupCount:                           defaultScheduleGroupCount,
+		HealthySlotCount:                             defaultHealthySlotCount,
+		HealthyCandidateSlotCount:                    defaultHealthyCandidateCount,
+		HealthySlotMaxAgeMinutes:                     defaultHealthySlotMaxAgeMinutes,
+		QualityWorkerCount:                           defaultQualityWorkerCount,
+		QualityProbeTimeoutSeconds:                   defaultQualityProbeTimeout,
+		QualityProbeModel:                            defaultQualityProbeModel,
+		QualitySoftTPS:                               defaultQualitySoftTPS,
+		QualityHardTPS:                               defaultQualityHardTPS,
+		QualityLLMProbeEnabled:                       defaultQualityLLMProbeEnabled,
+		RealtimeGuardTTFBSeconds:                     defaultRealtimeGuardTTFBSeconds,
+		RealtimeGuardGenerationSeconds:               defaultRealtimeGuardGenerationSeconds,
+		RealtimeGuardTokenThreshold:                  defaultRealtimeGuardTokenThreshold,
+		RealtimeGuardTimeoutSeconds:                  defaultRealtimeGuardTimeoutSeconds,
+		RealtimeGuardMinSummaryChars:                 defaultRealtimeGuardMinSummaryChars,
+		RealtimeGuardMinEncryptedBytes:               defaultRealtimeGuardMinEncryptedBytes,
+		RealtimeGuardEncryptedBytesPerReasoningToken: defaultRealtimeGuardEncryptedBytesPerReasoningToken,
+		RealtimeGuardMinOutputTokens:                 defaultRealtimeGuardMinOutputTokens,
+		RealtimeGuardBurstMinReasoningTokens:         defaultRealtimeGuardBurstMinReasoningTokens,
+		RealtimeGuardBurstMaxVisibleTokens:           defaultRealtimeGuardBurstMaxVisibleTokens,
+		RealtimeGuardBurstMaxWindowMS:                defaultRealtimeGuardBurstMaxWindowMS,
+		DebugEnabled:                                 false,
+		Grok2apiSyncEnabled:                          false,
+		Grok2apiBaseUrl:                              "",
+		Grok2apiAdminUsername:                        "",
+		Grok2apiAdminPassword:                        "",
 	}
 }
 
@@ -421,6 +428,27 @@ func validateSlotSettings(settings pluginSettings) error {
 	}
 	if settings.RealtimeGuardTokenThreshold < 1 {
 		return fmt.Errorf("realtime guard token threshold must be at least 1")
+	}
+	if settings.RealtimeGuardMinSummaryChars < 1 || settings.RealtimeGuardMinSummaryChars > 4096 {
+		return fmt.Errorf("realtime guard minimum summary characters must be between 1 and 4096")
+	}
+	if settings.RealtimeGuardMinEncryptedBytes < 64 || settings.RealtimeGuardMinEncryptedBytes > 4096 {
+		return fmt.Errorf("realtime guard minimum encrypted bytes must be between 64 and 4096")
+	}
+	if settings.RealtimeGuardEncryptedBytesPerReasoningToken < 1 || settings.RealtimeGuardEncryptedBytesPerReasoningToken > 16 {
+		return fmt.Errorf("realtime guard encrypted bytes per reasoning token must be between 1 and 16")
+	}
+	if settings.RealtimeGuardMinOutputTokens < 8 || settings.RealtimeGuardMinOutputTokens > 256 {
+		return fmt.Errorf("realtime guard minimum output tokens must be between 8 and 256")
+	}
+	if settings.RealtimeGuardBurstMinReasoningTokens < 1 || settings.RealtimeGuardBurstMinReasoningTokens > 4096 {
+		return fmt.Errorf("realtime guard burst minimum reasoning tokens must be between 1 and 4096")
+	}
+	if settings.RealtimeGuardBurstMaxVisibleTokens < 1 || settings.RealtimeGuardBurstMaxVisibleTokens > 256 {
+		return fmt.Errorf("realtime guard burst maximum visible tokens must be between 1 and 256")
+	}
+	if settings.RealtimeGuardBurstMaxWindowMS < 1 || settings.RealtimeGuardBurstMaxWindowMS > 30000 {
+		return fmt.Errorf("realtime guard burst maximum window must be between 1 and 30000 milliseconds")
 	}
 	if settings.HealthySlotMaxAgeMinutes < 1 || settings.HealthySlotMaxAgeMinutes > maxHealthySlotMaxAgeMinutes {
 		return fmt.Errorf("healthy slot max age must be between 1 and %d minutes", maxHealthySlotMaxAgeMinutes)

@@ -336,6 +336,7 @@ type bufferedStreamAttempt struct {
 	Completed         bool
 	StartedAt         time.Time
 	FirstPayloadAt    time.Time
+	FirstVisibleAt    time.Time
 	FinishedAt        time.Time
 	Body              []byte
 	GuardBody         []byte
@@ -462,6 +463,9 @@ func collectBufferedStreamAttempt(
 				attempt.StatusCode = http.StatusBadGateway
 				break
 			}
+			if attempt.FirstVisibleAt.IsZero() && responsesSSEHasVisibleTextDelta(payload) {
+				attempt.FirstVisibleAt = time.Now()
+			}
 		}
 		attempt.Payloads = append(attempt.Payloads, payload)
 		historyChunks = appendStreamInterceptorHistory(historyChunks, payload)
@@ -483,7 +487,6 @@ func collectBufferedStreamAttempt(
 			if !sourceCompletion.FinishedAt.IsZero() {
 				attempt.FinishedAt = sourceCompletion.FinishedAt
 			}
-			attempt.GuardBody = cloneBytes(sourceCompletion.Body)
 			if sourceCompletion.Err != nil && attempt.Err == nil {
 				attempt.Err = sourceCompletion.Err
 				attempt.StatusCode = http.StatusBadGateway
@@ -496,6 +499,15 @@ func collectBufferedStreamAttempt(
 	}
 	attempt.DownstreamHeaders = downstreamHeadersAfterInterceptors(baseHeaders, rawHeaders, false)
 	return attempt
+}
+
+func responsesSSEHasVisibleTextDelta(payload []byte) bool {
+	data, found := sseJSONValidationDataPayload(payload)
+	data = bytes.TrimSpace(data)
+	if !found || len(data) == 0 || !json.Valid(data) {
+		return false
+	}
+	return gjson.GetBytes(data, "type").String() == "response.output_text.delta" && strings.TrimSpace(gjson.GetBytes(data, "delta").String()) != ""
 }
 
 func buildStreamCompletionRequest(
@@ -536,6 +548,7 @@ func buildStreamCompletionRequest(
 		Completed:       attempt.Completed,
 		StartedAt:       attempt.StartedAt,
 		FirstPayloadAt:  attempt.FirstPayloadAt,
+		FirstVisibleAt:  attempt.FirstVisibleAt,
 		FinishedAt:      attempt.FinishedAt,
 		RetryCount:      retryCount,
 		MaxRetries:      maxRealtimeGuardDegradedAccounts,

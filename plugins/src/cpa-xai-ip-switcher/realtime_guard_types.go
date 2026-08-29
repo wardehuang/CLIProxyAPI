@@ -41,6 +41,7 @@ type realtimeGuardProbe struct {
 	Completed       bool
 	StartedAt       time.Time
 	FirstPayloadAt  time.Time
+	FirstVisibleAt  time.Time
 	FinishedAt      time.Time
 	RetryCount      int
 	MaxRetries      int
@@ -58,6 +59,13 @@ type realtimeGuardDecision struct {
 	TTFBMs              int64
 	GenerationMs        int64
 	TotalTokens         int64
+	IsRealThinking      bool
+	RealThinkingReason  string
+	SummaryChars        int
+	EncryptedBytes      int
+	EncryptedFloor      int
+	VisibleTokens       int64
+	VisibleFlushMs      int64
 	Error               string
 	OriginalNodeID      int64
 	ReplacementNodeID   int64

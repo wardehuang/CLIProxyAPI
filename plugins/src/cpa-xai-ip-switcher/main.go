@@ -533,7 +533,7 @@ func updatePluginSettings(body json.RawMessage) ([]byte, error) {
 		0,
 		"",
 		"插件配置已保存；健康槽位布局、实时守护阈值、调试开关、页面刷新与 grok2api 同步配置立即生效，调度线程与间隔类配置下次启动生效",
-		fmt.Sprintf("健康槽位数 %d，健康备选槽位数 %d，探测线程数 %d，页面刷新 %d 秒，保活线程数 %d，保活间隔 %d 秒，复活间隔 %d 秒，探测重试次数 %d，实时守护首字阈值 %.2f 秒，首字后耗时阈值 %.2f 秒，token 阈值 %d，首字超时阈值 %d 秒，配置变化 %t；当前进程未重启", settings.HealthySlotCount, settings.HealthyCandidateSlotCount, settings.WorkerCount, settings.RefreshIntervalSeconds, settings.KeepaliveWorkerCount, settings.KeepaliveIntervalSeconds, settings.ReviveIntervalSeconds, settings.ProbeRetryCount, settings.RealtimeGuardTTFBSeconds, settings.RealtimeGuardGenerationSeconds, settings.RealtimeGuardTokenThreshold, settings.RealtimeGuardTimeoutSeconds, settingsSaved),
+		fmt.Sprintf("健康槽位数 %d，健康备选槽位数 %d，探测线程数 %d，页面刷新 %d 秒，保活线程数 %d，保活间隔 %d 秒，复活间隔 %d 秒，探测重试次数 %d，实时守护首字阈值 %.2f 秒，首字后耗时阈值 %.2f 秒，token 阈值 %d，首字超时阈值 %d 秒，真实思考summary字符阈值 %d，encrypted最少字节 %d，每reasoning token字节 %d，最低输出token %d，burst最低reasoning token %d，burst最大可见token %d，burst最大窗口 %dms，配置变化 %t；当前进程未重启", settings.HealthySlotCount, settings.HealthyCandidateSlotCount, settings.WorkerCount, settings.RefreshIntervalSeconds, settings.KeepaliveWorkerCount, settings.KeepaliveIntervalSeconds, settings.ReviveIntervalSeconds, settings.ProbeRetryCount, settings.RealtimeGuardTTFBSeconds, settings.RealtimeGuardGenerationSeconds, settings.RealtimeGuardTokenThreshold, settings.RealtimeGuardTimeoutSeconds, settings.RealtimeGuardMinSummaryChars, settings.RealtimeGuardMinEncryptedBytes, settings.RealtimeGuardEncryptedBytesPerReasoningToken, settings.RealtimeGuardMinOutputTokens, settings.RealtimeGuardBurstMinReasoningTokens, settings.RealtimeGuardBurstMaxVisibleTokens, settings.RealtimeGuardBurstMaxWindowMS, settingsSaved),
 	)
 	return managementJSON(http.StatusOK, map[string]any{"data": publicSettings(settings)})
 }
@@ -573,6 +573,13 @@ func settingsFromPayload(payload map[string]any) (pluginSettings, error) {
 	realtimeGuardGenerationSeconds, realtimeGuardGenerationOK := floatValue(firstValue(payload, "realtimeGuardGenerationSeconds", "realtime_guard_generation_seconds"))
 	realtimeGuardTokenThreshold, realtimeGuardTokenOK := integerValue(firstValue(payload, "realtimeGuardTokenThreshold", "realtime_guard_token_threshold"))
 	realtimeGuardTimeoutSeconds, realtimeGuardTimeoutOK := integerValue(firstValue(payload, "realtimeGuardTimeoutSeconds", "realtime_guard_timeout_seconds"))
+	realtimeGuardMinSummaryChars, realtimeGuardMinSummaryCharsOK := integerValue(firstValue(payload, "realtimeGuardMinSummaryChars", "realtime_guard_min_summary_chars"))
+	realtimeGuardMinEncryptedBytes, realtimeGuardMinEncryptedBytesOK := integerValue(firstValue(payload, "realtimeGuardMinEncryptedBytes", "realtime_guard_min_encrypted_bytes"))
+	realtimeGuardEncryptedBytesPerReasoningToken, realtimeGuardEncryptedBytesPerReasoningTokenOK := integerValue(firstValue(payload, "realtimeGuardEncryptedBytesPerReasoningToken", "realtime_guard_encrypted_bytes_per_reasoning_token"))
+	realtimeGuardMinOutputTokens, realtimeGuardMinOutputTokensOK := integerValue(firstValue(payload, "realtimeGuardMinOutputTokens", "realtime_guard_min_output_tokens"))
+	realtimeGuardBurstMinReasoningTokens, realtimeGuardBurstMinReasoningTokensOK := integerValue(firstValue(payload, "realtimeGuardBurstMinReasoningTokens", "realtime_guard_burst_min_reasoning_tokens"))
+	realtimeGuardBurstMaxVisibleTokens, realtimeGuardBurstMaxVisibleTokensOK := integerValue(firstValue(payload, "realtimeGuardBurstMaxVisibleTokens", "realtime_guard_burst_max_visible_tokens"))
+	realtimeGuardBurstMaxWindowMS, realtimeGuardBurstMaxWindowMSOK := integerValue(firstValue(payload, "realtimeGuardBurstMaxWindowMs", "realtime_guard_burst_max_window_ms"))
 	qualityLLMProbeEnabled, qualityLLMProbeOK := boolValue(firstValue(payload, "qualityLLMProbeEnabled", "quality_llm_probe_enabled"))
 	debugEnabled, debugEnabledOK := boolValue(firstValue(payload, "debugEnabled", "debug_enabled"))
 	grok2apiSyncEnabled, grok2apiSyncEnabledOK := boolValue(firstValue(payload, "grok2apiSyncEnabled", "grok2api_sync_enabled"))
@@ -582,38 +589,46 @@ func settingsFromPayload(payload map[string]any) (pluginSettings, error) {
 	managerBaseURL, managerBaseURLOK := stringValue(firstValue(payload, "managerBaseUrl", "manager_base_url"))
 	managerManagementKey, managerManagementKeyOK := stringValue(firstValue(payload, "managerManagementKey", "manager_management_key"))
 	if !workerOK || !refreshOK || !keepaliveWorkersOK || !keepaliveIntervalOK || !reviveIntervalOK || !retryOK || !scheduleGroupCountOK ||
-		!healthySlotOK || !healthyCandidateSlotOK || !healthySlotMaxAgeOK || !qualityWorkerOK || !qualityTimeoutOK || !qualityModelOK || !softTPSOK || !hardTPSOK || !realtimeGuardTTFBOK || !realtimeGuardGenerationOK || !realtimeGuardTokenOK || !realtimeGuardTimeoutOK || !qualityLLMProbeOK ||
+		!healthySlotOK || !healthyCandidateSlotOK || !healthySlotMaxAgeOK || !qualityWorkerOK || !qualityTimeoutOK || !qualityModelOK || !softTPSOK || !hardTPSOK || !realtimeGuardTTFBOK || !realtimeGuardGenerationOK || !realtimeGuardTokenOK || !realtimeGuardTimeoutOK ||
+		!realtimeGuardMinSummaryCharsOK || !realtimeGuardMinEncryptedBytesOK || !realtimeGuardEncryptedBytesPerReasoningTokenOK || !realtimeGuardMinOutputTokensOK || !realtimeGuardBurstMinReasoningTokensOK || !realtimeGuardBurstMaxVisibleTokensOK || !realtimeGuardBurstMaxWindowMSOK || !qualityLLMProbeOK ||
 		!debugEnabledOK || !grok2apiSyncEnabledOK || !grok2apiBaseUrlOK || !grok2apiAdminUsernameOK || !grok2apiAdminPasswordOK || !managerBaseURLOK || !managerManagementKeyOK {
 		return pluginSettings{}, fmt.Errorf("必须同时提供基础调度、健康槽位、智商探测、调试开关、grok2api 同步和 Manager API 配置")
 	}
 	settings := pluginSettings{
-		WorkerCount:                    workerCount,
-		RefreshIntervalSeconds:         refreshIntervalSeconds,
-		KeepaliveWorkerCount:           keepaliveWorkerCount,
-		KeepaliveIntervalSeconds:       keepaliveIntervalSeconds,
-		ReviveIntervalSeconds:          reviveIntervalSeconds,
-		ProbeRetryCount:                probeRetryCount,
-		ScheduleGroupCount:             scheduleGroupCount,
-		HealthySlotCount:               healthySlotCount,
-		HealthyCandidateSlotCount:      healthyCandidateSlotCount,
-		HealthySlotMaxAgeMinutes:       healthySlotMaxAgeMinutes,
-		QualityWorkerCount:             qualityWorkerCount,
-		QualityProbeTimeoutSeconds:     qualityProbeTimeoutSeconds,
-		QualityProbeModel:              normalizeQualityProbeModel(qualityProbeModel),
-		QualitySoftTPS:                 qualitySoftTPS,
-		QualityHardTPS:                 qualityHardTPS,
-		RealtimeGuardTTFBSeconds:       realtimeGuardTTFBSeconds,
-		RealtimeGuardGenerationSeconds: realtimeGuardGenerationSeconds,
-		RealtimeGuardTokenThreshold:    realtimeGuardTokenThreshold,
-		RealtimeGuardTimeoutSeconds:    realtimeGuardTimeoutSeconds,
-		QualityLLMProbeEnabled:         qualityLLMProbeEnabled,
-		DebugEnabled:                   debugEnabled,
-		Grok2apiSyncEnabled:            grok2apiSyncEnabled,
-		Grok2apiBaseUrl:                normalizeGrok2apiBaseURL(grok2apiBaseUrl),
-		Grok2apiAdminUsername:          strings.TrimSpace(grok2apiAdminUsername),
-		Grok2apiAdminPassword:          grok2apiAdminPassword,
-		ManagerBaseURL:                 strings.TrimRight(strings.TrimSpace(managerBaseURL), "/"),
-		ManagerManagementKey:           managerManagementKey,
+		WorkerCount:                                  workerCount,
+		RefreshIntervalSeconds:                       refreshIntervalSeconds,
+		KeepaliveWorkerCount:                         keepaliveWorkerCount,
+		KeepaliveIntervalSeconds:                     keepaliveIntervalSeconds,
+		ReviveIntervalSeconds:                        reviveIntervalSeconds,
+		ProbeRetryCount:                              probeRetryCount,
+		ScheduleGroupCount:                           scheduleGroupCount,
+		HealthySlotCount:                             healthySlotCount,
+		HealthyCandidateSlotCount:                    healthyCandidateSlotCount,
+		HealthySlotMaxAgeMinutes:                     healthySlotMaxAgeMinutes,
+		QualityWorkerCount:                           qualityWorkerCount,
+		QualityProbeTimeoutSeconds:                   qualityProbeTimeoutSeconds,
+		QualityProbeModel:                            normalizeQualityProbeModel(qualityProbeModel),
+		QualitySoftTPS:                               qualitySoftTPS,
+		QualityHardTPS:                               qualityHardTPS,
+		RealtimeGuardTTFBSeconds:                     realtimeGuardTTFBSeconds,
+		RealtimeGuardGenerationSeconds:               realtimeGuardGenerationSeconds,
+		RealtimeGuardTokenThreshold:                  realtimeGuardTokenThreshold,
+		RealtimeGuardTimeoutSeconds:                  realtimeGuardTimeoutSeconds,
+		RealtimeGuardMinSummaryChars:                 realtimeGuardMinSummaryChars,
+		RealtimeGuardMinEncryptedBytes:               realtimeGuardMinEncryptedBytes,
+		RealtimeGuardEncryptedBytesPerReasoningToken: realtimeGuardEncryptedBytesPerReasoningToken,
+		RealtimeGuardMinOutputTokens:                 realtimeGuardMinOutputTokens,
+		RealtimeGuardBurstMinReasoningTokens:         realtimeGuardBurstMinReasoningTokens,
+		RealtimeGuardBurstMaxVisibleTokens:           realtimeGuardBurstMaxVisibleTokens,
+		RealtimeGuardBurstMaxWindowMS:                realtimeGuardBurstMaxWindowMS,
+		QualityLLMProbeEnabled:                       qualityLLMProbeEnabled,
+		DebugEnabled:                                 debugEnabled,
+		Grok2apiSyncEnabled:                          grok2apiSyncEnabled,
+		Grok2apiBaseUrl:                              normalizeGrok2apiBaseURL(grok2apiBaseUrl),
+		Grok2apiAdminUsername:                        strings.TrimSpace(grok2apiAdminUsername),
+		Grok2apiAdminPassword:                        grok2apiAdminPassword,
+		ManagerBaseURL:                               strings.TrimRight(strings.TrimSpace(managerBaseURL), "/"),
+		ManagerManagementKey:                         managerManagementKey,
 	}
 	if settings.Grok2apiBaseUrl != "" {
 		if err := validateGrok2apiBaseURLOnly(settings.Grok2apiBaseUrl); err != nil {
@@ -696,33 +711,40 @@ func floatValue(value any) (float64, bool) {
 
 func publicSettings(settings pluginSettings) map[string]any {
 	return map[string]any{
-		"workerCount":                    settings.WorkerCount,
-		"refreshIntervalSeconds":         settings.RefreshIntervalSeconds,
-		"keepaliveWorkerCount":           settings.KeepaliveWorkerCount,
-		"keepaliveIntervalSeconds":       settings.KeepaliveIntervalSeconds,
-		"reviveIntervalSeconds":          settings.ReviveIntervalSeconds,
-		"probeRetryCount":                settings.ProbeRetryCount,
-		"scheduleGroupCount":             settings.ScheduleGroupCount,
-		"healthySlotCount":               settings.HealthySlotCount,
-		"healthyCandidateSlotCount":      settings.HealthyCandidateSlotCount,
-		"healthySlotMaxAgeMinutes":       settings.HealthySlotMaxAgeMinutes,
-		"qualityWorkerCount":             settings.QualityWorkerCount,
-		"qualityProbeTimeoutSeconds":     settings.QualityProbeTimeoutSeconds,
-		"qualityProbeModel":              settings.QualityProbeModel,
-		"qualitySoftTPS":                 settings.QualitySoftTPS,
-		"qualityHardTPS":                 settings.QualityHardTPS,
-		"realtimeGuardTTFBSeconds":       settings.RealtimeGuardTTFBSeconds,
-		"realtimeGuardGenerationSeconds": settings.RealtimeGuardGenerationSeconds,
-		"realtimeGuardTokenThreshold":    settings.RealtimeGuardTokenThreshold,
-		"realtimeGuardTimeoutSeconds":    settings.RealtimeGuardTimeoutSeconds,
-		"qualityLLMProbeEnabled":         settings.QualityLLMProbeEnabled,
-		"debugEnabled":                   settings.DebugEnabled,
-		"grok2apiSyncEnabled":            settings.Grok2apiSyncEnabled,
-		"grok2apiBaseUrl":                settings.Grok2apiBaseUrl,
-		"grok2apiAdminUsername":          settings.Grok2apiAdminUsername,
-		"grok2apiAdminPassword":          settings.Grok2apiAdminPassword,
-		"managerBaseUrl":                 settings.ManagerBaseURL,
-		"managerManagementKey":           settings.ManagerManagementKey,
+		"workerCount":                                  settings.WorkerCount,
+		"refreshIntervalSeconds":                       settings.RefreshIntervalSeconds,
+		"keepaliveWorkerCount":                         settings.KeepaliveWorkerCount,
+		"keepaliveIntervalSeconds":                     settings.KeepaliveIntervalSeconds,
+		"reviveIntervalSeconds":                        settings.ReviveIntervalSeconds,
+		"probeRetryCount":                              settings.ProbeRetryCount,
+		"scheduleGroupCount":                           settings.ScheduleGroupCount,
+		"healthySlotCount":                             settings.HealthySlotCount,
+		"healthyCandidateSlotCount":                    settings.HealthyCandidateSlotCount,
+		"healthySlotMaxAgeMinutes":                     settings.HealthySlotMaxAgeMinutes,
+		"qualityWorkerCount":                           settings.QualityWorkerCount,
+		"qualityProbeTimeoutSeconds":                   settings.QualityProbeTimeoutSeconds,
+		"qualityProbeModel":                            settings.QualityProbeModel,
+		"qualitySoftTPS":                               settings.QualitySoftTPS,
+		"qualityHardTPS":                               settings.QualityHardTPS,
+		"realtimeGuardTTFBSeconds":                     settings.RealtimeGuardTTFBSeconds,
+		"realtimeGuardGenerationSeconds":               settings.RealtimeGuardGenerationSeconds,
+		"realtimeGuardTokenThreshold":                  settings.RealtimeGuardTokenThreshold,
+		"realtimeGuardTimeoutSeconds":                  settings.RealtimeGuardTimeoutSeconds,
+		"realtimeGuardMinSummaryChars":                 settings.RealtimeGuardMinSummaryChars,
+		"realtimeGuardMinEncryptedBytes":               settings.RealtimeGuardMinEncryptedBytes,
+		"realtimeGuardEncryptedBytesPerReasoningToken": settings.RealtimeGuardEncryptedBytesPerReasoningToken,
+		"realtimeGuardMinOutputTokens":                 settings.RealtimeGuardMinOutputTokens,
+		"realtimeGuardBurstMinReasoningTokens":         settings.RealtimeGuardBurstMinReasoningTokens,
+		"realtimeGuardBurstMaxVisibleTokens":           settings.RealtimeGuardBurstMaxVisibleTokens,
+		"realtimeGuardBurstMaxWindowMs":                settings.RealtimeGuardBurstMaxWindowMS,
+		"qualityLLMProbeEnabled":                       settings.QualityLLMProbeEnabled,
+		"debugEnabled":                                 settings.DebugEnabled,
+		"grok2apiSyncEnabled":                          settings.Grok2apiSyncEnabled,
+		"grok2apiBaseUrl":                              settings.Grok2apiBaseUrl,
+		"grok2apiAdminUsername":                        settings.Grok2apiAdminUsername,
+		"grok2apiAdminPassword":                        settings.Grok2apiAdminPassword,
+		"managerBaseUrl":                               settings.ManagerBaseURL,
+		"managerManagementKey":                         settings.ManagerManagementKey,
 	}
 }
 
