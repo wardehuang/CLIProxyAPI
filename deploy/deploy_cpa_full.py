@@ -27,7 +27,10 @@ Safety properties:
   verified backup and atomic install window.
 * Any failure after the service stop restores the main binary, configuration,
   every plugin, plugin data, and every auth JSON from the verified archive.
-* The rollback archive is never deleted automatically.
+* After a successful deployment, Go build/module caches are removed. Every older
+  file and directory under ``/opt/cli-proxy-api/backups`` is deleted, leaving
+  only the rollback archive created by this run. Failure paths do not prune
+  backups or Go caches.
 * The local master log, remote deployment log, and service journal are saved
   beside this script under ``deploy/``.
 * The script never commits, pushes, merges, or rewrites Git history.
@@ -283,13 +286,32 @@ def capture_text(command: Sequence[str], *, cwd: Path | None = None) -> str:
     return (run_logged(command, cwd=cwd, capture=True).stdout or "").strip()
 
 
-def require_command(name: str) -> None:
-    """Fail before network activity when a required local executable is missing."""
+def require_command(name: str) -> str:
+    """Return a required local executable or fail before network activity."""
 
     resolved = shutil.which(name)
     if not resolved:
         raise DeploymentError(f"required command is unavailable: {name}")
     LOGGER.info("COMMAND name=%s path=%s", name, resolved)
+    return resolved
+
+
+def resolve_git_bash(git_path: str) -> str:
+    """Resolve Git for Windows Bash without relying on Windows PATH lookup."""
+
+    git_executable = Path(git_path).resolve()
+    relative_paths = (
+        Path("usr") / "bin" / "bash.exe",
+        Path("bin") / "bash.exe",
+    )
+    for git_root in git_executable.parents:
+        for relative_path in relative_paths:
+            bash_path = git_root / relative_path
+            if bash_path.is_file():
+                resolved = str(bash_path)
+                LOGGER.info("COMMAND name=bash path=%s", resolved)
+                return resolved
+    raise DeploymentError(f"Git Bash is unavailable beside Git executable: {git_path}")
 
 
 def sha256_file(path: Path) -> str:
@@ -938,7 +960,7 @@ for plugin in "${MANAGED_PLUGINS[@]}"; do
   log "PLUGIN_BUILD_SHA256[$plugin]=$plugin_sha"
   printf '%s\n' "$plugin_meta"
   case "$plugin_file" in
-    *'ARM aarch64'*'shared object'*) ;;
+    *'shared object'*'ARM aarch64'*) ;;
     *) log "plugin architecture/buildmode verification failed: $plugin"; false ;;
   esac
   case "$plugin_meta" in
@@ -1201,6 +1223,25 @@ log "FINISHED_AT=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 sudo mkdir -p "$DEPLOY_LOG_DIR"
 sudo cp "$LOG" "$DEPLOY_LOG_DIR/$ID.log"
 sudo cp "$JOURNAL_FILE" "$DEPLOY_LOG_DIR/$ID-journal.log"
+
+step "CLEAN GO BUILD CACHE AND OLD ROLLBACK ARCHIVES"
+set +e
+export PATH="$(dirname "$GO_BIN"):$PATH"
+"$GO_BIN" clean -cache -modcache
+rm -rf "$HOME/.cache/go-build" "$HOME/go/pkg"
+if sudo test -s "$BACKUP"; then
+  sudo find "$BACKUP_DIR" -mindepth 1 -maxdepth 1 ! -path "$BACKUP" -exec rm -rf {} +
+  log "ROLLBACK_KEPT=$BACKUP"
+  log "ROLLBACK_KEPT_SIZE=$(sudo stat -c %s "$BACKUP")"
+  log "BACKUP_DIR_REMAINING_BEGIN"
+  sudo find "$BACKUP_DIR" -mindepth 1 -maxdepth 1 -print
+  log "BACKUP_DIR_REMAINING_END"
+else
+  log "ROLLBACK_KEEP_SKIPPED backup missing"
+fi
+log "GOCACHE_EXISTS=$([ -e "$HOME/.cache/go-build" ] && echo 1 || echo 0)"
+log "GOMODCACHE_EXISTS=$([ -e "$HOME/go/pkg" ] && echo 1 || echo 0)"
+set -e
 '''
 
 
@@ -1335,6 +1376,43 @@ def cleanup_remote_stage(
     run_logged([*ssh_base(config), command], check=False)
 
 
+def cleanup_go_build_cache(config: DeploymentConfig) -> None:
+    """Remove Go build and module caches left by the remote CGO compile."""
+
+    go_bin = shlex.quote(REMOTE_GO)
+    go_path = shlex.quote(str(PurePosixPath(REMOTE_GO).parent))
+    command = (
+        f"export PATH={go_path}:$PATH; "
+        f"{go_bin} clean -cache -modcache; "
+        "rm -rf /home/ubuntu/.cache/go-build /home/ubuntu/go/pkg; "
+        "printf 'GOCACHE_EXISTS=%s\\n' "
+        '"$([ -e /home/ubuntu/.cache/go-build ] && echo 1 || echo 0)"; '
+        "printf 'GOMODCACHE_EXISTS=%s\\n' "
+        '"$([ -e /home/ubuntu/go/pkg ] && echo 1 || echo 0)"'
+    )
+    run_logged([*ssh_base(config), command], check=False)
+
+
+def prune_old_rollback_archives(config: DeploymentConfig, keep_archive: str) -> None:
+    """Delete every backup except the rollback archive created by this run."""
+
+    backup_dir = f"{REMOTE_APP}/backups"
+    quoted_dir = shlex.quote(backup_dir)
+    quoted_keep = shlex.quote(keep_archive)
+    command = (
+        f"if sudo test -s {quoted_keep}; then "
+        f"sudo find {quoted_dir} -mindepth 1 -maxdepth 1 "
+        f"! -path {quoted_keep} -exec rm -rf {{}} +; "
+        f"printf 'ROLLBACK_KEPT=%s\\n' {quoted_keep}; "
+        f"sudo stat -c 'ROLLBACK_KEPT_SIZE=%s' {quoted_keep}; "
+        f"sudo find {quoted_dir} -mindepth 1 -maxdepth 1 -print; "
+        "else "
+        "printf 'ROLLBACK_KEEP_SKIPPED=1\\n'; "
+        "fi"
+    )
+    run_logged([*ssh_base(config), command], check=False)
+
+
 def main() -> int:
     """Run the complete guarded deployment workflow."""
 
@@ -1351,8 +1429,10 @@ def main() -> int:
             raise DeploymentError(
                 "this script accepts no arguments; run: python deploy/deploy_cpa_full.py"
             )
-        for command in ("git", "ssh", "scp", "bash"):
+        git_path = require_command("git")
+        for command in ("ssh", "scp"):
             require_command(command)
+        bash_path = resolve_git_bash(git_path)
         if not config.ssh_key.is_file():
             raise DeploymentError(f"SSH key does not exist: {config.ssh_key}")
         if not 1 <= config.ssh_port <= 65535:
@@ -1480,7 +1560,7 @@ def main() -> int:
             remote_bytes = remote_script.read_bytes()
             if b"\r" in remote_bytes:
                 raise DeploymentError("generated remote script contains CR bytes")
-            run_logged(["bash", "-n", str(remote_script)])
+            run_logged([bash_path, "-n", str(remote_script)])
             LOGGER.info("REMOTE_SCRIPT=%s", remote_script)
             LOGGER.info("REMOTE_SCRIPT_SIZE=%d", remote_script.stat().st_size)
             LOGGER.info("REMOTE_SCRIPT_SHA256=%s", sha256_file(remote_script))
@@ -1505,6 +1585,13 @@ def main() -> int:
                     f"remote deployment failed with exit code {remote_result.returncode}; "
                     "inspect the local master and downloaded remote logs"
                 )
+
+            step("CLEAN GO BUILD CACHE AND OLD ROLLBACK ARCHIVES")
+            cleanup_go_build_cache(config)
+            prune_old_rollback_archives(
+                config,
+                keep_archive=f"{REMOTE_APP}/backups/{paths.deployment_id}.tar.gz",
+            )
 
         step("FINAL LOCAL RESULT")
         LOGGER.info("DEPLOY_RESULT=success")
