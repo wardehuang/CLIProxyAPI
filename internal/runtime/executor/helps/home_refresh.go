@@ -114,6 +114,9 @@ func RefreshAuthViaHome(ctx context.Context, cfg *config.Config, auth *cliproxya
 	if returnedIndex != "" {
 		authIndex = returnedIndex
 	}
+	if strings.TrimSpace(updated.FileName) == "" {
+		updated.FileName = auth.FileName
+	}
 	updated.Index = authIndex
 	updated.EnsureIndex()
 	return updated, true, nil

@@ -743,6 +743,33 @@ func dispatchAPIWithStore(store *ipStore, method, path string, query url.Values,
 			"data": map[string]any{"groupCount": settings.ScheduleGroupCount},
 		})
 
+	case path == "/schedule-groups/counters" && method == http.MethodGet:
+		settings, err := store.settings()
+		if err != nil {
+			return managementJSON(http.StatusInternalServerError, errorMessage("scheduleGroupCountersFailed", err.Error()))
+		}
+		counters, err := store.scheduleGroupCounters(settings.ScheduleGroupCount)
+		if err != nil {
+			return managementJSON(http.StatusInternalServerError, errorMessage("scheduleGroupCountersFailed", err.Error()))
+		}
+		items := make([]map[string]any, 0, settings.ScheduleGroupCount)
+		var totalCalls int64
+		for groupID := 1; groupID <= settings.ScheduleGroupCount; groupID++ {
+			callCount := counters[groupID]
+			totalCalls += callCount
+			items = append(items, map[string]any{
+				"groupId":   groupID,
+				"callCount": callCount,
+			})
+		}
+		return managementJSON(http.StatusOK, map[string]any{
+			"data": map[string]any{
+				"groupCount": settings.ScheduleGroupCount,
+				"totalCalls": totalCalls,
+				"items":      items,
+			},
+		})
+
 	case path == "/schedule-groups/counters/reset" && method == http.MethodPost:
 		if err := store.resetScheduleGroupCounters(); err != nil {
 			return managementJSON(http.StatusInternalServerError, errorMessage("scheduleGroupResetFailed", err.Error()))

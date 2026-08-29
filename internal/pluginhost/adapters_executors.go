@@ -773,6 +773,7 @@ func (a *executorAdapter) Refresh(ctx context.Context, auth *coreauth.Auth) (ref
 		return nil, fmt.Errorf("plugin executor %s refresh returned invalid auth data", a.Identifier())
 	}
 	if auth != nil {
+		next.Index = auth.Index
 		next.CreatedAt = auth.CreatedAt
 		next.UpdatedAt = auth.UpdatedAt
 	}

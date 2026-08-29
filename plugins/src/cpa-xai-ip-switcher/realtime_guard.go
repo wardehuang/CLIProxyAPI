@@ -536,6 +536,7 @@ func ensureRealtimeGuardReplacementAuth(degradedAuthIndex string) error {
 }
 
 func (store *ipStore) logRealtimeDegradationDetected(probe realtimeGuardProbe, decision realtimeGuardDecision) error {
+	authIdentity := realtimeGuardAuthIdentity(probe)
 	return store.appendProbeLog(
 		logCategoryRealtimeGuard,
 		probe.RequestID,
@@ -544,9 +545,19 @@ func (store *ipStore) logRealtimeDegradationDetected(probe realtimeGuardProbe, d
 		"realtime_guard.degradation_detected",
 		probe.SourceSnapshot.NodeID,
 		"",
-		fmt.Sprintf("【检测到降智】auth:%s，节点:%s，原因:%s", probe.AuthFileName, probe.ProxyURL, decision.Reason),
-		fmt.Sprintf("request_id=%s；auth_file=%s；auth_index=%s；节点代理=%s；HTTP=%d；等级=%s；总耗时=%dms；TPS=%.2f；TTFB=%dms；首字后耗时=%dms；输出+思考tokens=%d", probe.RequestID, probe.AuthFileName, probe.AuthIndex, probe.ProxyURL, probe.StatusCode, decision.QualityLevel, decision.TotalDurationMs, decision.TPS, decision.TTFBMs, decision.GenerationMs, decision.TotalTokens),
+		fmt.Sprintf("【检测到降智】auth:%s，节点:%s，原因:%s", authIdentity, probe.ProxyURL, decision.Reason),
+		fmt.Sprintf("request_id=%s；auth_file=%s；auth_index=%s；节点代理=%s；HTTP=%d；等级=%s；总耗时=%dms；TPS=%.2f；TTFB=%dms；首字后耗时=%dms；输出+思考tokens=%d", probe.RequestID, authIdentity, probe.AuthIndex, probe.ProxyURL, probe.StatusCode, decision.QualityLevel, decision.TotalDurationMs, decision.TPS, decision.TTFBMs, decision.GenerationMs, decision.TotalTokens),
 	)
+}
+
+func realtimeGuardAuthIdentity(probe realtimeGuardProbe) string {
+	if fileName := strings.TrimSpace(probe.AuthFileName); fileName != "" && fileName != "." {
+		return fileName
+	}
+	if authIndex := strings.TrimSpace(probe.AuthIndex); authIndex != "" {
+		return authIndex
+	}
+	return strings.TrimSpace(probe.AuthID)
 }
 
 func (store *ipStore) logRealtimeManagerAPIUnavailable(probe realtimeGuardProbe, decision realtimeGuardDecision, failure realtimeDegradationFailure, managerErr error) {

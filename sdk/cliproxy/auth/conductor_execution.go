@@ -1465,7 +1465,11 @@ func publishSelectedAuthMetadata(meta map[string]any, auth *Auth) {
 	}
 	meta[cliproxyexecutor.SelectedAuthProxyURLMetadataKey] = strings.TrimSpace(auth.ProxyURL)
 	meta[cliproxyexecutor.SelectedAuthProviderMetadataKey] = strings.TrimSpace(auth.Provider)
-	meta[cliproxyexecutor.SelectedAuthFileNameMetadataKey] = filepath.Base(strings.TrimSpace(auth.FileName))
+	if fileName := strings.TrimSpace(auth.FileName); fileName != "" {
+		meta[cliproxyexecutor.SelectedAuthFileNameMetadataKey] = filepath.Base(fileName)
+	} else {
+		delete(meta, cliproxyexecutor.SelectedAuthFileNameMetadataKey)
+	}
 }
 
 func (m *Manager) executorFor(provider string) ProviderExecutor {
@@ -1568,10 +1572,10 @@ func formatOauthIdentity(auth *Auth, provider string, accountInfo string) string
 	// Only log the basename to avoid leaking host paths.
 	// FileName may be unset for some auth backends; fall back to ID.
 	authFile := strings.TrimSpace(auth.FileName)
-	if authFile == "" {
+	if authFile == "" || authFile == "." {
 		authFile = strings.TrimSpace(auth.ID)
 	}
-	if authFile != "" {
+	if authFile != "" && authFile != "." {
 		authFile = filepath.Base(authFile)
 	}
 	parts := make([]string, 0, 3)
@@ -1598,7 +1602,7 @@ func formatAuthIdentity(auth *Auth, provider string) string {
 	case "oauth":
 		return formatOauthIdentity(auth, provider, accountInfo)
 	default:
-		if auth.FileName != "" {
+		if auth.FileName != "" && auth.FileName != "." {
 			return fmt.Sprintf("auth_file=%s", filepath.Base(auth.FileName))
 		}
 		if auth.ID != "" {

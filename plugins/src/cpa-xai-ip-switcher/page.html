@@ -155,6 +155,8 @@
       backdrop-filter: blur(8px);
     }
     .settings-actions .help { margin: 0 auto 0 0; max-width: 28rem; }
+    .schedule-group-counters { margin-top: var(--space-xs); max-height: 18rem; overflow: auto; }
+    .schedule-group-counters table { min-width: 24rem; }
     .modal-head { padding: var(--space-sm); border-bottom: var(--rule-hairline) solid var(--border); }
     .modal-head h3 { margin: 0; font-size: var(--text-lg); }
     .modal-head p { margin: var(--space-3xs) 0 0; color: var(--muted-foreground); font-size: var(--text-xs); }
@@ -375,6 +377,11 @@ socks5h://username:pass@ip:port
                 <span class="settings-help">只读数据 · 不探测 · 5–3600 · 立即生效</span>
               </label>
             </div>
+            <div class="modal-actions">
+              <button id="view-schedule-group-counters-button" class="button" type="button">查看调用次数</button>
+              <span id="schedule-group-counters-summary" class="settings-help" aria-live="polite"></span>
+            </div>
+            <div id="schedule-group-counters" class="table-wrap schedule-group-counters" hidden></div>
           </section>
 
           <section class="settings-card" aria-labelledby="settings-keepalive-title">
@@ -655,6 +662,9 @@ socks5h://username:pass@ip:port
         reviveInterval: document.getElementById("revive-interval"),
         probeRetryCount: document.getElementById("probe-retry-count"),
         scheduleGroupCount: document.getElementById("schedule-group-count"),
+        viewScheduleGroupCountersButton: document.getElementById("view-schedule-group-counters-button"),
+        scheduleGroupCountersSummary: document.getElementById("schedule-group-counters-summary"),
+        scheduleGroupCounters: document.getElementById("schedule-group-counters"),
         healthySlotCount: document.getElementById("healthy-slot-count"),
         healthyCandidateSlotCount: document.getElementById("healthy-candidate-slot-count"),
         healthySlotMaxAgeMinutes: document.getElementById("healthy-slot-max-age-minutes"),
@@ -835,6 +845,9 @@ socks5h://username:pass@ip:port
           elements.reviveInterval.value = String(settings.reviveIntervalSeconds);
           elements.probeRetryCount.value = String(settings.probeRetryCount);
           elements.scheduleGroupCount.value = String(settings.scheduleGroupCount);
+          elements.scheduleGroupCountersSummary.textContent = "";
+          elements.scheduleGroupCounters.innerHTML = "";
+          elements.scheduleGroupCounters.hidden = true;
           elements.healthySlotCount.value = String(settings.healthySlotCount);
           elements.healthyCandidateSlotCount.value = String(settings.healthyCandidateSlotCount);
           elements.healthySlotMaxAgeMinutes.value = String(settings.healthySlotMaxAgeMinutes);
@@ -1475,6 +1488,25 @@ socks5h://username:pass@ip:port
         }
       }
 
+      async function showScheduleGroupCounters() {
+        elements.viewScheduleGroupCountersButton.disabled = true;
+        elements.scheduleGroupCountersSummary.textContent = "正在读取调度组调用次数…";
+        elements.scheduleGroupCounters.hidden = true;
+        try {
+          const result = await callAPI("GET", "/schedule-groups/counters");
+          elements.scheduleGroupCountersSummary.textContent = `共 ${result.groupCount} 个调度组，累计 ${result.totalCalls} 次调用。`;
+          elements.scheduleGroupCounters.innerHTML = result.items.length
+            ? `<table><thead><tr><th>调度组</th><th>调用次数</th></tr></thead><tbody>${result.items.map((item) => `<tr><td class="mono">${escapeHTML(item.groupId)}</td><td class="mono">${escapeHTML(item.callCount)}</td></tr>`).join("")}</tbody></table>`
+            : `<div class="empty">当前没有调度组计数。</div>`;
+          elements.scheduleGroupCounters.hidden = false;
+        } catch (error) {
+          const message = error instanceof Error ? error.message : String(error);
+          elements.scheduleGroupCountersSummary.textContent = `读取失败：${message}`;
+        } finally {
+          elements.viewScheduleGroupCountersButton.disabled = false;
+        }
+      }
+
       async function showErrorDetail(nodeID) {
         const node = state.nodes.find((item) => String(item.id) === String(nodeID));
         if (!node) return;
@@ -1536,6 +1568,7 @@ socks5h://username:pass@ip:port
       elements.checkManagerAPIButton.addEventListener("click", checkManagerAPI);
       elements.syncGrok2apiButton.addEventListener("click", syncGrok2apiNow);
       elements.viewGrok2apiDegradedNodesButton.addEventListener("click", showGrok2apiDegradedNodes);
+      elements.viewScheduleGroupCountersButton.addEventListener("click", showScheduleGroupCounters);
             elements.keepaliveNowButton.addEventListener("click", runKeepaliveNow);
             elements.refreshButton.addEventListener("click", () => refresh());
       document.querySelector(".main-tabs").addEventListener("click", (event) => {
