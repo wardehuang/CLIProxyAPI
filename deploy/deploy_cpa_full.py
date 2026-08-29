@@ -190,20 +190,93 @@ class DeploymentPaths:
 
 LOGGER = logging.getLogger("cpa_full_deploy")
 _STEP_NUMBER = 0
+LOG_FORMAT = "%(asctime)s %(levelname)s %(message)s"
+LOG_DATE_FORMAT = "%Y-%m-%dT%H:%M:%S%z"
+ANSI_RESET = "\033[0m"
+ANSI_RED = "\033[31m"
+ANSI_GREEN = "\033[32m"
+ANSI_YELLOW = "\033[33m"
+
+
+def is_log_failure(message: str) -> bool:
+    """Return whether an informational line reports a failed operation."""
+
+    return bool(
+        re.search(r"\bEXIT code=[1-9]\d*\b", message)
+        or any(
+            marker in message.lower()
+            for marker in (
+                "deploy_result=failed",
+                "deploy_result=rolled-back",
+                "failed",
+                "failure",
+                "mismatch",
+                "missing",
+                "refuse",
+                "unmerged",
+            )
+        )
+    )
+
+
+def is_log_success(message: str) -> bool:
+    """Return whether an informational line reports a successful operation."""
+
+    return any(
+        marker in message
+        for marker in (
+            "EXIT code=0",
+            "DEPLOY_RESULT=success",
+            "BUILD_RESULT=success",
+            "REMOTE_EVIDENCE_SAVED",
+            "LIVE_RECHECK=unchanged",
+            "BACKUP_READY=1",
+            "_READY=1",
+            "_MATCH=1",
+            "_VERIFIED",
+        )
+    )
+
+
+class ConsoleFormatter(logging.Formatter):
+    """Format console records with ANSI colors while keeping files plain."""
+
+    def __init__(self, color_enabled: bool, *args: object, **kwargs: object) -> None:
+        super().__init__(*args, **kwargs)
+        self.color_enabled = color_enabled
+
+    def format(self, record: logging.LogRecord) -> str:
+        rendered = super().format(record)
+        if not self.color_enabled:
+            return rendered
+        if record.levelno >= logging.ERROR:
+            color = ANSI_RED
+        elif record.levelno >= logging.WARNING:
+            color = ANSI_YELLOW
+        elif is_log_failure(record.getMessage()):
+            color = ANSI_RED
+        elif is_log_success(record.getMessage()):
+            color = ANSI_GREEN
+        else:
+            return rendered
+        return f"{color}{rendered}{ANSI_RESET}"
 
 
 def configure_logging(log_path: Path) -> None:
-    """Write every local and remote output line to console and the master log."""
+    """Write plain master logs and colorized records to the interactive console."""
 
     log_path.parent.mkdir(parents=True, exist_ok=True)
     LOGGER.setLevel(logging.INFO)
     LOGGER.handlers.clear()
-    formatter = logging.Formatter(
-        fmt="%(asctime)s %(levelname)s %(message)s",
-        datefmt="%Y-%m-%dT%H:%M:%S%z",
-    )
+    formatter = logging.Formatter(fmt=LOG_FORMAT, datefmt=LOG_DATE_FORMAT)
     console = logging.StreamHandler(sys.stdout)
-    console.setFormatter(formatter)
+    console.setFormatter(
+        ConsoleFormatter(
+            sys.stdout.isatty(),
+            fmt=LOG_FORMAT,
+            datefmt=LOG_DATE_FORMAT,
+        )
+    )
     file_handler = logging.FileHandler(log_path, encoding="utf-8")
     file_handler.setFormatter(formatter)
     LOGGER.addHandler(console)
@@ -739,6 +812,38 @@ raise SystemExit(1 if invalid else 0)
 PY
 }
 
+auth_name_manifest() {
+  python3 - "$AUTH_DIR" "$1" <<'PY'
+import hashlib
+import sys
+from pathlib import Path
+
+root = Path(sys.argv[1])
+output = Path(sys.argv[2])
+hashed_names = sorted(
+    hashlib.sha256(path.name.encode("utf-8")).hexdigest()
+    for path in root.glob("*.json")
+)
+output.write_text(
+    "\n".join(hashed_names) + ("\n" if hashed_names else ""),
+    encoding="ascii",
+)
+PY
+}
+
+auth_manifest_preserved() {
+  python3 - "$1" "$2" <<'PY'
+import sys
+from pathlib import Path
+
+before = set(Path(sys.argv[1]).read_text(encoding="ascii").splitlines())
+after = set(Path(sys.argv[2]).read_text(encoding="ascii").splitlines())
+missing = before - after
+print(f"AUTH_MISSING_FILES={len(missing)}")
+raise SystemExit(1 if missing else 0)
+PY
+}
+
 wait_ready() {
   local attempts="$1"
   local active root_http healthz_http management_http management_ok
@@ -829,12 +934,12 @@ step "LIVE STATE SNAPSHOT"
 MAIN_BEFORE_SHA256="$(sha256sum "$APP/cli-proxy-api" | cut -d' ' -f1)"
 CONFIG_BEFORE_SHA256="$(sha256sum "$APP/config.yaml" | cut -d' ' -f1)"
 auth_inventory | tee "$BASE/auth-before.txt"
-AUTH_COUNT_BEFORE="$(python3 -c 'from pathlib import Path; import sys; print(sum(1 for _ in Path(sys.argv[1]).glob("*.json")))' "$AUTH_DIR")"
+AUTH_COUNT_AT_BUILD_START="$(python3 -c 'from pathlib import Path; import sys; print(sum(1 for _ in Path(sys.argv[1]).glob("*.json")))' "$AUTH_DIR")"
 sha256sum "$PLUGIN_DIR"/*.so | sort -k2 > "$PLUGIN_MANIFEST_BEFORE"
 PLUGIN_COUNT_BEFORE="$(wc -l < "$PLUGIN_MANIFEST_BEFORE")"
 log "MAIN_BEFORE_SHA256=$MAIN_BEFORE_SHA256"
 log "CONFIG_BEFORE_SHA256=$CONFIG_BEFORE_SHA256"
-log "AUTH_COUNT_BEFORE=$AUTH_COUNT_BEFORE"
+log "AUTH_COUNT_AT_BUILD_START=$AUTH_COUNT_AT_BUILD_START"
 log "PLUGIN_COUNT_BEFORE=$PLUGIN_COUNT_BEFORE"
 log "PLUGIN_MANIFEST_BEGIN"
 cat "$PLUGIN_MANIFEST_BEFORE"
@@ -892,7 +997,20 @@ for name, marker in checks.items():
     print(f"SOURCE_INVARIANT[{name}]={int(present)}")
     if not present:
         raise SystemExit(f"required source invariant is missing: {name}")
-stop_before_flush = "virtualHeartbeat.stopAndWait()\nfor _, payload := range attempt.Payloads {" in heartbeat_compact
+flush_case_index = heartbeat_compact.find("case pluginapi.StreamCompletionActionFlush:")
+stop_index = heartbeat_compact.find(
+    "virtualHeartbeat.stopAndWait()",
+    flush_case_index,
+) if flush_case_index >= 0 else -1
+payload_loop_index = heartbeat_compact.find(
+    "for _, payload := range payloads {",
+    stop_index,
+) if stop_index >= 0 else -1
+stop_before_flush = (
+    flush_case_index >= 0
+    and stop_index >= 0
+    and payload_loop_index > stop_index
+)
 print(f"SOURCE_INVARIANT[HEARTBEAT_STOP_BEFORE_FLUSH]={int(stop_before_flush)}")
 if not stop_before_flush:
     raise SystemExit("required source invariant is missing: HEARTBEAT_STOP_BEFORE_FLUSH")
@@ -984,9 +1102,12 @@ if [ "$(sha256sum "$APP/config.yaml" | cut -d' ' -f1)" != "$CONFIG_BEFORE_SHA256
   log "REFUSE live config changed during build"
   false
 fi
-if [ "$(python3 -c 'from pathlib import Path; import sys; print(sum(1 for _ in Path(sys.argv[1]).glob("*.json")))' "$AUTH_DIR")" != "$AUTH_COUNT_BEFORE" ]; then
-  log "REFUSE auth inventory changed during build"
-  false
+AUTH_COUNT_AT_RECHECK="$(python3 -c 'from pathlib import Path; import sys; print(sum(1 for _ in Path(sys.argv[1]).glob("*.json")))' "$AUTH_DIR")"
+log "AUTH_COUNT_AT_RECHECK=$AUTH_COUNT_AT_RECHECK"
+if [ "$AUTH_COUNT_AT_RECHECK" != "$AUTH_COUNT_AT_BUILD_START" ]; then
+  log "AUTH_COUNT_CHANGED_DURING_BUILD=1 before=$AUTH_COUNT_AT_BUILD_START recheck=$AUTH_COUNT_AT_RECHECK"
+else
+  log "AUTH_COUNT_CHANGED_DURING_BUILD=0"
 fi
 sha256sum "$PLUGIN_DIR"/*.so | sort -k2 > "$BASE/plugins-before-stop.sha256"
 if ! cmp -s "$PLUGIN_MANIFEST_BEFORE" "$BASE/plugins-before-stop.sha256"; then
@@ -999,6 +1120,10 @@ step "STOP SERVICE AND CREATE FULL ROLLBACK BACKUP"
 DEPLOY_SERVICE_START="$(date -u '+%Y-%m-%d %H:%M:%S')"
 DEPLOY_STARTED=1
 sudo systemctl stop "$SERVICE"
+auth_inventory | tee "$BASE/auth-before-install.txt"
+AUTH_COUNT_BEFORE_INSTALL="$(python3 -c 'from pathlib import Path; import sys; print(sum(1 for _ in Path(sys.argv[1]).glob("*.json")))' "$AUTH_DIR")"
+auth_name_manifest "$BASE/auth-before-install.names.sha256"
+log "AUTH_COUNT_BEFORE_INSTALL=$AUTH_COUNT_BEFORE_INSTALL"
 sudo mkdir -p "$BACKUP_DIR"
 cd /
 sudo tar -czpf "$BACKUP" \
@@ -1015,7 +1140,7 @@ log "BACKUP_SIZE=$(sudo stat -c %s "$BACKUP")"
 log "BACKUP_SHA256=$(sudo sha256sum "$BACKUP" | cut -d' ' -f1)"
 
 step "VALIDATE ROLLBACK BACKUP CONTENT"
-sudo python3 - "$BACKUP" "$AUTH_COUNT_BEFORE" "$PLUGIN_COUNT_BEFORE" "$MAIN_BEFORE_SHA256" "$CONFIG_BEFORE_SHA256" <<'PY'
+sudo python3 - "$BACKUP" "$AUTH_COUNT_BEFORE_INSTALL" "$PLUGIN_COUNT_BEFORE" "$MAIN_BEFORE_SHA256" "$CONFIG_BEFORE_SHA256" <<'PY'
 import hashlib
 import json
 import sys
@@ -1105,6 +1230,7 @@ MAIN_AFTER_SHA256="$(sha256sum "$APP/cli-proxy-api" | cut -d' ' -f1)"
 MAIN_AFTER_META="$("$GO_BIN" version -m "$APP/cli-proxy-api" 2>&1)"
 CONFIG_AFTER_SHA256="$(sha256sum "$APP/config.yaml" | cut -d' ' -f1)"
 AUTH_COUNT_AFTER="$(python3 -c 'from pathlib import Path; import sys; print(sum(1 for _ in Path(sys.argv[1]).glob("*.json")))' "$AUTH_DIR")"
+auth_name_manifest "$BASE/auth-after.names.sha256"
 log "MAIN_AFTER_VERSION=$MAIN_AFTER_VERSION"
 log "MAIN_AFTER_SHA256=$MAIN_AFTER_SHA256"
 log "CONFIG_AFTER_SHA256=$CONFIG_AFTER_SHA256"
@@ -1121,8 +1247,8 @@ if [ "$CONFIG_AFTER_SHA256" != "$CONFIG_BEFORE_SHA256" ]; then
   log "config changed during deployment"
   false
 fi
-if [ "$AUTH_COUNT_AFTER" != "$AUTH_COUNT_BEFORE" ]; then
-  log "auth count changed during deployment"
+if ! auth_manifest_preserved "$BASE/auth-before-install.names.sha256" "$BASE/auth-after.names.sha256"; then
+  log "auth file inventory lost during deployment"
   false
 fi
 case "$MAIN_AFTER_META" in

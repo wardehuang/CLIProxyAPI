@@ -669,98 +669,52 @@ func sendBufferedStreamError(ctx context.Context, errChan chan<- *interfaces.Err
 }
 
 func rewriteVirtualResponsesReplay(payloads [][]byte, responseID string, createdAt int64, nextSequence *int64) [][]byte {
-	frames := splitSSEFrames(joinStreamPayloads(payloads))
-	rewritten := make([][]byte, 0, len(frames))
-	for _, frame := range frames {
-		out, drop := rewriteVirtualResponsesReplayFrame(frame, responseID, createdAt, nextSequence)
-		if drop || len(out) == 0 {
+	rewritten := make([][]byte, 0, len(payloads))
+	dropHandshakeData := false
+	for _, payload := range payloads {
+		trimmed := bytes.TrimSpace(payload)
+		if bytes.HasPrefix(trimmed, []byte("event:")) {
+			eventType := strings.TrimSpace(string(trimmed[len("event:"):]))
+			dropHandshakeData = eventType == "response.created" || eventType == "response.in_progress"
+			if dropHandshakeData {
+				continue
+			}
+			rewritten = append(rewritten, cloneBytes(payload))
 			continue
 		}
+		if !bytes.HasPrefix(trimmed, []byte("data:")) {
+			rewritten = append(rewritten, cloneBytes(payload))
+			continue
+		}
+		data := bytes.TrimSpace(trimmed[len("data:"):])
+		if dropHandshakeData {
+			dropHandshakeData = false
+			continue
+		}
+		if len(data) == 0 || bytes.Equal(data, []byte("[DONE]")) || !json.Valid(data) {
+			rewritten = append(rewritten, cloneBytes(payload))
+			continue
+		}
+		eventType := gjson.GetBytes(data, "type").String()
+		if eventType == "response.created" || eventType == "response.in_progress" {
+			continue
+		}
+		if gjson.GetBytes(data, "sequence_number").Exists() {
+			data, _ = sjson.SetBytes(data, "sequence_number", *nextSequence)
+			*nextSequence = *nextSequence + 1
+		}
+		if gjson.GetBytes(data, "response.id").Exists() {
+			data, _ = sjson.SetBytes(data, "response.id", responseID)
+		}
+		if gjson.GetBytes(data, "response.created_at").Exists() {
+			data, _ = sjson.SetBytes(data, "response.created_at", createdAt)
+		}
+		out := make([]byte, 0, len(data)+len("data: "))
+		out = append(out, "data: "...)
+		out = append(out, data...)
 		rewritten = append(rewritten, out)
 	}
 	return rewritten
-}
-
-func splitSSEFrames(payload []byte) [][]byte {
-	payload = bytes.ReplaceAll(payload, []byte{13, 10}, []byte{10})
-	payload = bytes.ReplaceAll(payload, []byte{13}, []byte{10})
-	var frames [][]byte
-	remaining := payload
-	for {
-		idx := bytes.Index(remaining, []byte("\n\n"))
-		if idx < 0 {
-			if len(bytes.TrimSpace(remaining)) > 0 {
-				frames = append(frames, remaining)
-			}
-			break
-		}
-		frame := remaining[:idx+2]
-		if len(bytes.TrimSpace(frame)) > 0 {
-			frames = append(frames, frame)
-		}
-		remaining = remaining[idx+2:]
-	}
-	return frames
-}
-
-func rewriteVirtualResponsesReplayFrame(frame []byte, responseID string, createdAt int64, nextSequence *int64) ([]byte, bool) {
-	eventName := sseEventName(frame)
-	data, found := sseJSONValidationDataPayload(frame)
-	data = bytes.TrimSpace(data)
-	if !found || len(data) == 0 || bytes.Equal(data, []byte("[DONE]")) || !json.Valid(data) {
-		if eventName == "response.created" || eventName == "response.in_progress" {
-			return nil, true
-		}
-		return frame, false
-	}
-	eventType := gjson.GetBytes(data, "type").String()
-	if eventName == "response.created" || eventName == "response.in_progress" || eventType == "response.created" || eventType == "response.in_progress" {
-		return nil, true
-	}
-	rewritten := data
-	if gjson.GetBytes(rewritten, "sequence_number").Exists() {
-		rewritten, _ = sjson.SetBytes(rewritten, "sequence_number", *nextSequence)
-		*nextSequence = *nextSequence + 1
-	}
-	if gjson.GetBytes(rewritten, "response.id").Exists() {
-		rewritten, _ = sjson.SetBytes(rewritten, "response.id", responseID)
-	}
-	if gjson.GetBytes(rewritten, "response.created_at").Exists() {
-		rewritten, _ = sjson.SetBytes(rewritten, "response.created_at", createdAt)
-	}
-	return replaceSSEFrameData(frame, rewritten), false
-}
-
-func sseEventName(frame []byte) string {
-	for _, line := range bytes.Split(frame, []byte("\n")) {
-		line = bytes.TrimSpace(line)
-		if bytes.HasPrefix(line, []byte("event:")) {
-			return string(bytes.TrimSpace(line[len("event:"):]))
-		}
-	}
-	return ""
-}
-
-func replaceSSEFrameData(frame []byte, data []byte) []byte {
-	var b bytes.Buffer
-	dataWritten := false
-	for _, line := range bytes.Split(bytes.TrimSuffix(frame, []byte("\n\n")), []byte("\n")) {
-		trimmed := bytes.TrimSpace(line)
-		if bytes.HasPrefix(trimmed, []byte("data:")) {
-			if dataWritten {
-				continue
-			}
-			b.WriteString("data: ")
-			b.Write(data)
-			b.WriteByte('\n')
-			dataWritten = true
-			continue
-		}
-		b.Write(line)
-		b.WriteByte('\n')
-	}
-	b.WriteByte('\n')
-	return b.Bytes()
 }
 
 func joinStreamPayloads(payloads [][]byte) []byte {
