@@ -1408,7 +1408,13 @@ def main() -> int:
         LOGGER.info("AHEAD_BEHIND_TAG=%s", tag_counts)
 
         step("VERIFY WORKING TREE AND SOURCE INVENTORY")
-        unmerged = git_output("diff", "--name-only", "--diff-filter=U")
+        unmerged = git_output(
+            "-c",
+            "core.autocrlf=false",
+            "diff",
+            "--name-only",
+            "--diff-filter=U",
+        )
         if unmerged:
             raise DeploymentError(f"unmerged paths block deployment:\n{unmerged}")
         untracked = git_output("ls-files", "--others", "--exclude-standard")
