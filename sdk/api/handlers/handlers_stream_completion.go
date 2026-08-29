@@ -733,7 +733,25 @@ func rewriteVirtualResponsesReplay(payloads [][]byte, responseID string, created
 func joinStreamPayloads(payloads [][]byte) []byte {
 	var body []byte
 	for _, payload := range payloads {
+		trimmed := bytes.TrimSpace(payload)
+		if len(trimmed) == 0 {
+			continue
+		}
+		if len(body) > 0 && !bytes.HasSuffix(body, []byte("\n")) &&
+			(bytes.HasPrefix(trimmed, []byte("event:")) || bytes.HasPrefix(trimmed, []byte("data:"))) {
+			body = append(body, '\n')
+		}
 		body = append(body, payload...)
+		containsDataField := bytes.HasPrefix(trimmed, []byte("data:")) ||
+			bytes.Contains(trimmed, []byte("\ndata:")) ||
+			bytes.Contains(trimmed, []byte("\r\ndata:"))
+		if containsDataField && !bytes.HasSuffix(body, []byte("\n\n")) {
+			if bytes.HasSuffix(body, []byte("\n")) {
+				body = append(body, '\n')
+			} else {
+				body = append(body, '\n', '\n')
+			}
+		}
 	}
 	return body
 }
