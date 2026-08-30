@@ -24,29 +24,31 @@ const (
 )
 
 type realtimeGuardProbe struct {
-	RequestID       string
-	Provider        string
-	SourceFormat    string
-	Model           string
-	RequestedModel  string
-	AuthID          string
-	AuthIndex       string
-	AuthFileName    string
-	ProxyURL        string
-	RequestHeaders  http.Header
-	ResponseHeaders http.Header
-	Body            []byte
-	StatusCode      int
-	Error           string
-	Completed       bool
-	StartedAt       time.Time
-	FirstPayloadAt  time.Time
-	FirstVisibleAt  time.Time
-	FinishedAt      time.Time
-	RetryCount      int
-	MaxRetries      int
-	Metadata        map[string]any
-	SourceSnapshot  realtimeGuardSourceSnapshot
+	RequestID           string
+	Provider            string
+	SourceFormat        string
+	Model               string
+	RequestedModel      string
+	AuthID              string
+	AuthIndex           string
+	AuthFileName        string
+	ProxyURL            string
+	RequestHeaders      http.Header
+	ResponseHeaders     http.Header
+	Body                []byte
+	StatusCode          int
+	Error               string
+	Completed           bool
+	StartedAt           time.Time
+	UpstreamStartedAt   time.Time
+	FirstResponseByteAt time.Time
+	FirstPayloadAt      time.Time
+	FirstVisibleAt      time.Time
+	FinishedAt          time.Time
+	RetryCount          int
+	MaxRetries          int
+	Metadata            map[string]any
+	SourceSnapshot      realtimeGuardSourceSnapshot
 }
 
 type realtimeGuardDecision struct {

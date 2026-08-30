@@ -130,7 +130,7 @@ func (e *XAIExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, req 
 }
 
 func (e *XAIExecutor) executeCompact(ctx context.Context, auth *cliproxyauth.Auth, req cliproxyexecutor.Request, opts cliproxyexecutor.Options) (resp cliproxyexecutor.Response, err error) {
-	prepared, data, headers, errCompact := e.executeCompactRequest(ctx, auth, req, opts)
+	prepared, data, headers, _, errCompact := e.executeCompactRequest(ctx, auth, req, opts)
 	if errCompact != nil {
 		return resp, errCompact
 	}
@@ -143,7 +143,12 @@ func (e *XAIExecutor) executeCompact(ctx context.Context, auth *cliproxyauth.Aut
 	return cliproxyexecutor.Response{Payload: out, Headers: headers}, nil
 }
 
-func (e *XAIExecutor) executeCompactRequest(ctx context.Context, auth *cliproxyauth.Auth, req cliproxyexecutor.Request, opts cliproxyexecutor.Options) (*xaiPreparedRequest, []byte, http.Header, error) {
+type xaiHTTPResponseTiming struct {
+	UpstreamStartedAt   time.Time
+	FirstResponseByteAt time.Time
+}
+
+func (e *XAIExecutor) executeCompactRequest(ctx context.Context, auth *cliproxyauth.Auth, req cliproxyexecutor.Request, opts cliproxyexecutor.Options) (*xaiPreparedRequest, []byte, http.Header, xaiHTTPResponseTiming, error) {
 	token, _ := xaiCreds(auth)
 	// Compact must not use xaiChatBaseURL: CLI chat-proxy returns 404 for
 	// /responses/compact and a 404 cools down the whole xAI auth pool.
@@ -152,7 +157,7 @@ func (e *XAIExecutor) executeCompactRequest(ctx context.Context, auth *cliproxya
 
 	prepared, err := e.prepareResponsesRequestTo(ctx, req, opts, false, sdktranslator.FormatOpenAIResponse)
 	if err != nil {
-		return nil, nil, nil, err
+		return nil, nil, nil, xaiHTTPResponseTiming{}, err
 	}
 	prepared.body, _ = sjson.DeleteBytes(prepared.body, "stream")
 	prepared.body, _ = sjson.DeleteBytes(prepared.body, "tools")
@@ -172,7 +177,7 @@ func (e *XAIExecutor) executeCompactRequest(ctx context.Context, auth *cliproxya
 	requestURL := strings.TrimSuffix(baseURL, "/") + "/responses/compact"
 	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, requestURL, bytes.NewReader(prepared.body))
 	if err != nil {
-		return nil, nil, nil, err
+		return nil, nil, nil, xaiHTTPResponseTiming{}, err
 	}
 	// Official API / custom compact endpoints use standard API headers, not CLI
 	// chat-proxy identity headers (which applyXAIChatHeaders may still attach for OAuth chat).
@@ -188,7 +193,7 @@ func (e *XAIExecutor) executeCompactRequest(ctx context.Context, auth *cliproxya
 	httpResp, err := httpClient.Do(httpReq)
 	if err != nil {
 		helps.RecordAPIResponseError(ctx, e.cfg, err)
-		return nil, nil, nil, err
+		return nil, nil, nil, xaiHTTPResponseTiming{}, err
 	}
 	defer func() {
 		if errClose := httpResp.Body.Close(); errClose != nil {
@@ -200,24 +205,28 @@ func (e *XAIExecutor) executeCompactRequest(ctx context.Context, auth *cliproxya
 	data, err := io.ReadAll(httpResp.Body)
 	if err != nil {
 		helps.RecordAPIResponseError(ctx, e.cfg, err)
-		return nil, nil, nil, err
+		return nil, nil, nil, xaiHTTPResponseTiming{}, err
 	}
 	helps.AppendAPIResponseChunk(ctx, e.cfg, data)
 
 	if httpResp.StatusCode < 200 || httpResp.StatusCode >= 300 {
 		helps.LogWithRequestID(ctx).Debugf("request error, error status: %d, error message: %s", httpResp.StatusCode, helps.SummarizeErrorBody(httpResp.Header.Get("Content-Type"), data))
 		err = xaiStatusErr(httpResp.StatusCode, data)
-		return nil, nil, nil, err
+		return nil, nil, nil, xaiHTTPResponseTiming{}, err
 	}
 
 	reporter.Publish(ctx, helps.ParseOpenAIUsage(data))
 	reporter.EnsurePublished(ctx)
 	clearXAIReasoningReplayAfterCompaction(ctx, prepared.replayScope)
-	return prepared, data, httpResp.Header.Clone(), nil
+	startedAt, firstResponseByteAt := reporter.ResponseTTFTWindow()
+	return prepared, data, httpResp.Header.Clone(), xaiHTTPResponseTiming{
+		UpstreamStartedAt:   startedAt,
+		FirstResponseByteAt: firstResponseByteAt,
+	}, nil
 }
 
 func (e *XAIExecutor) executeCompactionTriggerStream(ctx context.Context, auth *cliproxyauth.Auth, req cliproxyexecutor.Request, opts cliproxyexecutor.Options) (*cliproxyexecutor.StreamResult, error) {
-	prepared, data, headers, err := e.executeCompactRequest(ctx, auth, req, opts)
+	prepared, data, headers, timing, err := e.executeCompactRequest(ctx, auth, req, opts)
 	if err != nil {
 		return nil, err
 	}
@@ -230,11 +239,26 @@ func (e *XAIExecutor) executeCompactionTriggerStream(ctx context.Context, auth *
 
 	chunks := xaiBuildCompactionTriggerStreamChunks(prepared, data)
 	out := make(chan cliproxyexecutor.StreamChunk, len(chunks))
+	firstPayloadAt := time.Now()
 	for _, chunk := range chunks {
 		out <- cliproxyexecutor.StreamChunk{Payload: chunk}
 	}
 	close(out)
-	return &cliproxyexecutor.StreamResult{Headers: headers, Chunks: out}, nil
+	finishedAt := time.Now()
+	completionState := cliproxyexecutor.StreamCompletion{
+		Completed:           true,
+		UpstreamStartedAt:   timing.UpstreamStartedAt,
+		FirstResponseByteAt: timing.FirstResponseByteAt,
+		FirstPayloadAt:      firstPayloadAt,
+		FinishedAt:          finishedAt,
+	}
+	if len(chunks) > 0 {
+		completionState.Body = bytes.Clone(chunks[len(chunks)-1])
+	}
+	completion := make(chan cliproxyexecutor.StreamCompletion, 1)
+	completion <- completionState
+	close(completion)
+	return &cliproxyexecutor.StreamResult{Headers: headers, Chunks: out, Completion: completion}, nil
 }
 
 func xaiInputHasItemType(body []byte, itemType string) bool {

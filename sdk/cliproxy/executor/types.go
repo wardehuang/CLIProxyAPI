@@ -283,6 +283,10 @@ type StreamCompletion struct {
 	Body []byte
 	// Err reports a terminal source-stream read failure.
 	Err error
+	// UpstreamStartedAt is the timestamp when the final auth attempt started its HTTP RoundTrip.
+	UpstreamStartedAt time.Time
+	// FirstResponseByteAt is the timestamp when the final auth attempt read its first response Body byte.
+	FirstResponseByteAt time.Time
 	// FirstPayloadAt is the timestamp of the first payload emitted from this upstream stream.
 	FirstPayloadAt time.Time
 	// FinishedAt is the timestamp when the upstream stream reader reached its terminal state.

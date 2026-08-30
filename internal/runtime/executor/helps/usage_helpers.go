@@ -42,6 +42,8 @@ type UsageReporter struct {
 	ttftMu              sync.RWMutex
 	ttft                time.Duration
 	ttftStart           time.Time
+	ttftStartedAt       time.Time
+	firstResponseByteAt time.Time
 	ttftSet             bool
 	networkProbeMu      sync.Mutex
 	networkProbeDone    chan struct{}
@@ -188,8 +190,25 @@ func (r *UsageReporter) StartResponseTTFT() {
 	}
 	r.ttftMu.Lock()
 	if !r.ttftSet && r.ttftStart.IsZero() {
-		r.ttftStart = time.Now()
+		now := time.Now()
+		r.ttftStart = now
+		r.ttftStartedAt = now
 	}
+	r.ttftMu.Unlock()
+}
+
+// RestartResponseTTFT resets the response timing window for a new upstream attempt.
+func (r *UsageReporter) RestartResponseTTFT() {
+	if r == nil {
+		return
+	}
+	now := time.Now()
+	r.ttftMu.Lock()
+	r.ttftSet = false
+	r.ttft = 0
+	r.ttftStart = now
+	r.ttftStartedAt = now
+	r.firstResponseByteAt = time.Time{}
 	r.ttftMu.Unlock()
 }
 
@@ -198,17 +217,31 @@ func (r *UsageReporter) MarkFirstResponseByte() {
 		return
 	}
 	r.ttftMu.Lock()
-	if r.ttftSet {
+	if r.ttftSet || r.ttftStart.IsZero() {
 		r.ttftMu.Unlock()
 		return
 	}
+	firstResponseByteAt := time.Now()
 	start := r.ttftStart
 	r.ttftStart = time.Time{}
-	r.ttftMu.Unlock()
-	if start.IsZero() {
-		return
+	ttft := firstResponseByteAt.Sub(start)
+	if ttft < 0 {
+		ttft = 0
 	}
-	r.setTTFT(time.Since(start))
+	r.firstResponseByteAt = firstResponseByteAt
+	r.ttft = ttft
+	r.ttftSet = true
+	r.ttftMu.Unlock()
+}
+
+// ResponseTTFTWindow returns the HTTP RoundTrip start and first response Body byte timestamps.
+func (r *UsageReporter) ResponseTTFTWindow() (time.Time, time.Time) {
+	if r == nil {
+		return time.Time{}, time.Time{}
+	}
+	r.ttftMu.RLock()
+	defer r.ttftMu.RUnlock()
+	return r.ttftStartedAt, r.firstResponseByteAt
 }
 
 func (r *UsageReporter) PublishWithGeneration(ctx context.Context, detail usage.Detail, firstPayloadAt, finishedAt time.Time) {
@@ -388,24 +421,6 @@ func (r *UsageReporter) latency() time.Duration {
 		return 0
 	}
 	return latency
-}
-
-func (r *UsageReporter) setTTFT(ttft time.Duration) {
-	if r == nil {
-		return
-	}
-	if ttft < 0 {
-		ttft = 0
-	}
-	r.ttftMu.Lock()
-	if r.ttftSet {
-		r.ttftMu.Unlock()
-		return
-	}
-	r.ttft = ttft
-	r.ttftSet = true
-	r.ttftStart = time.Time{}
-	r.ttftMu.Unlock()
 }
 
 func (r *UsageReporter) ttftDuration() time.Duration {

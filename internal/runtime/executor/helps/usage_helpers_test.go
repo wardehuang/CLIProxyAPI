@@ -633,6 +633,36 @@ func TestUsageReporterTrackHTTPClientStartsTTFTBeforeRoundTrip(t *testing.T) {
 	if got := reporter.ttftDuration(); got < delay {
 		t.Fatalf("ttft = %v, want >= %v", got, delay)
 	}
+	startedAt, firstResponseByteAt := reporter.ResponseTTFTWindow()
+	if startedAt.IsZero() || firstResponseByteAt.IsZero() {
+		t.Fatalf("ResponseTTFTWindow() = (%v, %v), want non-zero timestamps", startedAt, firstResponseByteAt)
+	}
+	if got, want := firstResponseByteAt.Sub(startedAt), reporter.ttftDuration(); got != want {
+		t.Fatalf("ResponseTTFTWindow() duration = %v, want %v", got, want)
+	}
+}
+
+func TestUsageReporterRestartResponseTTFTDropsPreviousAttempt(t *testing.T) {
+	reporter := NewUsageReporter(context.Background(), "xai", "grok-4", nil)
+	reporter.StartResponseTTFT()
+	firstAttemptStartedAt, _ := reporter.ResponseTTFTWindow()
+	reporter.MarkFirstResponseByte()
+	_, firstResponseByteAt := reporter.ResponseTTFTWindow()
+	if firstResponseByteAt.IsZero() {
+		t.Fatalf("first attempt first response byte is zero")
+	}
+
+	reporter.RestartResponseTTFT()
+	secondAttemptStartedAt, secondFirstResponseByteAt := reporter.ResponseTTFTWindow()
+	if secondAttemptStartedAt.Before(firstAttemptStartedAt) {
+		t.Fatalf("second attempt started at %v before first attempt %v", secondAttemptStartedAt, firstAttemptStartedAt)
+	}
+	if !secondFirstResponseByteAt.IsZero() {
+		t.Fatalf("second attempt first response byte = %v, want zero", secondFirstResponseByteAt)
+	}
+	if got := reporter.ttftDuration(); got != 0 {
+		t.Fatalf("second attempt ttft = %v, want zero before first byte", got)
+	}
 }
 
 func TestUsageReporterBuildRecordIncludesRequestedModelAlias(t *testing.T) {

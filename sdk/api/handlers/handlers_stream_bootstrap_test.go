@@ -88,6 +88,105 @@ func (e *failOnceStreamExecutor) Calls() int {
 	return e.calls
 }
 
+func TestCollectBufferedStreamAttemptUsesFinalUpstreamAttemptTiming(t *testing.T) {
+	lifecycleStartedAt := time.Now().Add(-30 * time.Second)
+	upstreamStartedAt := time.Now().Add(-2 * time.Second)
+	firstResponseByteAt := upstreamStartedAt.Add(250 * time.Millisecond)
+	firstPayloadAt := firstResponseByteAt.Add(500 * time.Millisecond)
+	finishedAt := firstPayloadAt.Add(750 * time.Millisecond)
+	payload := []byte("data: {\"type\":\"response.completed\"}\n\n")
+
+	chunks := make(chan coreexecutor.StreamChunk, 1)
+	chunks <- coreexecutor.StreamChunk{Payload: payload}
+	close(chunks)
+	completion := make(chan coreexecutor.StreamCompletion, 1)
+	completion <- coreexecutor.StreamCompletion{
+		Completed:           true,
+		Body:                payload,
+		UpstreamStartedAt:   upstreamStartedAt,
+		FirstResponseByteAt: firstResponseByteAt,
+		FirstPayloadAt:      firstPayloadAt,
+		FinishedAt:          finishedAt,
+	}
+	close(completion)
+
+	attempt := collectBufferedStreamAttempt(
+		context.Background(),
+		nil,
+		false,
+		"openai-response",
+		"grok-4",
+		"grok-4",
+		coreexecutor.Request{},
+		coreexecutor.Options{},
+		&coreexecutor.StreamResult{Chunks: chunks, Completion: completion},
+		nil,
+		lifecycleStartedAt,
+		"",
+	)
+
+	if !attempt.StartedAt.Equal(lifecycleStartedAt) {
+		t.Fatalf("attempt.StartedAt = %v, want handler attempt %v", attempt.StartedAt, lifecycleStartedAt)
+	}
+	if !attempt.UpstreamStartedAt.Equal(upstreamStartedAt) {
+		t.Fatalf("attempt.UpstreamStartedAt = %v, want final upstream attempt %v", attempt.UpstreamStartedAt, upstreamStartedAt)
+	}
+	if !attempt.FirstResponseByteAt.Equal(firstResponseByteAt) {
+		t.Fatalf("attempt.FirstResponseByteAt = %v, want %v", attempt.FirstResponseByteAt, firstResponseByteAt)
+	}
+	completionRequest := buildStreamCompletionRequest(
+		nil,
+		[]string{"xai"},
+		"openai-response",
+		"grok-4",
+		"grok-4",
+		coreexecutor.Request{},
+		coreexecutor.Options{},
+		attempt,
+		0,
+	)
+	if !completionRequest.StartedAt.Equal(lifecycleStartedAt) ||
+		!completionRequest.UpstreamStartedAt.Equal(upstreamStartedAt) ||
+		!completionRequest.FirstResponseByteAt.Equal(firstResponseByteAt) {
+		t.Fatalf("completion request timing = (%v, %v, %v), want (%v, %v, %v)", completionRequest.StartedAt, completionRequest.UpstreamStartedAt, completionRequest.FirstResponseByteAt, lifecycleStartedAt, upstreamStartedAt, firstResponseByteAt)
+	}
+}
+
+func TestCollectBufferedStreamAttemptDoesNotMixPartialUpstreamTiming(t *testing.T) {
+	startedAt := time.Now().Add(-2 * time.Second)
+	firstPayloadAt := startedAt.Add(time.Second)
+	finishedAt := firstPayloadAt.Add(time.Second)
+	completion := make(chan coreexecutor.StreamCompletion, 1)
+	completion <- coreexecutor.StreamCompletion{
+		Completed:           true,
+		FirstResponseByteAt: startedAt.Add(500 * time.Millisecond),
+		FirstPayloadAt:      firstPayloadAt,
+		FinishedAt:          finishedAt,
+	}
+	close(completion)
+
+	chunks := make(chan coreexecutor.StreamChunk)
+	close(chunks)
+	attempt := collectBufferedStreamAttempt(
+		context.Background(),
+		nil,
+		false,
+		"openai-response",
+		"grok-4",
+		"grok-4",
+		coreexecutor.Request{},
+		coreexecutor.Options{},
+		&coreexecutor.StreamResult{Chunks: chunks, Completion: completion},
+		nil,
+		startedAt,
+		"",
+	)
+
+	if !attempt.UpstreamStartedAt.IsZero() || !attempt.FirstResponseByteAt.IsZero() {
+		t.Fatalf("partial upstream timing = (%v, %v), want both zero", attempt.UpstreamStartedAt, attempt.FirstResponseByteAt)
+	}
+}
+
 type blockingRetryStreamExecutor struct {
 	mu           sync.Mutex
 	calls        int

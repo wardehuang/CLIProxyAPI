@@ -136,28 +136,30 @@ func handleStreamCompletionIntercept(completion pluginapi.StreamCompletionInterc
 
 func realtimeGuardProbeFromCompletion(completion pluginapi.StreamCompletionInterceptRequest) realtimeGuardProbe {
 	return realtimeGuardProbe{
-		RequestID:       completion.RequestID,
-		Provider:        completion.Provider,
-		SourceFormat:    completion.SourceFormat,
-		Model:           completion.Model,
-		RequestedModel:  completion.RequestedModel,
-		AuthID:          completion.AuthID,
-		AuthIndex:       completion.AuthIndex,
-		AuthFileName:    completion.AuthFileName,
-		ProxyURL:        completion.ProxyURL,
-		RequestHeaders:  completion.RequestHeaders,
-		ResponseHeaders: completion.ResponseHeaders,
-		Body:            bytes.Clone(completion.Body),
-		StatusCode:      completion.StatusCode,
-		Error:           completion.Error,
-		Completed:       completion.Completed,
-		StartedAt:       completion.StartedAt,
-		FirstPayloadAt:  completion.FirstPayloadAt,
-		FirstVisibleAt:  completion.FirstVisibleAt,
-		FinishedAt:      completion.FinishedAt,
-		RetryCount:      completion.RetryCount,
-		MaxRetries:      completion.MaxRetries,
-		Metadata:        completion.Metadata,
+		RequestID:           completion.RequestID,
+		Provider:            completion.Provider,
+		SourceFormat:        completion.SourceFormat,
+		Model:               completion.Model,
+		RequestedModel:      completion.RequestedModel,
+		AuthID:              completion.AuthID,
+		AuthIndex:           completion.AuthIndex,
+		AuthFileName:        completion.AuthFileName,
+		ProxyURL:            completion.ProxyURL,
+		RequestHeaders:      completion.RequestHeaders,
+		ResponseHeaders:     completion.ResponseHeaders,
+		Body:                bytes.Clone(completion.Body),
+		StatusCode:          completion.StatusCode,
+		Error:               completion.Error,
+		Completed:           completion.Completed,
+		StartedAt:           completion.StartedAt,
+		UpstreamStartedAt:   completion.UpstreamStartedAt,
+		FirstResponseByteAt: completion.FirstResponseByteAt,
+		FirstPayloadAt:      completion.FirstPayloadAt,
+		FirstVisibleAt:      completion.FirstVisibleAt,
+		FinishedAt:          completion.FinishedAt,
+		RetryCount:          completion.RetryCount,
+		MaxRetries:          completion.MaxRetries,
+		Metadata:            completion.Metadata,
 	}
 }
 
@@ -182,12 +184,8 @@ func classifyRealtimeGuardProbeWithSettings(probe realtimeGuardProbe, settings p
 		QualityLevel:   realtimeGuardQualityHealthy,
 		Reason:         "within_threshold",
 	}
-	requestFinishedAt := probe.FinishedAt
-	if requestFinishedAt.IsZero() {
-		requestFinishedAt = time.Now()
-	}
-	if !probe.StartedAt.IsZero() {
-		requestDuration := requestFinishedAt.Sub(probe.StartedAt)
+	if !probe.FinishedAt.IsZero() && !probe.StartedAt.IsZero() {
+		requestDuration := probe.FinishedAt.Sub(probe.StartedAt)
 		decision.TotalDurationMs = requestDuration.Milliseconds()
 		if probe.FirstPayloadAt.IsZero() && requestDuration > time.Duration(settings.RealtimeGuardTimeoutSeconds)*time.Second {
 			decision.Action = realtimeGuardActionRetry
@@ -221,20 +219,35 @@ func classifyRealtimeGuardProbeWithSettings(probe realtimeGuardProbe, settings p
 	if sseErr != nil {
 		return realtimeGuardUnknownDecision("sse_failed", sseErr.Error())
 	}
-	generationStartedAt := probe.FirstPayloadAt
-	if generationStartedAt.IsZero() {
-		generationStartedAt = probe.StartedAt
+	if probe.UpstreamStartedAt.IsZero() {
+		return realtimeGuardUnknownDecision("upstream_started_at_missing", "上游 HTTP 请求起点缺失")
 	}
+	if probe.FirstResponseByteAt.IsZero() {
+		return realtimeGuardUnknownDecision("upstream_first_byte_missing", "上游 HTTP 首字节时间缺失")
+	}
+	if probe.FirstResponseByteAt.Before(probe.UpstreamStartedAt) {
+		return realtimeGuardUnknownDecision("upstream_ttfb_invalid", "上游 HTTP 首字节早于请求起点")
+	}
+	if probe.FirstPayloadAt.IsZero() {
+		return realtimeGuardUnknownDecision("first_payload_missing", "SSE 首个 payload 时间缺失")
+	}
+	if probe.FirstPayloadAt.Before(probe.FirstResponseByteAt) {
+		return realtimeGuardUnknownDecision("first_payload_invalid", "SSE 首个 payload 早于上游 HTTP 首字节")
+	}
+	if probe.FinishedAt.IsZero() {
+		return realtimeGuardUnknownDecision("finished_at_missing", "SSE 流结束时间缺失")
+	}
+	generationStartedAt := probe.FirstPayloadAt
 	generationFinishedAt := probe.FinishedAt
-	if generationFinishedAt.IsZero() {
-		generationFinishedAt = time.Now()
+	if generationFinishedAt.Before(generationStartedAt) {
+		return realtimeGuardUnknownDecision("generation_window_invalid", "生成窗口终点早于 SSE 首个 payload")
 	}
 	generationDuration := generationFinishedAt.Sub(generationStartedAt)
 	generationDuration = time.Duration(generationDuration.Milliseconds()) * time.Millisecond
 	if generationDuration < time.Millisecond {
 		generationDuration = time.Millisecond
 	}
-	ttfbDuration := generationStartedAt.Sub(probe.StartedAt)
+	ttfbDuration := probe.FirstResponseByteAt.Sub(probe.UpstreamStartedAt)
 	ttfbDuration = time.Duration(ttfbDuration.Milliseconds()) * time.Millisecond
 	decision.TTFBMs = ttfbDuration.Milliseconds()
 	decision.GenerationMs = generationDuration.Milliseconds()

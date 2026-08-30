@@ -102,6 +102,7 @@ func (e *XAIExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Auth
 		var completedUsage cliproxyusage.Detail
 		hasCompletedUsage := false
 		defer func() {
+			completionState.UpstreamStartedAt, completionState.FirstResponseByteAt = reporter.ResponseTTFTWindow()
 			if completionState.FinishedAt.IsZero() {
 				completionState.FinishedAt = time.Now()
 			}

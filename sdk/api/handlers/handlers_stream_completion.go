@@ -329,17 +329,19 @@ func (h *BaseAPIHandler) executeBufferedStreamWithGuard(
 }
 
 type bufferedStreamAttempt struct {
-	Payloads          [][]byte
-	DownstreamHeaders http.Header
-	StatusCode        int
-	Err               error
-	Completed         bool
-	StartedAt         time.Time
-	FirstPayloadAt    time.Time
-	FirstVisibleAt    time.Time
-	FinishedAt        time.Time
-	Body              []byte
-	GuardBody         []byte
+	Payloads            [][]byte
+	DownstreamHeaders   http.Header
+	StatusCode          int
+	Err                 error
+	Completed           bool
+	StartedAt           time.Time
+	UpstreamStartedAt   time.Time
+	FirstResponseByteAt time.Time
+	FirstPayloadAt      time.Time
+	FirstVisibleAt      time.Time
+	FinishedAt          time.Time
+	Body                []byte
+	GuardBody           []byte
 }
 
 func collectBufferedStreamAttempt(
@@ -481,6 +483,10 @@ func collectBufferedStreamAttempt(
 			attempt.StatusCode = http.StatusBadGateway
 		} else {
 			attempt.Completed = sourceCompletion.Completed
+			if !sourceCompletion.UpstreamStartedAt.IsZero() && !sourceCompletion.FirstResponseByteAt.IsZero() {
+				attempt.UpstreamStartedAt = sourceCompletion.UpstreamStartedAt
+				attempt.FirstResponseByteAt = sourceCompletion.FirstResponseByteAt
+			}
 			if !sourceCompletion.FirstPayloadAt.IsZero() {
 				attempt.FirstPayloadAt = sourceCompletion.FirstPayloadAt
 			}
@@ -528,31 +534,33 @@ func buildStreamCompletionRequest(
 		traceID = lifecycle.completion.TraceID
 	}
 	return pluginapi.StreamCompletionInterceptRequest{
-		RequestID:       requestID,
-		TraceID:         traceID,
-		Provider:        streamCompletionProvider(providers, opts.Metadata),
-		SourceFormat:    opts.SourceFormat.String(),
-		Model:           normalizedModel,
-		RequestedModel:  originalRequestedModel,
-		AuthID:          metadataString(opts.Metadata, coreexecutor.SelectedAuthMetadataKey),
-		AuthIndex:       metadataString(opts.Metadata, coreexecutor.SelectedAuthIndexMetadataKey),
-		AuthFileName:    metadataString(opts.Metadata, coreexecutor.SelectedAuthFileNameMetadataKey),
-		ProxyURL:        metadataString(opts.Metadata, coreexecutor.SelectedAuthProxyURLMetadataKey),
-		RequestHeaders:  cloneHeader(opts.Headers),
-		ResponseHeaders: cloneHeader(attempt.DownstreamHeaders),
-		OriginalRequest: cloneBytes(opts.OriginalRequest),
-		RequestBody:     cloneBytes(req.Payload),
-		Body:            cloneBytes(attempt.GuardBody),
-		StatusCode:      attempt.StatusCode,
-		Error:           errorString(attempt.Err),
-		Completed:       attempt.Completed,
-		StartedAt:       attempt.StartedAt,
-		FirstPayloadAt:  attempt.FirstPayloadAt,
-		FirstVisibleAt:  attempt.FirstVisibleAt,
-		FinishedAt:      attempt.FinishedAt,
-		RetryCount:      retryCount,
-		MaxRetries:      maxRealtimeGuardDegradedAccounts,
-		Metadata:        opts.Metadata,
+		RequestID:           requestID,
+		TraceID:             traceID,
+		Provider:            streamCompletionProvider(providers, opts.Metadata),
+		SourceFormat:        opts.SourceFormat.String(),
+		Model:               normalizedModel,
+		RequestedModel:      originalRequestedModel,
+		AuthID:              metadataString(opts.Metadata, coreexecutor.SelectedAuthMetadataKey),
+		AuthIndex:           metadataString(opts.Metadata, coreexecutor.SelectedAuthIndexMetadataKey),
+		AuthFileName:        metadataString(opts.Metadata, coreexecutor.SelectedAuthFileNameMetadataKey),
+		ProxyURL:            metadataString(opts.Metadata, coreexecutor.SelectedAuthProxyURLMetadataKey),
+		RequestHeaders:      cloneHeader(opts.Headers),
+		ResponseHeaders:     cloneHeader(attempt.DownstreamHeaders),
+		OriginalRequest:     cloneBytes(opts.OriginalRequest),
+		RequestBody:         cloneBytes(req.Payload),
+		Body:                cloneBytes(attempt.GuardBody),
+		StatusCode:          attempt.StatusCode,
+		Error:               errorString(attempt.Err),
+		Completed:           attempt.Completed,
+		StartedAt:           attempt.StartedAt,
+		UpstreamStartedAt:   attempt.UpstreamStartedAt,
+		FirstResponseByteAt: attempt.FirstResponseByteAt,
+		FirstPayloadAt:      attempt.FirstPayloadAt,
+		FirstVisibleAt:      attempt.FirstVisibleAt,
+		FinishedAt:          attempt.FinishedAt,
+		RetryCount:          retryCount,
+		MaxRetries:          maxRealtimeGuardDegradedAccounts,
+		Metadata:            opts.Metadata,
 	}
 }
 

@@ -1003,31 +1003,33 @@ const (
 
 // StreamCompletionInterceptRequest describes one completed or failed upstream stream.
 type StreamCompletionInterceptRequest struct {
-	RequestID       string
-	TraceID         string
-	Provider        string
-	SourceFormat    string
-	Model           string
-	RequestedModel  string
-	AuthID          string
-	AuthIndex       string
-	AuthFileName    string
-	ProxyURL        string
-	RequestHeaders  http.Header
-	ResponseHeaders http.Header
-	OriginalRequest []byte
-	RequestBody     []byte
-	Body            []byte
-	StatusCode      int
-	Error           string
-	Completed       bool
-	StartedAt       time.Time
-	FirstPayloadAt  time.Time
-	FirstVisibleAt  time.Time
-	FinishedAt      time.Time
-	RetryCount      int
-	MaxRetries      int
-	Metadata        map[string]any
+	RequestID           string
+	TraceID             string
+	Provider            string
+	SourceFormat        string
+	Model               string
+	RequestedModel      string
+	AuthID              string
+	AuthIndex           string
+	AuthFileName        string
+	ProxyURL            string
+	RequestHeaders      http.Header
+	ResponseHeaders     http.Header
+	OriginalRequest     []byte
+	RequestBody         []byte
+	Body                []byte
+	StatusCode          int
+	Error               string
+	Completed           bool
+	StartedAt           time.Time
+	UpstreamStartedAt   time.Time
+	FirstResponseByteAt time.Time
+	FirstPayloadAt      time.Time
+	FirstVisibleAt      time.Time
+	FinishedAt          time.Time
+	RetryCount          int
+	MaxRetries          int
+	Metadata            map[string]any
 }
 
 // StreamCompletionInterceptResponse returns a flush, retry, or fail decision.
