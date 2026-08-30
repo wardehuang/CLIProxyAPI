@@ -554,7 +554,7 @@ func (store *ipStore) applyRealtimeGuard(probe realtimeGuardProbe, decision *rea
 	decision.OriginalProxyURL = replacement.OriginalNode.ProxyURL
 
 	if !replacement.HasReplacement {
-		if err := refreshHealthyAuthDistribution(store, settings.HealthySlotCount); err != nil {
+		if err := refreshHealthyAuthDistributionAfterRealtimeGuard(store, settings.HealthySlotCount, replacement.OriginalNode.ProxyURL); err != nil {
 			return fmt.Errorf("实时守护清空健康槽位 auth 文件: %w", err)
 		}
 		decision.Action = realtimeGuardActionFail
@@ -565,7 +565,7 @@ func (store *ipStore) applyRealtimeGuard(probe realtimeGuardProbe, decision *rea
 
 	decision.ReplacementNodeID = replacement.ReplacementNode.ID
 	decision.ReplacementProxyURL = replacement.ReplacementNode.ProxyURL
-	if err := refreshHealthyAuthDistribution(store, settings.HealthySlotCount); err != nil {
+	if err := refreshHealthyAuthDistributionAfterRealtimeGuard(store, settings.HealthySlotCount, replacement.OriginalNode.ProxyURL); err != nil {
 		return fmt.Errorf("实时守护同步所有 auth 文件: %w", err)
 	}
 	decision.Action = realtimeGuardActionRetry

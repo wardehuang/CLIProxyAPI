@@ -1,8 +1,10 @@
 package main
 
 import (
+	"database/sql"
 	"encoding/json"
 	"fmt"
+	"strings"
 	"time"
 )
 
@@ -14,6 +16,18 @@ type authDistributionUpdate struct {
 }
 
 func refreshHealthyAuthDistribution(store *ipStore, healthySlotCount int) error {
+	return refreshHealthyAuthDistributionWithRejectedProxy(store, healthySlotCount, "")
+}
+
+func refreshHealthyAuthDistributionAfterRealtimeGuard(store *ipStore, healthySlotCount int, rejectedProxyURL string) error {
+	rejectedProxyURL = strings.TrimSpace(rejectedProxyURL)
+	if rejectedProxyURL == "" {
+		return fmt.Errorf("realtime guard rejected proxy_url is required")
+	}
+	return refreshHealthyAuthDistributionWithRejectedProxy(store, healthySlotCount, rejectedProxyURL)
+}
+
+func refreshHealthyAuthDistributionWithRejectedProxy(store *ipStore, healthySlotCount int, rejectedProxyURL string) error {
 	if healthySlotCount < 1 {
 		return fmt.Errorf("healthy slot count must be positive")
 	}
@@ -68,14 +82,30 @@ func refreshHealthyAuthDistribution(store *ipStore, healthySlotCount int) error 
 		appliedCount++
 	}
 	bindings := make([]authBinding, 0, len(updates))
+	externallyChangedCount := 0
 	for _, update := range updates {
-		if verifyErr := verifyAuthProxyURLDirect(update.auth, update.proxyURL); verifyErr != nil {
+		verifiedAuth, verifyErr := loadAuthFileForDirectWrite(update.auth)
+		if verifyErr == nil && rejectedProxyURL == "" && verifiedAuth.ProxyURL != update.proxyURL {
+			verifyErr = fmt.Errorf("proxy_url mismatch: expected %q, actual %q", update.proxyURL, verifiedAuth.ProxyURL)
+		}
+		if verifyErr == nil && rejectedProxyURL != "" && verifiedAuth.ProxyURL == rejectedProxyURL {
+			verifyErr = fmt.Errorf("proxy_url still points to replaced node")
+		}
+		if verifyErr != nil {
 			if rollbackErr := rollbackAuthDistribution(updates[:appliedCount]); rollbackErr != nil {
 				return fmt.Errorf("verify xAI auth %s: %w; rollback failed: %v", update.auth.Name, verifyErr, rollbackErr)
 			}
 			return fmt.Errorf("verify xAI auth %s: %w", update.auth.Name, verifyErr)
 		}
-		bindings = append(bindings, update.binding)
+		binding := update.binding
+		if rejectedProxyURL != "" && verifiedAuth.ProxyURL != update.proxyURL {
+			binding, verifyErr = store.buildObservedAuthBinding(verifiedAuth)
+			if verifyErr != nil {
+				return fmt.Errorf("resolve observed xAI auth %s binding: %w", update.auth.Name, verifyErr)
+			}
+			externallyChangedCount++
+		}
+		bindings = append(bindings, binding)
 	}
 	if err := store.replaceAuthBindings(bindings); err != nil {
 		if rollbackErr := rollbackAuthDistribution(updates[:appliedCount]); rollbackErr != nil {
@@ -83,8 +113,34 @@ func refreshHealthyAuthDistribution(store *ipStore, healthySlotCount int) error 
 		}
 		return fmt.Errorf("replace xAI auth bindings: %w", err)
 	}
-	_ = store.appendLog(logLevelInfo, "auth_distribution.verified", 0, "", "xAI auth proxy_url 已直接写入文本并完整验证", fmt.Sprintf("auth=%d；健康槽位=%d；空槽写入空 proxy_url", len(bindings), healthySlotCount))
+	message := "xAI auth proxy_url 已直接写入文本并完整验证"
+	detail := fmt.Sprintf("auth=%d；健康槽位=%d；空槽写入空 proxy_url", len(bindings), healthySlotCount)
+	if rejectedProxyURL != "" {
+		message = "实时守护已确认所有 xAI auth 不再指向被替换节点"
+		detail += fmt.Sprintf("；外部改写=%d", externallyChangedCount)
+	}
+	_ = store.appendLog(logLevelInfo, "auth_distribution.verified", 0, "", message, detail)
 	return nil
+}
+
+func (store *ipStore) buildObservedAuthBinding(auth authFile) (authBinding, error) {
+	var slotID, nodeID int64
+	err := store.database.QueryRow(`
+SELECT slots.slot_id, nodes.id
+FROM ip_slots AS slots
+JOIN ip_nodes AS nodes ON nodes.id = slots.node_id
+WHERE slots.slot_kind = ? AND nodes.status = ? AND nodes.proxy_url = ?
+ORDER BY slots.slot_id ASC
+LIMIT 1`, statusHealthy, statusHealthy, auth.ProxyURL).Scan(&slotID, &nodeID)
+	if err == sql.ErrNoRows {
+		binding := buildVerifiedAuthBinding(0, 0, auth, auth.ProxyURL)
+		binding.SyncStatus = "observed"
+		return binding, nil
+	}
+	if err != nil {
+		return authBinding{}, err
+	}
+	return buildVerifiedAuthBinding(slotID, nodeID, auth, auth.ProxyURL), nil
 }
 
 func buildVerifiedAuthBinding(slotID, nodeID int64, auth authFile, proxyURL string) authBinding {
