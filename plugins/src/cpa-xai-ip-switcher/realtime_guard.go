@@ -137,6 +137,7 @@ func handleStreamCompletionIntercept(completion pluginapi.StreamCompletionInterc
 func realtimeGuardProbeFromCompletion(completion pluginapi.StreamCompletionInterceptRequest) realtimeGuardProbe {
 	return realtimeGuardProbe{
 		RequestID:           completion.RequestID,
+		TraceID:             completion.TraceID,
 		Provider:            completion.Provider,
 		SourceFormat:        completion.SourceFormat,
 		Model:               completion.Model,

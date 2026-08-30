@@ -81,6 +81,10 @@ func latestManagerScheduledInspectionRunID(managerBaseURL, managerManagementKey 
 }
 
 func syncManagerRealtimeDegradation(managerBaseURL, managerManagementKey string, auth authFile, originalPriority *int, probe realtimeGuardProbe, decision realtimeGuardDecision) error {
+	traceID := strings.TrimSpace(probe.TraceID)
+	if traceID == "" {
+		return fmt.Errorf("实时守护缺少 trace_id，不能同步 Manager 降智请求")
+	}
 	client, err := newManagerAPIClient(managerBaseURL, managerManagementKey)
 	if err != nil {
 		return err
@@ -96,7 +100,7 @@ func syncManagerRealtimeDegradation(managerBaseURL, managerManagementKey string,
 		Reason:           decision.Reason,
 		QualityLevel:     string(decision.QualityLevel),
 		TokensPerSecond:  decision.TPS,
-		RequestID:        probe.RequestID,
+		RequestID:        traceID,
 		ProxyURL:         probe.ProxyURL,
 	}
 	request, err := client.newRequest(http.MethodPost, managerRealtimeDegradationEndpoint, payload)

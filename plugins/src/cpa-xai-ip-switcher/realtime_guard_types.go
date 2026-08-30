@@ -25,6 +25,7 @@ const (
 
 type realtimeGuardProbe struct {
 	RequestID           string
+	TraceID             string
 	Provider            string
 	SourceFormat        string
 	Model               string
