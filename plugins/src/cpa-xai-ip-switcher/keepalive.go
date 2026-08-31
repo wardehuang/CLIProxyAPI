@@ -8,6 +8,8 @@ import (
 	"time"
 )
 
+const keepaliveNodeMaxInputAge = 6 * 24 * time.Hour
+
 func runKeepaliveScheduler(ctx context.Context, store *ipStore, settings pluginSettings) {
 	state := pluginRuntime.keepalive
 	if state == nil {
@@ -70,6 +72,17 @@ func runKeepaliveRound(ctx context.Context, store *ipStore, settings pluginSetti
 	if _, err := store.startKeepaliveRound(roundID); err != nil {
 		_ = store.appendLog(logLevelError, "keepalive.round_create_failed", 0, "", "创建保活探测轮次失败", err.Error())
 		return
+	}
+	expiredNodeCount, err := store.deleteExpiredNodes(roundID, time.Now(), keepaliveNodeMaxInputAge)
+	if err != nil {
+		_ = store.finishKeepaliveRound(roundID, groupStatusCompleted, 0, 0, 0)
+		_ = store.appendProbeLog(logCategoryKeepaliveProbe, keepaliveGroupID(roundID), logStatusError, logLevelError, "keepalive.node_expire_failed", 0, "", "清理超过 6 天的节点失败", err.Error())
+		return
+	}
+	if expiredNodeCount > 0 {
+		if err := refreshHealthyAuthDistribution(store, settings.HealthySlotCount); err != nil {
+			_ = store.appendLog(logLevelError, "auth_distribution.node_expire_failed", 0, "", "过期节点删除后重分配 auth 失败", err.Error())
+		}
 	}
 	expiredCount, err := store.expireStaleHealthySlots(roundID, settings.HealthySlotMaxAgeMinutes)
 	if err != nil {

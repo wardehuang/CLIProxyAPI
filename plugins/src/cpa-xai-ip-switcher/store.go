@@ -421,6 +421,9 @@ INSERT OR IGNORE INTO plugin_settings(setting_key, setting_value) VALUES
 	if err := store.ensureQualityLLMProbeEnabledSetting(); err != nil {
 		return err
 	}
+	if err := store.ensureNodeEnteredAt(); err != nil {
+		return err
+	}
 	if err := store.ensureProbeColumns(); err != nil {
 		return err
 	}
@@ -526,6 +529,21 @@ func (store *ipStore) ensureQualityLLMProbeEnabledSetting() error {
 INSERT INTO plugin_settings(setting_key, setting_value) VALUES (?, ?)
 ON CONFLICT(setting_key) DO NOTHING`, "quality_llm_probe_enabled", formatSettingBool(defaultQualityLLMProbeEnabled)); err != nil {
 		return fmt.Errorf("ensure quality llm probe enabled setting: %w", err)
+	}
+	return nil
+}
+
+func (store *ipStore) ensureNodeEnteredAt() error {
+	if err := ensureSQLiteColumn(store.database, "ip_nodes", "entered_at", "INTEGER NOT NULL DEFAULT 0"); err != nil {
+		return err
+	}
+	now := time.Now().In(time.FixedZone("UTC+8", 8*60*60))
+	todayStart := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, now.Location()).UnixMilli()
+	if _, err := store.database.Exec(`
+UPDATE ip_nodes
+SET entered_at = ?
+WHERE entered_at IS NULL OR entered_at <= 0`, todayStart); err != nil {
+		return fmt.Errorf("backfill sqlite node entered_at: %w", err)
 	}
 	return nil
 }
@@ -1248,6 +1266,62 @@ WHERE candidates.initial_connected = 1
 		return 0, fmt.Errorf("commit sqlite keepalive snapshot: %w", err)
 	}
 	return candidateCount, nil
+}
+
+func (store *ipStore) deleteExpiredNodes(roundID int64, now time.Time, maxAge time.Duration) (int64, error) {
+	cutoff := now.Add(-maxAge).UnixMilli()
+	transaction, err := store.database.Begin()
+	if err != nil {
+		return 0, fmt.Errorf("begin sqlite expired node cleanup: %w", err)
+	}
+	defer transaction.Rollback()
+
+	if _, err := transaction.Exec(`
+UPDATE ip_slots
+SET node_id = 0, claim_node_id = 0, fallback_origin = 0, fallback_entered_round_id = 0,
+    claim_token = '', claim_stage = '', claim_started_at = 0, refresh_at = 0
+WHERE node_id IN (
+    SELECT id FROM ip_nodes WHERE manual_fallback = 0 AND entered_at < ?
+)
+   OR claim_node_id IN (
+    SELECT id FROM ip_nodes WHERE manual_fallback = 0 AND entered_at < ?
+)`, cutoff, cutoff); err != nil {
+		return 0, fmt.Errorf("clear sqlite expired node slots: %w", err)
+	}
+	if _, err := transaction.Exec(`
+DELETE FROM ip_slot_auth_bindings
+WHERE node_id IN (
+    SELECT id FROM ip_nodes WHERE manual_fallback = 0 AND entered_at < ?
+)`, cutoff); err != nil {
+		return 0, fmt.Errorf("clear sqlite expired node auth bindings: %w", err)
+	}
+	result, err := transaction.Exec(`
+DELETE FROM ip_nodes
+WHERE manual_fallback = 0 AND entered_at < ?`, cutoff)
+	if err != nil {
+		return 0, fmt.Errorf("delete sqlite expired nodes: %w", err)
+	}
+	deletedCount, err := result.RowsAffected()
+	if err != nil {
+		return 0, fmt.Errorf("read sqlite expired node delete result: %w", err)
+	}
+	if err := transaction.Commit(); err != nil {
+		return 0, fmt.Errorf("commit sqlite expired node cleanup: %w", err)
+	}
+	if deletedCount > 0 {
+		_ = store.appendProbeLog(
+			logCategoryKeepaliveProbe,
+			keepaliveGroupID(roundID),
+			logStatusProbing,
+			logLevelInfo,
+			"keepalive.nodes_expired",
+			0,
+			"",
+			fmt.Sprintf("已删除录入时间超过 %d 天的节点", int64(maxAge/(24*time.Hour))),
+			fmt.Sprintf("轮次 %d；删除 %d；截止时间 %d；手动健康保底节点已排除", roundID, deletedCount, cutoff),
+		)
+	}
+	return deletedCount, nil
 }
 
 func (store *ipStore) claimNextKeepalive(roundID int64) (*proxyNode, error) {
