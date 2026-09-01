@@ -53,25 +53,27 @@ type realtimeGuardProbe struct {
 }
 
 type realtimeGuardDecision struct {
-	Action              string
-	Reason              string
-	Classification      realtimeGuardClassification
-	QualityLevel        realtimeGuardQualityLevel
-	TPS                 float64
-	TotalDurationMs     int64
-	TTFBMs              int64
-	GenerationMs        int64
-	TotalTokens         int64
-	IsRealThinking      bool
-	RealThinkingReason  string
-	SummaryChars        int
-	EncryptedBytes      int
-	EncryptedFloor      int
-	VisibleTokens       int64
-	VisibleFlushMs      int64
-	Error               string
-	OriginalNodeID      int64
-	ReplacementNodeID   int64
-	OriginalProxyURL    string
-	ReplacementProxyURL string
+	Action                     string
+	Reason                     string
+	Classification             realtimeGuardClassification
+	QualityLevel               realtimeGuardQualityLevel
+	TPS                        float64
+	TotalDurationMs            int64
+	TTFBMs                     int64
+	GenerationMs               int64
+	TotalTokens                int64
+	IsRealThinking             bool
+	RealThinkingReason         string
+	SummaryChars               int
+	EncryptedBytes             int
+	EncryptedFloor             int
+	VisibleTokens              int64
+	VisibleFlushMs             int64
+	CompletedFunctionCallCount int
+	ToolCallOnly               bool
+	Error                      string
+	OriginalNodeID             int64
+	ReplacementNodeID          int64
+	OriginalProxyURL           string
+	ReplacementProxyURL        string
 }
