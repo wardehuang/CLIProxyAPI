@@ -38,8 +38,6 @@ const (
 	defaultRealtimeGuardMinSummaryChars                 = 32
 	defaultRealtimeGuardMinEncryptedBytes               = 256
 	defaultRealtimeGuardEncryptedBytesPerReasoningToken = 4
-	defaultRealtimeGuardMinSubstantiveVisibleChars      = 128
-	defaultRealtimeGuardMinSubstantiveVisibleMS         = 1000
 	defaultRealtimeGuardMinOutputTokens                 = 8
 	defaultRealtimeGuardBurstMinReasoningTokens         = 80
 	defaultRealtimeGuardBurstMaxVisibleTokens           = 32
@@ -118,8 +116,6 @@ type pluginSettings struct {
 	RealtimeGuardMinSummaryChars                 int
 	RealtimeGuardMinEncryptedBytes               int
 	RealtimeGuardEncryptedBytesPerReasoningToken int
-	RealtimeGuardMinSubstantiveVisibleChars      int
-	RealtimeGuardMinSubstantiveVisibleMS         int
 	RealtimeGuardMinOutputTokens                 int
 	RealtimeGuardBurstMinReasoningTokens         int
 	RealtimeGuardBurstMaxVisibleTokens           int
@@ -1707,10 +1703,6 @@ WHERE setting_key IN (
 				settings.RealtimeGuardMinEncryptedBytes = value
 			case "realtime_guard_encrypted_bytes_per_reasoning_token":
 				settings.RealtimeGuardEncryptedBytesPerReasoningToken = value
-			case "realtime_guard_min_substantive_visible_chars":
-				settings.RealtimeGuardMinSubstantiveVisibleChars = value
-			case "realtime_guard_min_substantive_visible_ms":
-				settings.RealtimeGuardMinSubstantiveVisibleMS = value
 			case "realtime_guard_min_output_tokens":
 				settings.RealtimeGuardMinOutputTokens = value
 			case "realtime_guard_burst_min_reasoning_tokens":
@@ -1771,8 +1763,6 @@ func (store *ipStore) setSettings(settings pluginSettings) error {
 		"realtime_guard_min_summary_chars":                   strconv.Itoa(settings.RealtimeGuardMinSummaryChars),
 		"realtime_guard_min_encrypted_bytes":                 strconv.Itoa(settings.RealtimeGuardMinEncryptedBytes),
 		"realtime_guard_encrypted_bytes_per_reasoning_token": strconv.Itoa(settings.RealtimeGuardEncryptedBytesPerReasoningToken),
-		"realtime_guard_min_substantive_visible_chars":       strconv.Itoa(settings.RealtimeGuardMinSubstantiveVisibleChars),
-		"realtime_guard_min_substantive_visible_ms":          strconv.Itoa(settings.RealtimeGuardMinSubstantiveVisibleMS),
 		"realtime_guard_min_output_tokens":                   strconv.Itoa(settings.RealtimeGuardMinOutputTokens),
 		"realtime_guard_burst_min_reasoning_tokens":          strconv.Itoa(settings.RealtimeGuardBurstMinReasoningTokens),
 		"realtime_guard_burst_max_visible_tokens":            strconv.Itoa(settings.RealtimeGuardBurstMaxVisibleTokens),

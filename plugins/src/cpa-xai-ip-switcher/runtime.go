@@ -161,8 +161,6 @@ func pluginSettingsEqual(left, right pluginSettings) bool {
 		left.RealtimeGuardMinSummaryChars == right.RealtimeGuardMinSummaryChars &&
 		left.RealtimeGuardMinEncryptedBytes == right.RealtimeGuardMinEncryptedBytes &&
 		left.RealtimeGuardEncryptedBytesPerReasoningToken == right.RealtimeGuardEncryptedBytesPerReasoningToken &&
-		left.RealtimeGuardMinSubstantiveVisibleChars == right.RealtimeGuardMinSubstantiveVisibleChars &&
-		left.RealtimeGuardMinSubstantiveVisibleMS == right.RealtimeGuardMinSubstantiveVisibleMS &&
 		left.RealtimeGuardMinOutputTokens == right.RealtimeGuardMinOutputTokens &&
 		left.RealtimeGuardBurstMinReasoningTokens == right.RealtimeGuardBurstMinReasoningTokens &&
 		left.RealtimeGuardBurstMaxVisibleTokens == right.RealtimeGuardBurstMaxVisibleTokens &&

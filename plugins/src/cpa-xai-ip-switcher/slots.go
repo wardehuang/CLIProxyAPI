@@ -238,8 +238,6 @@ func defaultPluginSettings() pluginSettings {
 		RealtimeGuardMinSummaryChars:                 defaultRealtimeGuardMinSummaryChars,
 		RealtimeGuardMinEncryptedBytes:               defaultRealtimeGuardMinEncryptedBytes,
 		RealtimeGuardEncryptedBytesPerReasoningToken: defaultRealtimeGuardEncryptedBytesPerReasoningToken,
-		RealtimeGuardMinSubstantiveVisibleChars:      defaultRealtimeGuardMinSubstantiveVisibleChars,
-		RealtimeGuardMinSubstantiveVisibleMS:         defaultRealtimeGuardMinSubstantiveVisibleMS,
 		RealtimeGuardMinOutputTokens:                 defaultRealtimeGuardMinOutputTokens,
 		RealtimeGuardBurstMinReasoningTokens:         defaultRealtimeGuardBurstMinReasoningTokens,
 		RealtimeGuardBurstMaxVisibleTokens:           defaultRealtimeGuardBurstMaxVisibleTokens,
@@ -439,12 +437,6 @@ func validateSlotSettings(settings pluginSettings) error {
 	}
 	if settings.RealtimeGuardEncryptedBytesPerReasoningToken < 1 || settings.RealtimeGuardEncryptedBytesPerReasoningToken > 16 {
 		return fmt.Errorf("realtime guard encrypted bytes per reasoning token must be between 1 and 16")
-	}
-	if settings.RealtimeGuardMinSubstantiveVisibleChars < 1 || settings.RealtimeGuardMinSubstantiveVisibleChars > 4096 {
-		return fmt.Errorf("realtime guard minimum substantive visible characters must be between 1 and 4096")
-	}
-	if settings.RealtimeGuardMinSubstantiveVisibleMS < 1 || settings.RealtimeGuardMinSubstantiveVisibleMS > 30000 {
-		return fmt.Errorf("realtime guard minimum substantive visible duration must be between 1 and 30000 milliseconds")
 	}
 	if settings.RealtimeGuardMinOutputTokens < 8 || settings.RealtimeGuardMinOutputTokens > 256 {
 		return fmt.Errorf("realtime guard minimum output tokens must be between 8 and 256")
