@@ -36,6 +36,7 @@ type realtimeGuardProbe struct {
 	ProxyURL            string
 	RequestHeaders      http.Header
 	ResponseHeaders     http.Header
+	OriginalRequest     []byte
 	Body                []byte
 	StatusCode          int
 	Error               string
@@ -71,6 +72,7 @@ type realtimeGuardDecision struct {
 	VisibleFlushMs             int64
 	CompletedFunctionCallCount int
 	ToolCallOnly               bool
+	CompletedMutationEvidence  bool
 	OutputTextChars            int
 	CompletedMessageCount      int
 	RefusalDetected            bool

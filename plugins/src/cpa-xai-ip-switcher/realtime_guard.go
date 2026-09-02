@@ -148,6 +148,7 @@ func realtimeGuardProbeFromCompletion(completion pluginapi.StreamCompletionInter
 		ProxyURL:            completion.ProxyURL,
 		RequestHeaders:      completion.RequestHeaders,
 		ResponseHeaders:     completion.ResponseHeaders,
+		OriginalRequest:     bytes.Clone(completion.OriginalRequest),
 		Body:                bytes.Clone(completion.Body),
 		StatusCode:          completion.StatusCode,
 		Error:               completion.Error,
@@ -284,11 +285,17 @@ func classifyRealtimeGuardProbeWithSettings(probe realtimeGuardProbe, settings p
 		return decision
 	}
 	if decision.TPS > settings.QualitySoftTPS && decision.TPS < settings.QualityHardTPS && !decision.IsRealThinking && !decision.ToolCallOnly {
-		decision.Action = realtimeGuardActionRetry
-		decision.Classification = realtimeGuardClassificationDegradation
-		decision.QualityLevel = realtimeGuardQualitySoft
-		decision.Reason = "soft_tps_missing_real_thinking"
-		return decision
+		if decision.CompletedMessageCount > 0 {
+			decision.CompletedMutationEvidence = hasCompletedMutationEvidence(probe.OriginalRequest)
+		}
+		if !decision.CompletedMutationEvidence {
+			decision.Action = realtimeGuardActionRetry
+			decision.Classification = realtimeGuardClassificationDegradation
+			decision.QualityLevel = realtimeGuardQualitySoft
+			decision.Reason = "soft_tps_missing_real_thinking"
+			return decision
+		}
+		decision.Reason = "completed_mutation_evidence"
 	}
 	if decision.ToolCallOnly {
 		// 已完成的纯工具调用是有效行动证据，只跳过 soft Thinking 判定。
@@ -789,7 +796,7 @@ func (store *ipStore) logRealtimeDegradationDetected(probe realtimeGuardProbe, d
 		probe.SourceSnapshot.NodeID,
 		"",
 		fmt.Sprintf("【检测到降智】auth:%s，节点:%s，原因:%s", authIdentity, probe.ProxyURL, decision.Reason),
-		fmt.Sprintf("request_id=%s；auth_file=%s；auth_index=%s；节点代理=%s；HTTP=%d；等级=%s；总耗时=%dms；TPS=%.2f；TTFB=%dms；首字后耗时=%dms；输出+思考tokens=%d；isRealThinking=%t；thinking原因=%s；summary字符=%d；encrypted=%d/%d字节；可见tokens=%d；可见倾倒=%dms；outputTextChars=%d；completedMessages=%d；completedFunctionCalls=%d；toolCallOnly=%t；refusalDetected=%t", probe.RequestID, authIdentity, probe.AuthIndex, probe.ProxyURL, probe.StatusCode, decision.QualityLevel, decision.TotalDurationMs, decision.TPS, decision.TTFBMs, decision.GenerationMs, decision.TotalTokens, decision.IsRealThinking, decision.RealThinkingReason, decision.SummaryChars, decision.EncryptedBytes, decision.EncryptedFloor, decision.VisibleTokens, decision.VisibleFlushMs, decision.OutputTextChars, decision.CompletedMessageCount, decision.CompletedFunctionCallCount, decision.ToolCallOnly, decision.RefusalDetected),
+		fmt.Sprintf("request_id=%s；auth_file=%s；auth_index=%s；节点代理=%s；HTTP=%d；等级=%s；总耗时=%dms；TPS=%.2f；TTFB=%dms；首字后耗时=%dms；输出+思考tokens=%d；isRealThinking=%t；thinking原因=%s；summary字符=%d；encrypted=%d/%d字节；可见tokens=%d；可见倾倒=%dms；outputTextChars=%d；completedMessages=%d；completedFunctionCalls=%d；toolCallOnly=%t；completedMutationEvidence=%t；refusalDetected=%t", probe.RequestID, authIdentity, probe.AuthIndex, probe.ProxyURL, probe.StatusCode, decision.QualityLevel, decision.TotalDurationMs, decision.TPS, decision.TTFBMs, decision.GenerationMs, decision.TotalTokens, decision.IsRealThinking, decision.RealThinkingReason, decision.SummaryChars, decision.EncryptedBytes, decision.EncryptedFloor, decision.VisibleTokens, decision.VisibleFlushMs, decision.OutputTextChars, decision.CompletedMessageCount, decision.CompletedFunctionCallCount, decision.ToolCallOnly, decision.CompletedMutationEvidence, decision.RefusalDetected),
 	)
 }
 
@@ -833,6 +840,6 @@ func (store *ipStore) logRealtimeGuard(probe realtimeGuardProbe, decision realti
 		originalNode.ID,
 		originalNode.Name,
 		"实时守护发现异常并已处理",
-		fmt.Sprintf("request_id=%s；auth_id=%s；auth_index=%s；HTTP=%d；分类=%s；等级=%s；总耗时=%dms；TPS=%.2f；TTFB=%dms；首字后耗时=%dms；输出+思考tokens=%d；isRealThinking=%t；thinking原因=%s；summary字符=%d；encrypted=%d/%d字节；可见tokens=%d；可见倾倒=%dms；outputTextChars=%d；completedMessages=%d；completedFunctionCalls=%d；toolCallOnly=%t；refusalDetected=%t；原节点=%d；原代理=%s；替换节点=%d；替换代理=%s；动作=%s；重试=%d/%d；错误=%s", probe.RequestID, probe.AuthID, probe.AuthIndex, probe.StatusCode, decision.Classification, decision.QualityLevel, decision.TotalDurationMs, decision.TPS, decision.TTFBMs, decision.GenerationMs, decision.TotalTokens, decision.IsRealThinking, decision.RealThinkingReason, decision.SummaryChars, decision.EncryptedBytes, decision.EncryptedFloor, decision.VisibleTokens, decision.VisibleFlushMs, decision.OutputTextChars, decision.CompletedMessageCount, decision.CompletedFunctionCallCount, decision.ToolCallOnly, decision.RefusalDetected, originalNode.ID, originalNode.ProxyURL, replacementNode.ID, replacementNode.ProxyURL, decision.Action, probe.RetryCount, probe.MaxRetries, decision.Error),
+		fmt.Sprintf("request_id=%s；auth_id=%s；auth_index=%s；HTTP=%d；分类=%s；等级=%s；总耗时=%dms；TPS=%.2f；TTFB=%dms；首字后耗时=%dms；输出+思考tokens=%d；isRealThinking=%t；thinking原因=%s；summary字符=%d；encrypted=%d/%d字节；可见tokens=%d；可见倾倒=%dms；outputTextChars=%d；completedMessages=%d；completedFunctionCalls=%d；toolCallOnly=%t；completedMutationEvidence=%t；refusalDetected=%t；原节点=%d；原代理=%s；替换节点=%d；替换代理=%s；动作=%s；重试=%d/%d；错误=%s", probe.RequestID, probe.AuthID, probe.AuthIndex, probe.StatusCode, decision.Classification, decision.QualityLevel, decision.TotalDurationMs, decision.TPS, decision.TTFBMs, decision.GenerationMs, decision.TotalTokens, decision.IsRealThinking, decision.RealThinkingReason, decision.SummaryChars, decision.EncryptedBytes, decision.EncryptedFloor, decision.VisibleTokens, decision.VisibleFlushMs, decision.OutputTextChars, decision.CompletedMessageCount, decision.CompletedFunctionCallCount, decision.ToolCallOnly, decision.CompletedMutationEvidence, decision.RefusalDetected, originalNode.ID, originalNode.ProxyURL, replacementNode.ID, replacementNode.ProxyURL, decision.Action, probe.RetryCount, probe.MaxRetries, decision.Error),
 	)
 }

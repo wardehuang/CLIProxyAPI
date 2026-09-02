@@ -1,0 +1,86 @@
+package main
+
+import (
+	"encoding/json"
+	"strings"
+)
+
+type completedMutationRequest struct {
+	Input json.RawMessage `json:"input"`
+}
+
+type completedMutationInputItem struct {
+	Type   string `json:"type"`
+	Role   string `json:"role"`
+	CallID string `json:"call_id"`
+	Name   string `json:"name"`
+	Status string `json:"status"`
+	Output string `json:"output"`
+}
+
+type completedMutationToolResult struct {
+	Success  bool `json:"success"`
+	Verified bool `json:"verified"`
+}
+
+func hasCompletedMutationEvidence(requestBody []byte) bool {
+	var request completedMutationRequest
+	if err := json.Unmarshal(requestBody, &request); err != nil {
+		return false
+	}
+
+	var items []completedMutationInputItem
+	if err := json.Unmarshal(request.Input, &items); err != nil {
+		return false
+	}
+
+	lastUserIndex := -1
+	for index := range items {
+		if strings.EqualFold(strings.TrimSpace(items[index].Role), "user") {
+			lastUserIndex = index
+		}
+	}
+	if lastUserIndex < 0 {
+		return false
+	}
+
+	mutationCalls := make(map[string]string)
+	for index := lastUserIndex + 1; index < len(items); index++ {
+		item := items[index]
+		switch strings.ToLower(strings.TrimSpace(item.Type)) {
+		case "function_call":
+			callID := strings.TrimSpace(item.CallID)
+			toolName := strings.ToLower(strings.TrimSpace(item.Name))
+			if callID == "" || !strings.EqualFold(strings.TrimSpace(item.Status), "completed") || !isMutationToolName(toolName) {
+				continue
+			}
+			mutationCalls[callID] = toolName
+		case "function_call_output":
+			toolName, exists := mutationCalls[strings.TrimSpace(item.CallID)]
+			if exists && completedMutationOutputSucceeded(toolName, item.Output) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func isMutationToolName(toolName string) bool {
+	switch toolName {
+	case "patch", "write_file", "skill_manage":
+		return true
+	default:
+		return false
+	}
+}
+
+func completedMutationOutputSucceeded(toolName, output string) bool {
+	var result completedMutationToolResult
+	if err := json.Unmarshal([]byte(output), &result); err != nil {
+		return false
+	}
+	if toolName == "write_file" {
+		return result.Verified
+	}
+	return result.Success
+}

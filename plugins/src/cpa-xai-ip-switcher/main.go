@@ -72,11 +72,12 @@ import (
 )
 
 const (
-	pluginName          = "cpa-xai-ip-switcher"
-	pluginVersion       = "0.1.6"
-	resourcePath        = "/status"
-	managementAPIPath   = "/v0/management/cpa-xai-ip-switcher/api"
-	resourceContentType = "text/html; charset=utf-8"
+	pluginName           = "cpa-xai-ip-switcher"
+	pluginVersion        = "0.1.7"
+	resourcePath         = "/status"
+	managementAPIPath    = "/v0/management/cpa-xai-ip-switcher/api"
+	managementIngestPath = "/v0/management/cpa-xai-ip-switcher/nodes"
+	resourceContentType  = "text/html; charset=utf-8"
 )
 
 //go:embed page.html
@@ -276,11 +277,18 @@ func handleMethod(method string, request []byte) ([]byte, error) {
 		return okEnvelope(pluginRegistration())
 	case pluginabi.MethodManagementRegister:
 		return okEnvelope(managementRegistration{
-			Routes: []managementRoute{{
-				Method:      http.MethodPost,
-				Path:        "/cpa-xai-ip-switcher/api",
-				Description: "xAi出口守护管理接口",
-			}},
+			Routes: []managementRoute{
+				{
+					Method:      http.MethodPost,
+					Path:        "/cpa-xai-ip-switcher/api",
+					Description: "xAi出口守护管理接口",
+				},
+				{
+					Method:      http.MethodPost,
+					Path:        "/cpa-xai-ip-switcher/nodes",
+					Description: "外部鉴权录入并探测",
+				},
+			},
 			Resources: []managementResource{{
 				Path:        resourcePath,
 				Menu:        "xAi出口守护",
@@ -427,7 +435,7 @@ func handleManagement(request []byte) ([]byte, error) {
 		}
 	}
 
-	path := strings.TrimSpace(management.Path)
+	path := strings.TrimSuffix(strings.TrimSpace(management.Path), "/")
 	if path == "" {
 		path = resourcePath
 	}
@@ -447,6 +455,8 @@ func handleManagement(request []byte) ([]byte, error) {
 			},
 			Body: []byte(strings.Replace(pageTemplate, "/*__HALLMARK_TOKENS__*/", tokenCSS, 1)),
 		})
+	case path == managementIngestPath:
+		return handleExternalNodeIngest(management)
 	case path == managementAPIPath:
 		return handleUIProxy(management)
 	default:
