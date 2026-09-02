@@ -17,7 +17,7 @@ Create one local Python deployment entrypoint under `deploy/` for deploying the 
 ## Workflow
 
 1. Validate local repository, SSH key, required commands, Git revision, dirty state, and plugin source inventory.
-2. Fetch upstream and discover the newest stable release tag; reserve the next four-digit build number under a remote lock.
+2. Fetch upstream and discover the newest stable release tag; reserve the next four-digit build number from the newest stable tag already contained in HEAD.
 3. Package the current tracked working tree with LF-normalized text files; refuse untracked source files outside explicitly ignored operational directories.
 4. Upload the source archive, remote helper, and generated remote deployment script.
 5. On the server, record service/PID/version, disk usage, config hash, auth count/validity, and online plugin hashes.
@@ -33,9 +33,9 @@ Create one local Python deployment entrypoint under `deploy/` for deploying the 
 
 ## Safety Decisions
 
-- Accept no CLI parameters; derive the version from the newest stable upstream tag and a remotely locked four-digit build sequence.
+- Accept no CLI parameters; derive the version from the newest stable tag already contained in HEAD and a remotely locked four-digit build sequence.
 - Reserve the build number before upload/build; a failed attempt consumes its number so concurrent or retried runs cannot reuse it.
-- A latest stable tag that is not merged into `HEAD` is logged as a warning, not a deployment blocker; the artifact source remains the current working tree.
+- A latest stable tag that is not merged into `HEAD` is logged as a warning, not a deployment blocker; the artifact source remains the current working tree, and the version base remains the newest stable tag already contained in HEAD.
 - Use the current working-tree content for tracked files. If dirty, label the build revision with a source hash suffix instead of claiming an exact clean commit.
 - Refuse untracked source files so they cannot be silently omitted.
 - Never copy local `config.yaml`, `.env`, auth files, or ignored runtime data into the source archive.
@@ -66,3 +66,8 @@ Create one local Python deployment entrypoint under `deploy/` for deploying the 
 ### rev.3
 
 - Prevented `git diff` line-ending warnings from being misread as unmerged paths.
+
+### rev.4
+
+- Version reservation now uses the newest stable tag already contained in HEAD.
+- Unmerged upstream tags remain a warning and no longer become the version base.

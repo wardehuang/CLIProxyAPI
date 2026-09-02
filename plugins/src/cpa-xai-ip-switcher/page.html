@@ -517,6 +517,16 @@ socks5h://username:pass@ip:port
                 <input id="realtime-guard-encrypted-bytes-per-reasoning-token" type="number" min="1" max="16" step="1" value="4" title="动态 encrypted floor = reasoning_tokens × 该值">
                 <span class="settings-help">floor=max(最少字节, reasoning_tokens×值) · 默认 4 · 1–16</span>
               </label>
+              <label class="settings-field" for="realtime-guard-min-substantive-visible-chars">
+                实质正文最少字符
+                <input id="realtime-guard-min-substantive-visible-chars" type="number" min="1" max="4096" step="1" value="128" title="已完成正文达到该字符数，才可作为实质可见响应证据">
+                <span class="settings-help">默认 128 字符 · 1–4096</span>
+              </label>
+              <label class="settings-field" for="realtime-guard-min-substantive-visible-ms">
+                实质正文最少持续时间（ms）
+                <input id="realtime-guard-min-substantive-visible-ms" type="number" min="1" max="30000" step="1" value="1000" title="首个可见正文到流结束至少持续该时间">
+                <span class="settings-help">默认 1000ms · 1–30000</span>
+              </label>
               <label class="settings-field" for="realtime-guard-min-output-tokens">
                 最低输出 token
                 <input id="realtime-guard-min-output-tokens" type="number" min="8" max="256" step="1" value="8" title="输出 token 低于该值时跳过真实思考检查">
@@ -716,6 +726,8 @@ socks5h://username:pass@ip:port
         realtimeGuardMinSummaryChars: document.getElementById("realtime-guard-min-summary-chars"),
         realtimeGuardMinEncryptedBytes: document.getElementById("realtime-guard-min-encrypted-bytes"),
         realtimeGuardEncryptedBytesPerReasoningToken: document.getElementById("realtime-guard-encrypted-bytes-per-reasoning-token"),
+        realtimeGuardMinSubstantiveVisibleChars: document.getElementById("realtime-guard-min-substantive-visible-chars"),
+        realtimeGuardMinSubstantiveVisibleMS: document.getElementById("realtime-guard-min-substantive-visible-ms"),
         realtimeGuardMinOutputTokens: document.getElementById("realtime-guard-min-output-tokens"),
         realtimeGuardBurstMinReasoningTokens: document.getElementById("realtime-guard-burst-min-reasoning-tokens"),
         realtimeGuardBurstMaxVisibleTokens: document.getElementById("realtime-guard-burst-max-visible-tokens"),
@@ -906,6 +918,8 @@ socks5h://username:pass@ip:port
           elements.realtimeGuardMinSummaryChars.value = String(settings.realtimeGuardMinSummaryChars);
           elements.realtimeGuardMinEncryptedBytes.value = String(settings.realtimeGuardMinEncryptedBytes);
           elements.realtimeGuardEncryptedBytesPerReasoningToken.value = String(settings.realtimeGuardEncryptedBytesPerReasoningToken);
+          elements.realtimeGuardMinSubstantiveVisibleChars.value = String(settings.realtimeGuardMinSubstantiveVisibleChars);
+          elements.realtimeGuardMinSubstantiveVisibleMS.value = String(settings.realtimeGuardMinSubstantiveVisibleMs);
           elements.realtimeGuardMinOutputTokens.value = String(settings.realtimeGuardMinOutputTokens);
           elements.realtimeGuardBurstMinReasoningTokens.value = String(settings.realtimeGuardBurstMinReasoningTokens);
           elements.realtimeGuardBurstMaxVisibleTokens.value = String(settings.realtimeGuardBurstMaxVisibleTokens);
@@ -1453,6 +1467,8 @@ socks5h://username:pass@ip:port
           realtimeGuardMinSummaryChars: Number(elements.realtimeGuardMinSummaryChars.value),
           realtimeGuardMinEncryptedBytes: Number(elements.realtimeGuardMinEncryptedBytes.value),
           realtimeGuardEncryptedBytesPerReasoningToken: Number(elements.realtimeGuardEncryptedBytesPerReasoningToken.value),
+          realtimeGuardMinSubstantiveVisibleChars: Number(elements.realtimeGuardMinSubstantiveVisibleChars.value),
+          realtimeGuardMinSubstantiveVisibleMs: Number(elements.realtimeGuardMinSubstantiveVisibleMS.value),
           realtimeGuardMinOutputTokens: Number(elements.realtimeGuardMinOutputTokens.value),
           realtimeGuardBurstMinReasoningTokens: Number(elements.realtimeGuardBurstMinReasoningTokens.value),
           realtimeGuardBurstMaxVisibleTokens: Number(elements.realtimeGuardBurstMaxVisibleTokens.value),
@@ -1470,8 +1486,8 @@ socks5h://username:pass@ip:port
           setNotice("实时守护首字超时阈值必须为正整数。", "error");
           return;
         }
-        if (!Number.isInteger(settings.realtimeGuardMinSummaryChars) || settings.realtimeGuardMinSummaryChars < 1 || settings.realtimeGuardMinSummaryChars > 4096 || !Number.isInteger(settings.realtimeGuardMinEncryptedBytes) || settings.realtimeGuardMinEncryptedBytes < 64 || settings.realtimeGuardMinEncryptedBytes > 4096 || !Number.isInteger(settings.realtimeGuardEncryptedBytesPerReasoningToken) || settings.realtimeGuardEncryptedBytesPerReasoningToken < 1 || settings.realtimeGuardEncryptedBytesPerReasoningToken > 16 || !Number.isInteger(settings.realtimeGuardMinOutputTokens) || settings.realtimeGuardMinOutputTokens < 8 || settings.realtimeGuardMinOutputTokens > 256 || !Number.isInteger(settings.realtimeGuardBurstMinReasoningTokens) || settings.realtimeGuardBurstMinReasoningTokens < 1 || settings.realtimeGuardBurstMinReasoningTokens > 4096 || !Number.isInteger(settings.realtimeGuardBurstMaxVisibleTokens) || settings.realtimeGuardBurstMaxVisibleTokens < 1 || settings.realtimeGuardBurstMaxVisibleTokens > 256 || !Number.isInteger(settings.realtimeGuardBurstMaxWindowMs) || settings.realtimeGuardBurstMaxWindowMs < 1 || settings.realtimeGuardBurstMaxWindowMs > 30000) {
-          setNotice("真实思考阈值范围无效：summary 字符 1–4096，encrypted 字节 64–4096，每 reasoning token 字节 1–16，最低输出 token 8–256，burst reasoning token 1–4096，burst 可见 token 1–256，burst 窗口 1–30000ms。", "error");
+        if (!Number.isInteger(settings.realtimeGuardMinSummaryChars) || settings.realtimeGuardMinSummaryChars < 1 || settings.realtimeGuardMinSummaryChars > 4096 || !Number.isInteger(settings.realtimeGuardMinEncryptedBytes) || settings.realtimeGuardMinEncryptedBytes < 64 || settings.realtimeGuardMinEncryptedBytes > 4096 || !Number.isInteger(settings.realtimeGuardEncryptedBytesPerReasoningToken) || settings.realtimeGuardEncryptedBytesPerReasoningToken < 1 || settings.realtimeGuardEncryptedBytesPerReasoningToken > 16 || !Number.isInteger(settings.realtimeGuardMinSubstantiveVisibleChars) || settings.realtimeGuardMinSubstantiveVisibleChars < 1 || settings.realtimeGuardMinSubstantiveVisibleChars > 4096 || !Number.isInteger(settings.realtimeGuardMinSubstantiveVisibleMs) || settings.realtimeGuardMinSubstantiveVisibleMs < 1 || settings.realtimeGuardMinSubstantiveVisibleMs > 30000 || !Number.isInteger(settings.realtimeGuardMinOutputTokens) || settings.realtimeGuardMinOutputTokens < 8 || settings.realtimeGuardMinOutputTokens > 256 || !Number.isInteger(settings.realtimeGuardBurstMinReasoningTokens) || settings.realtimeGuardBurstMinReasoningTokens < 1 || settings.realtimeGuardBurstMinReasoningTokens > 4096 || !Number.isInteger(settings.realtimeGuardBurstMaxVisibleTokens) || settings.realtimeGuardBurstMaxVisibleTokens < 1 || settings.realtimeGuardBurstMaxVisibleTokens > 256 || !Number.isInteger(settings.realtimeGuardBurstMaxWindowMs) || settings.realtimeGuardBurstMaxWindowMs < 1 || settings.realtimeGuardBurstMaxWindowMs > 30000) {
+          setNotice("实时守护阈值范围无效：summary 字符 1–4096，encrypted 字节 64–4096，每 reasoning token 字节 1–16，实质正文字符 1–4096，实质正文持续时间 1–30000ms，最低输出 token 8–256，burst reasoning token 1–4096，burst 可见 token 1–256，burst 窗口 1–30000ms。", "error");
           return;
         }
         if (!Number.isInteger(settings.workerCount) || settings.workerCount < 1 || settings.workerCount > 64 || !Number.isInteger(settings.refreshIntervalSeconds) || settings.refreshIntervalSeconds < minimumRefreshIntervalSeconds || settings.refreshIntervalSeconds > maximumRefreshIntervalSeconds || !Number.isInteger(settings.keepaliveWorkerCount) || settings.keepaliveWorkerCount < 1 || settings.keepaliveWorkerCount > 64 || !Number.isInteger(settings.keepaliveIntervalSeconds) || settings.keepaliveIntervalSeconds < 1 || settings.keepaliveIntervalSeconds > 86400 || !Number.isInteger(settings.reviveIntervalSeconds) || settings.reviveIntervalSeconds < 1 || settings.reviveIntervalSeconds > 86400 || !Number.isInteger(settings.probeRetryCount) || settings.probeRetryCount < 1 || settings.probeRetryCount > 10 || !Number.isInteger(settings.scheduleGroupCount) || settings.scheduleGroupCount < 1 || settings.scheduleGroupCount > 1000 || !Number.isInteger(settings.healthySlotCount) || settings.healthySlotCount < 1 || settings.healthySlotCount > 1000 || !Number.isInteger(settings.healthyCandidateSlotCount) || settings.healthyCandidateSlotCount < 0 || settings.healthySlotCount + settings.healthyCandidateSlotCount > 1000 || !Number.isInteger(settings.healthySlotMaxAgeMinutes) || settings.healthySlotMaxAgeMinutes < 1 || settings.healthySlotMaxAgeMinutes > 10080 || !Number.isInteger(settings.qualityWorkerCount) || settings.qualityWorkerCount < 1 || settings.qualityWorkerCount > 64 || !Number.isInteger(settings.qualityProbeTimeoutSeconds) || settings.qualityProbeTimeoutSeconds < 1 || settings.qualityProbeTimeoutSeconds > 600 || !settings.qualityProbeModel || /\s/.test(settings.qualityProbeModel) || settings.qualityProbeModel.length > 128 || !Number.isFinite(settings.qualitySoftTPS) || settings.qualitySoftTPS <= 0 || !Number.isFinite(settings.qualityHardTPS) || settings.qualityHardTPS <= settings.qualitySoftTPS || !Number.isFinite(settings.realtimeGuardTTFBSeconds) || settings.realtimeGuardTTFBSeconds <= 0 || !Number.isFinite(settings.realtimeGuardGenerationSeconds) || settings.realtimeGuardGenerationSeconds <= 0 || !Number.isInteger(settings.realtimeGuardTokenThreshold) || settings.realtimeGuardTokenThreshold < 1) {

@@ -14,10 +14,10 @@ Usage from the repository root:
 Safety properties:
 
 * The latest stable upstream release tag is fetched and its merge status is logged;
-  an unmerged tag does not block deployment.
-* The version base is the latest stable tag. A remote locked sequence allocates
-  the next four-digit build number, so every build attempt receives a unique
-  version even when an earlier attempt fails.
+  an unmerged tag does not block deployment and does not become the version base.
+* The version base is the newest stable tag already contained in HEAD. A remote
+  locked sequence allocates the next four-digit build number, so every build
+  attempt receives a unique version even when an earlier attempt fails.
 * Only Git-tracked files are packaged; untracked non-ignored files are refused.
 * Local runtime config, environment files, auth files, and deploy logs are never
   copied into the source archive.
@@ -459,15 +459,15 @@ def git_output(*arguments: str) -> str:
     return capture_text(["git", *arguments], cwd=REPOSITORY_ROOT)
 
 
-def discover_latest_stable_tag() -> str:
-    """Return the newest stable tag reachable from upstream/main."""
+def discover_latest_stable_tag(merged_into: str) -> str:
+    """Return the newest stable tag reachable from the given Git ref."""
 
-    raw_tags = git_output("tag", "--merged", "upstream/main", "--sort=-v:refname")
+    raw_tags = git_output("tag", "--merged", merged_into, "--sort=-v:refname")
     for line in raw_tags.splitlines():
         tag = line.strip()
         if STABLE_TAG_PATTERN.fullmatch(tag):
             return tag
-    raise DeploymentError("no stable vX.Y.Z tag is reachable from upstream/main")
+    raise DeploymentError(f"no stable vX.Y.Z tag is reachable from {merged_into}")
 
 
 VERSION_RESERVATION_CODE = r'''
@@ -1582,9 +1582,10 @@ def main() -> int:
             ["git", "fetch", "upstream", "--tags", "--prune"],
             cwd=REPOSITORY_ROOT,
         )
-        latest_tag = discover_latest_stable_tag()
+        upstream_latest_tag = discover_latest_stable_tag("upstream/main")
+        version_tag = discover_latest_stable_tag("HEAD")
         ancestor = run_logged(
-            ["git", "merge-base", "--is-ancestor", latest_tag, "HEAD"],
+            ["git", "merge-base", "--is-ancestor", upstream_latest_tag, "HEAD"],
             cwd=REPOSITORY_ROOT,
             check=False,
             capture=True,
@@ -1598,20 +1599,32 @@ def main() -> int:
         if not tag_merged:
             LOGGER.warning(
                 "LATEST_STABLE_TAG_NOT_MERGED tag=%s head=%s; "
-                "continuing with current working-tree source",
-                latest_tag,
+                "continuing with current working-tree source and VERSION_BASE_TAG=%s",
+                upstream_latest_tag,
                 head,
+                version_tag,
+            )
+        if version_tag != upstream_latest_tag:
+            LOGGER.warning(
+                "VERSION_BASE_USES_HEAD_TAG head_tag=%s upstream_tag=%s",
+                version_tag,
+                upstream_latest_tag,
             )
         upstream_counts = git_output(
             "rev-list", "--left-right", "--count", "HEAD...upstream/main"
         )
-        tag_counts = git_output(
-            "rev-list", "--left-right", "--count", f"HEAD...{latest_tag}"
+        upstream_tag_counts = git_output(
+            "rev-list", "--left-right", "--count", f"HEAD...{upstream_latest_tag}"
         )
-        LOGGER.info("LATEST_STABLE_TAG=%s", latest_tag)
+        version_tag_counts = git_output(
+            "rev-list", "--left-right", "--count", f"HEAD...{version_tag}"
+        )
+        LOGGER.info("LATEST_STABLE_TAG=%s", upstream_latest_tag)
         LOGGER.info("LATEST_STABLE_TAG_MERGED=%d", int(tag_merged))
+        LOGGER.info("VERSION_BASE_TAG=%s", version_tag)
         LOGGER.info("AHEAD_BEHIND_UPSTREAM=%s", upstream_counts)
-        LOGGER.info("AHEAD_BEHIND_TAG=%s", tag_counts)
+        LOGGER.info("AHEAD_BEHIND_UPSTREAM_TAG=%s", upstream_tag_counts)
+        LOGGER.info("AHEAD_BEHIND_VERSION_TAG=%s", version_tag_counts)
 
         step("VERIFY WORKING TREE AND SOURCE INVENTORY")
         unmerged = git_output(
@@ -1656,7 +1669,7 @@ def main() -> int:
             LOGGER.info("MANAGED_PLUGIN_SOURCE=%s", module.parent)
 
         step("RESERVE NEXT BUILD VERSION")
-        version = reserve_next_version(config, latest_tag)
+        version = reserve_next_version(config, version_tag)
         paths = deployment_paths(version, timestamp)
         if paths.master_log != master_log:
             raise DeploymentError("internal master log path mismatch")

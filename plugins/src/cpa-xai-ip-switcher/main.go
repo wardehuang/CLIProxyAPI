@@ -576,6 +576,8 @@ func settingsFromPayload(payload map[string]any) (pluginSettings, error) {
 	realtimeGuardMinSummaryChars, realtimeGuardMinSummaryCharsOK := integerValue(firstValue(payload, "realtimeGuardMinSummaryChars", "realtime_guard_min_summary_chars"))
 	realtimeGuardMinEncryptedBytes, realtimeGuardMinEncryptedBytesOK := integerValue(firstValue(payload, "realtimeGuardMinEncryptedBytes", "realtime_guard_min_encrypted_bytes"))
 	realtimeGuardEncryptedBytesPerReasoningToken, realtimeGuardEncryptedBytesPerReasoningTokenOK := integerValue(firstValue(payload, "realtimeGuardEncryptedBytesPerReasoningToken", "realtime_guard_encrypted_bytes_per_reasoning_token"))
+	realtimeGuardMinSubstantiveVisibleChars, realtimeGuardMinSubstantiveVisibleCharsOK := integerValue(firstValue(payload, "realtimeGuardMinSubstantiveVisibleChars", "realtime_guard_min_substantive_visible_chars"))
+	realtimeGuardMinSubstantiveVisibleMS, realtimeGuardMinSubstantiveVisibleMSOK := integerValue(firstValue(payload, "realtimeGuardMinSubstantiveVisibleMs", "realtime_guard_min_substantive_visible_ms"))
 	realtimeGuardMinOutputTokens, realtimeGuardMinOutputTokensOK := integerValue(firstValue(payload, "realtimeGuardMinOutputTokens", "realtime_guard_min_output_tokens"))
 	realtimeGuardBurstMinReasoningTokens, realtimeGuardBurstMinReasoningTokensOK := integerValue(firstValue(payload, "realtimeGuardBurstMinReasoningTokens", "realtime_guard_burst_min_reasoning_tokens"))
 	realtimeGuardBurstMaxVisibleTokens, realtimeGuardBurstMaxVisibleTokensOK := integerValue(firstValue(payload, "realtimeGuardBurstMaxVisibleTokens", "realtime_guard_burst_max_visible_tokens"))
@@ -590,7 +592,7 @@ func settingsFromPayload(payload map[string]any) (pluginSettings, error) {
 	managerManagementKey, managerManagementKeyOK := stringValue(firstValue(payload, "managerManagementKey", "manager_management_key"))
 	if !workerOK || !refreshOK || !keepaliveWorkersOK || !keepaliveIntervalOK || !reviveIntervalOK || !retryOK || !scheduleGroupCountOK ||
 		!healthySlotOK || !healthyCandidateSlotOK || !healthySlotMaxAgeOK || !qualityWorkerOK || !qualityTimeoutOK || !qualityModelOK || !softTPSOK || !hardTPSOK || !realtimeGuardTTFBOK || !realtimeGuardGenerationOK || !realtimeGuardTokenOK || !realtimeGuardTimeoutOK ||
-		!realtimeGuardMinSummaryCharsOK || !realtimeGuardMinEncryptedBytesOK || !realtimeGuardEncryptedBytesPerReasoningTokenOK || !realtimeGuardMinOutputTokensOK || !realtimeGuardBurstMinReasoningTokensOK || !realtimeGuardBurstMaxVisibleTokensOK || !realtimeGuardBurstMaxWindowMSOK || !qualityLLMProbeOK ||
+		!realtimeGuardMinSummaryCharsOK || !realtimeGuardMinEncryptedBytesOK || !realtimeGuardEncryptedBytesPerReasoningTokenOK || !realtimeGuardMinSubstantiveVisibleCharsOK || !realtimeGuardMinSubstantiveVisibleMSOK || !realtimeGuardMinOutputTokensOK || !realtimeGuardBurstMinReasoningTokensOK || !realtimeGuardBurstMaxVisibleTokensOK || !realtimeGuardBurstMaxWindowMSOK || !qualityLLMProbeOK ||
 		!debugEnabledOK || !grok2apiSyncEnabledOK || !grok2apiBaseUrlOK || !grok2apiAdminUsernameOK || !grok2apiAdminPasswordOK || !managerBaseURLOK || !managerManagementKeyOK {
 		return pluginSettings{}, fmt.Errorf("必须同时提供基础调度、健康槽位、智商探测、调试开关、grok2api 同步和 Manager API 配置")
 	}
@@ -617,6 +619,8 @@ func settingsFromPayload(payload map[string]any) (pluginSettings, error) {
 		RealtimeGuardMinSummaryChars:                 realtimeGuardMinSummaryChars,
 		RealtimeGuardMinEncryptedBytes:               realtimeGuardMinEncryptedBytes,
 		RealtimeGuardEncryptedBytesPerReasoningToken: realtimeGuardEncryptedBytesPerReasoningToken,
+		RealtimeGuardMinSubstantiveVisibleChars:      realtimeGuardMinSubstantiveVisibleChars,
+		RealtimeGuardMinSubstantiveVisibleMS:         realtimeGuardMinSubstantiveVisibleMS,
 		RealtimeGuardMinOutputTokens:                 realtimeGuardMinOutputTokens,
 		RealtimeGuardBurstMinReasoningTokens:         realtimeGuardBurstMinReasoningTokens,
 		RealtimeGuardBurstMaxVisibleTokens:           realtimeGuardBurstMaxVisibleTokens,
@@ -733,6 +737,8 @@ func publicSettings(settings pluginSettings) map[string]any {
 		"realtimeGuardMinSummaryChars":                 settings.RealtimeGuardMinSummaryChars,
 		"realtimeGuardMinEncryptedBytes":               settings.RealtimeGuardMinEncryptedBytes,
 		"realtimeGuardEncryptedBytesPerReasoningToken": settings.RealtimeGuardEncryptedBytesPerReasoningToken,
+		"realtimeGuardMinSubstantiveVisibleChars":      settings.RealtimeGuardMinSubstantiveVisibleChars,
+		"realtimeGuardMinSubstantiveVisibleMs":         settings.RealtimeGuardMinSubstantiveVisibleMS,
 		"realtimeGuardMinOutputTokens":                 settings.RealtimeGuardMinOutputTokens,
 		"realtimeGuardBurstMinReasoningTokens":         settings.RealtimeGuardBurstMinReasoningTokens,
 		"realtimeGuardBurstMaxVisibleTokens":           settings.RealtimeGuardBurstMaxVisibleTokens,
