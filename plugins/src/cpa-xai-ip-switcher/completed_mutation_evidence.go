@@ -43,8 +43,9 @@ func hasCompletedMutationEvidence(requestBody []byte) bool {
 		return false
 	}
 
+	scanStartIndex := completedMutationScanStart(items, lastUserIndex)
 	mutationCalls := make(map[string]string)
-	for index := lastUserIndex + 1; index < len(items); index++ {
+	for index := scanStartIndex; index < len(items); index++ {
 		item := items[index]
 		switch strings.ToLower(strings.TrimSpace(item.Type)) {
 		case "function_call":
@@ -62,6 +63,19 @@ func hasCompletedMutationEvidence(requestBody []byte) bool {
 		}
 	}
 	return false
+}
+
+func completedMutationScanStart(items []completedMutationInputItem, lastUserIndex int) int {
+	scanStartIndex := lastUserIndex + 1
+	if lastUserIndex == 0 || !strings.EqualFold(strings.TrimSpace(items[lastUserIndex-1].Type), "function_call_output") {
+		return scanStartIndex
+	}
+	for index := lastUserIndex - 1; index >= 0; index-- {
+		if strings.EqualFold(strings.TrimSpace(items[index].Role), "user") {
+			return index + 1
+		}
+	}
+	return scanStartIndex
 }
 
 func isMutationToolName(toolName string) bool {
