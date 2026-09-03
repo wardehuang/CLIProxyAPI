@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"encoding/json"
 	"strings"
 )
@@ -18,8 +19,10 @@ type completedMutationInputItem struct {
 }
 
 type completedMutationToolResult struct {
-	Success  bool `json:"success"`
-	Verified bool `json:"verified"`
+	Success  bool            `json:"success"`
+	Verified bool            `json:"verified"`
+	ExitCode *int            `json:"exit_code"`
+	Error    json.RawMessage `json:"error"`
 }
 
 func hasCompletedMutationEvidence(requestBody []byte) bool {
@@ -80,7 +83,7 @@ func completedMutationScanStart(items []completedMutationInputItem, lastUserInde
 
 func isMutationToolName(toolName string) bool {
 	switch toolName {
-	case "patch", "write_file", "skill_manage":
+	case "patch", "write_file", "skill_manage", "terminal":
 		return true
 	default:
 		return false
@@ -95,5 +98,13 @@ func completedMutationOutputSucceeded(toolName, output string) bool {
 	if toolName == "write_file" {
 		return result.Verified
 	}
+	if toolName == "terminal" {
+		return result.ExitCode != nil && *result.ExitCode == 0 && terminalMutationErrorEmpty(result.Error)
+	}
 	return result.Success
+}
+
+func terminalMutationErrorEmpty(raw json.RawMessage) bool {
+	raw = bytes.TrimSpace(raw)
+	return bytes.Equal(raw, []byte("null")) || bytes.Equal(raw, []byte(`""`))
 }
