@@ -71,6 +71,7 @@ type realtimeGuardDecision struct {
 	VisibleTokens              int64
 	VisibleFlushMs             int64
 	CompletedFunctionCallCount int
+	CompletedToolCallEvidence  bool
 	ToolCallOnly               bool
 	CompletedMutationEvidence  bool
 	OutputTextChars            int
