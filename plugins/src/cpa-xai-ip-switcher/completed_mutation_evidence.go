@@ -14,7 +14,6 @@ type completedMutationInputItem struct {
 	Role   string `json:"role"`
 	CallID string `json:"call_id"`
 	Name   string `json:"name"`
-	Status string `json:"status"`
 	Output string `json:"output"`
 }
 
@@ -51,7 +50,7 @@ func hasCompletedMutationEvidence(requestBody []byte) bool {
 		case "function_call":
 			callID := strings.TrimSpace(item.CallID)
 			toolName := strings.ToLower(strings.TrimSpace(item.Name))
-			if callID == "" || !strings.EqualFold(strings.TrimSpace(item.Status), "completed") || !isMutationToolName(toolName) {
+			if callID == "" || !isMutationToolName(toolName) {
 				continue
 			}
 			mutationCalls[callID] = toolName
