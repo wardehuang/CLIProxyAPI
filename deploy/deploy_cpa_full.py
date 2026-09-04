@@ -77,6 +77,7 @@ MANAGED_PLUGINS = (
     "cpa-prompt-cache-usage",
     "cpa-strip-visible-files",
     "cpa-xai-ip-switcher",
+    "cpa-xai-web-search-alias",
 )
 
 EXPECTED_PLUGIN_IDS = (
@@ -1061,7 +1062,7 @@ for marker in 'response.created' 'response.in_progress'; do
   log "MAIN_BINARY_MARKER[$marker]=1"
 done
 
-step "BUILD ALL SIX REPOSITORY PLUGINS"
+step "BUILD ALL SEVEN REPOSITORY PLUGINS"
 : > "$MANAGED_MANIFEST_BUILD"
 for plugin in "${MANAGED_PLUGINS[@]}"; do
   plugin_source="$SOURCE_ROOT/plugins/src/$plugin"
@@ -1206,7 +1207,7 @@ with tarfile.open(backup, "r:gz") as archive:
 PY
 BACKUP_READY=1
 
-step "INSTALL MAIN BINARY AND SIX PLUGINS ATOMICALLY"
+step "INSTALL MAIN BINARY AND SEVEN PLUGINS ATOMICALLY"
 sudo install -m 0755 "$MAIN_BUILD" "$APP/cli-proxy-api.new.$ID"
 sudo mv -f "$APP/cli-proxy-api.new.$ID" "$APP/cli-proxy-api"
 for plugin in "${MANAGED_PLUGINS[@]}"; do
@@ -1314,7 +1315,7 @@ case "$HEADER_TEXT" in
   *) log "API commit header mismatch"; false ;;
 esac
 
-step "VERIFY SERVICE JOURNAL AND ALL EIGHT PLUGIN REGISTRATIONS"
+step "VERIFY SERVICE JOURNAL AND ALL NINE PLUGIN REGISTRATIONS"
 journalctl -u "$SERVICE" --since "$DEPLOY_SERVICE_START" --no-pager -o short-iso > "$JOURNAL_FILE"
 JOURNAL_TEXT="$(<"$JOURNAL_FILE")"
 case "$JOURNAL_TEXT" in
