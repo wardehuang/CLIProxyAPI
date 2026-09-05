@@ -80,6 +80,10 @@ MANAGED_PLUGINS = (
     "cpa-xai-web-search-alias",
 )
 
+REQUIRED_ENABLED_PLUGIN_CONFIGS = (
+    "cpa-xai-web-search-alias",
+)
+
 EXPECTED_PLUGIN_IDS = (
     "codexcomp",
     *MANAGED_PLUGINS,
@@ -770,6 +774,9 @@ STEP_NUMBER=0
 MANAGED_PLUGINS=(
 @@MANAGED_PLUGINS@@
 )
+REQUIRED_ENABLED_PLUGIN_CONFIGS=(
+@@REQUIRED_ENABLED_PLUGIN_CONFIGS@@
+)
 EXPECTED_PLUGIN_IDS=(
 @@EXPECTED_PLUGIN_IDS@@
 )
@@ -945,9 +952,6 @@ log "PLUGIN_COUNT_BEFORE=$PLUGIN_COUNT_BEFORE"
 log "PLUGIN_MANIFEST_BEGIN"
 cat "$PLUGIN_MANIFEST_BEFORE"
 log "PLUGIN_MANIFEST_END"
-for plugin in "${MANAGED_PLUGINS[@]}"; do
-  test -s "$PLUGIN_DIR/$plugin.so"
-done
 
 step "EXTRACT AND VERIFY LF SOURCE"
 rm -rf "$BASE/src" "$BUILD_ROOT"
@@ -1207,7 +1211,138 @@ with tarfile.open(backup, "r:gz") as archive:
 PY
 BACKUP_READY=1
 
-step "INSTALL MAIN BINARY AND SEVEN PLUGINS ATOMICALLY"
+step "ENSURE REQUIRED MANAGED PLUGIN CONFIGS"
+CONFIG_UPDATE_OUTPUT="$(sudo python3 - "$APP/config.yaml" "${REQUIRED_ENABLED_PLUGIN_CONFIGS[@]}" <<'PY'
+import hashlib
+import os
+from pathlib import Path
+import re
+import stat
+import sys
+
+import yaml
+
+path = Path(sys.argv[1])
+required_plugin_ids = sys.argv[2:]
+original = path.read_bytes()
+text = original.decode("utf-8")
+config = yaml.safe_load(text)
+if not isinstance(config, dict):
+    raise SystemExit("plugin config update refused: root YAML value is not a mapping")
+plugins = config.get("plugins")
+if not isinstance(plugins, dict):
+    raise SystemExit("plugin config update refused: plugins is not a mapping")
+configs = plugins.get("configs")
+if not isinstance(configs, dict):
+    raise SystemExit("plugin config update refused: plugins.configs is not a mapping")
+
+missing = []
+for plugin_id in required_plugin_ids:
+    if plugin_id not in configs:
+        missing.append(plugin_id)
+        continue
+    plugin_config = configs[plugin_id]
+    if not isinstance(plugin_config, dict) or plugin_config.get("enabled") is not True:
+        raise SystemExit(f"plugin config update refused: {plugin_id} exists but is not enabled")
+    print(f"PLUGIN_CONFIG[{plugin_id}]=already-enabled")
+
+if missing:
+    lines = text.splitlines(keepends=True)
+
+    def significant_indent(line):
+        body = line.rstrip("\r\n")
+        if not body.strip() or body.lstrip().startswith("#"):
+            return None
+        prefix = body[: len(body) - len(body.lstrip(" "))]
+        if "\t" in prefix:
+            raise SystemExit("plugin config update refused: tabs in YAML indentation")
+        return len(prefix)
+
+    def mapping_key(line):
+        body = line.rstrip("\r\n")
+        indent = significant_indent(line)
+        if indent is None:
+            return None
+        match = re.fullmatch(r"( *)([^:#][^:]*):(?: *#.*)?", body)
+        if match is None:
+            return None
+        return indent, match.group(2).strip()
+
+    plugin_lines = [index for index, line in enumerate(lines) if mapping_key(line) == (0, "plugins")]
+    if len(plugin_lines) != 1:
+        raise SystemExit("plugin config update refused: expected exactly one top-level plugins mapping")
+    plugins_index = plugin_lines[0]
+    plugins_end = len(lines)
+    for index in range(plugins_index + 1, len(lines)):
+        indent = significant_indent(lines[index])
+        if indent == 0:
+            plugins_end = index
+            break
+    configs_lines = []
+    for index in range(plugins_index + 1, plugins_end):
+        parsed = mapping_key(lines[index])
+        if parsed is not None and parsed[0] > 0 and parsed[1] == "configs":
+            configs_lines.append((index, parsed[0]))
+    if len(configs_lines) != 1:
+        raise SystemExit("plugin config update refused: expected exactly one plugins.configs mapping")
+    configs_index, configs_indent = configs_lines[0]
+    configs_end = plugins_end
+    for index in range(configs_index + 1, plugins_end):
+        indent = significant_indent(lines[index])
+        if indent is not None and indent <= configs_indent:
+            configs_end = index
+            break
+    entry_indent = configs_indent + 2
+    insert_at = configs_end
+    while insert_at > configs_index + 1 and not lines[insert_at - 1].strip():
+        insert_at -= 1
+    newline = "\r\n" if "\r\n" in text else "\n"
+    additions = []
+    for plugin_id in missing:
+        additions.extend(
+            (
+                " " * entry_indent + plugin_id + ":" + newline,
+                " " * (entry_indent + 2) + "enabled: true" + newline,
+                " " * (entry_indent + 2) + "priority: 0" + newline,
+            )
+        )
+    updated = "".join(lines[:insert_at] + additions + lines[insert_at:]).encode("utf-8")
+    verified = yaml.safe_load(updated)
+    verified_configs = verified["plugins"]["configs"]
+    for plugin_id in required_plugin_ids:
+        if verified_configs[plugin_id].get("enabled") is not True:
+            raise SystemExit(f"plugin config update verification failed: {plugin_id}")
+    metadata = path.stat()
+    temporary = path.with_name(path.name + f".new.{os.getpid()}")
+    try:
+        with temporary.open("xb") as handle:
+            handle.write(updated)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.chmod(temporary, stat.S_IMODE(metadata.st_mode))
+        os.chown(temporary, metadata.st_uid, metadata.st_gid)
+        os.replace(temporary, path)
+        directory_fd = os.open(path.parent, os.O_RDONLY)
+        try:
+            os.fsync(directory_fd)
+        finally:
+            os.close(directory_fd)
+    finally:
+        temporary.unlink(missing_ok=True)
+    for plugin_id in missing:
+        print(f"PLUGIN_CONFIG[{plugin_id}]=added-enabled")
+
+print("CONFIG_EXPECTED_SHA256=" + hashlib.sha256(path.read_bytes()).hexdigest())
+PY
+)"
+printf '%s\n' "$CONFIG_UPDATE_OUTPUT"
+CONFIG_EXPECTED_LINE="${CONFIG_UPDATE_OUTPUT##*$'\n'}"
+case "$CONFIG_EXPECTED_LINE" in
+  CONFIG_EXPECTED_SHA256=*) CONFIG_EXPECTED_SHA256="${CONFIG_EXPECTED_LINE#CONFIG_EXPECTED_SHA256=}" ;;
+  *) log "required plugin config update did not return expected checksum"; false ;;
+esac
+
+step "INSTALL MAIN BINARY AND MANAGED PLUGINS ATOMICALLY"
 sudo install -m 0755 "$MAIN_BUILD" "$APP/cli-proxy-api.new.$ID"
 sudo mv -f "$APP/cli-proxy-api.new.$ID" "$APP/cli-proxy-api"
 for plugin in "${MANAGED_PLUGINS[@]}"; do
@@ -1244,8 +1379,8 @@ if [ "$MAIN_AFTER_SHA256" != "$MAIN_BUILD_SHA256" ]; then
   log "installed main checksum mismatch"
   false
 fi
-if [ "$CONFIG_AFTER_SHA256" != "$CONFIG_BEFORE_SHA256" ]; then
-  log "config changed during deployment"
+if [ "$CONFIG_AFTER_SHA256" != "$CONFIG_EXPECTED_SHA256" ]; then
+  log "config checksum differs from required plugin config transaction"
   false
 fi
 if ! auth_manifest_preserved "$BASE/auth-before-install.names.sha256" "$BASE/auth-after.names.sha256"; then
@@ -1273,6 +1408,7 @@ while read -r expected_sha built_path; do
   log "MANAGED_PLUGIN_VERIFIED[$plugin_name]=$live_sha"
 done < "$MANAGED_MANIFEST_BUILD"
 
+NON_TARGET_PLUGIN_COUNT_BEFORE=0
 while read -r old_hash old_path; do
   old_name="$(basename "$old_path")"
   managed=0
@@ -1285,6 +1421,7 @@ while read -r old_hash old_path; do
   if [ "$managed" -eq 1 ]; then
     continue
   fi
+  NON_TARGET_PLUGIN_COUNT_BEFORE=$((NON_TARGET_PLUGIN_COUNT_BEFORE + 1))
   current_hash="$(sha256sum "$PLUGIN_DIR/$old_name" | cut -d' ' -f1)"
   if [ "$current_hash" != "$old_hash" ]; then
     log "non-target plugin changed: $old_name"
@@ -1294,9 +1431,12 @@ while read -r old_hash old_path; do
 done < "$PLUGIN_MANIFEST_BEFORE"
 
 PLUGIN_COUNT_AFTER="$(python3 -c 'from pathlib import Path; import sys; print(sum(1 for _ in Path(sys.argv[1]).glob("*.so")))' "$PLUGIN_DIR")"
+EXPECTED_PLUGIN_COUNT_AFTER=$((NON_TARGET_PLUGIN_COUNT_BEFORE + ${#MANAGED_PLUGINS[@]}))
+log "NON_TARGET_PLUGIN_COUNT_BEFORE=$NON_TARGET_PLUGIN_COUNT_BEFORE"
+log "EXPECTED_PLUGIN_COUNT_AFTER=$EXPECTED_PLUGIN_COUNT_AFTER"
 log "PLUGIN_COUNT_AFTER=$PLUGIN_COUNT_AFTER"
-if [ "$PLUGIN_COUNT_AFTER" != "$PLUGIN_COUNT_BEFORE" ]; then
-  log "plugin count changed during deployment"
+if [ "$PLUGIN_COUNT_AFTER" != "$EXPECTED_PLUGIN_COUNT_AFTER" ]; then
+  log "plugin count mismatch after deployment"
   false
 fi
 
@@ -1391,6 +1531,9 @@ def render_remote_script(
         "@@GO_BIN@@": shlex.quote(REMOTE_GO),
         "@@BASE@@": shlex.quote(paths.remote_base),
         "@@MANAGED_PLUGINS@@": shell_array(MANAGED_PLUGINS),
+        "@@REQUIRED_ENABLED_PLUGIN_CONFIGS@@": shell_array(
+            REQUIRED_ENABLED_PLUGIN_CONFIGS
+        ),
         "@@EXPECTED_PLUGIN_IDS@@": shell_array(EXPECTED_PLUGIN_IDS),
     }
     rendered = REMOTE_SCRIPT_TEMPLATE

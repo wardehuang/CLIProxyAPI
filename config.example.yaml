@@ -112,6 +112,9 @@ plugins:
       priority: 0
       database_path: /opt/cli-proxy-api/plugin-data/cpa-xai-ip-switcher/ip-switcher.sqlite3
       worker_count: 0
+    cpa-xai-web-search-alias:
+      enabled: true
+      priority: 0
 
 # When true, disable high-overhead request logging and HTTP middleware features to reduce per-request memory usage under high concurrency.
 commercial-mode: false
