@@ -11,6 +11,7 @@ import (
 	"strings"
 
 	coreauth "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
+	"github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginabi"
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginapi"
 	log "github.com/sirupsen/logrus"
 )
@@ -320,7 +321,13 @@ func (h *Host) InterceptStreamChunkExcept(ctx context.Context, req pluginapi.Str
 		nextReq.OriginalRequest = bytes.Clone(req.OriginalRequest)
 		nextReq.RequestBody = bytes.Clone(req.RequestBody)
 		nextReq.Body = bytes.Clone(current.Body)
-		nextReq.HistoryChunks = cloneByteSlices(req.HistoryChunks)
+		// Schema v5+ omits HistoryChunks on payload chunks to avoid cloning and re-encoding
+		// recent chunk windows across cgo/JSON for every frame. Legacy plugins still receive them.
+		if req.ChunkIndex != pluginapi.StreamChunkHeaderInitIndex && streamChunkOmitsHistory(record.plugin.SchemaVersion) {
+			nextReq.HistoryChunks = nil
+		} else {
+			nextReq.HistoryChunks = cloneByteSlices(req.HistoryChunks)
+		}
 		nextReq.Metadata = cloneInterceptorMetadata(req.Metadata)
 		if resp, ok := h.callStreamChunkInterceptor(ctx, record, interceptor, nextReq); ok {
 			current.Headers = mergeHeaders(current.Headers, resp.Headers, resp.ClearHeaders)
@@ -424,6 +431,50 @@ func (h *Host) HasStreamInterceptors() bool {
 		}
 	}
 	return false
+}
+
+// StreamChunkPayloadIncludesRequestBody reports whether any active stream chunk
+// interceptor still requires OriginalRequest/RequestBody on payload chunks
+// (schema_version < SchemaVersionStreamChunkOmitRequestBody).
+func (h *Host) StreamChunkPayloadIncludesRequestBody() bool {
+	if h == nil {
+		return false
+	}
+	for _, record := range h.activeRecords() {
+		if h.isPluginFused(record.id) || record.plugin.Capabilities.StreamChunkInterceptor == nil {
+			continue
+		}
+		if !streamChunkOmitsRequestBodies(record.plugin.SchemaVersion) {
+			return true
+		}
+	}
+	return false
+}
+
+func streamChunkOmitsRequestBodies(schemaVersion uint32) bool {
+	return schemaVersion >= pluginabi.SchemaVersionStreamChunkOmitRequestBody
+}
+
+// StreamChunkPayloadIncludesHistory reports whether any active stream chunk
+// interceptor still requires HistoryChunks on payload chunks
+// (schema_version < SchemaVersionStreamChunkOmitHistory).
+func (h *Host) StreamChunkPayloadIncludesHistory() bool {
+	if h == nil {
+		return false
+	}
+	for _, record := range h.activeRecords() {
+		if h.isPluginFused(record.id) || record.plugin.Capabilities.StreamChunkInterceptor == nil {
+			continue
+		}
+		if !streamChunkOmitsHistory(record.plugin.SchemaVersion) {
+			return true
+		}
+	}
+	return false
+}
+
+func streamChunkOmitsHistory(schemaVersion uint32) bool {
+	return schemaVersion >= pluginabi.SchemaVersionStreamChunkOmitHistory
 }
 
 func (h *Host) HasRequestInterceptors() bool {
