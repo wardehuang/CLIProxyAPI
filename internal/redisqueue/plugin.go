@@ -89,6 +89,11 @@ func (p *usageQueuePlugin) HandleUsage(ctx context.Context, record coreusage.Rec
 	// generation_ms = first downstream payload → stream end (degradation TPS denominator).
 	// Do not rewrite latency_ms to generation_ms: UI "耗时" must stay >= "首字".
 	generationMilliseconds := recordGenerationMilliseconds(record.Metadata)
+	stream := record.Stream
+	if !stream {
+		stream = coreusage.StreamFromContext(ctx)
+	}
+
 	detail := requestDetail{
 		Timestamp:       timestamp,
 		LatencyMs:       record.Latency.Milliseconds(),
@@ -103,6 +108,7 @@ func (p *usageQueuePlugin) HandleUsage(ctx context.Context, record coreusage.Rec
 		Tokens:          tokens,
 		Failed:          failed,
 		Generate:        coreusage.GenerateEnabled(record.Generate),
+		Stream:          stream,
 		Fail:            fail,
 		ResponseHeaders: record.ResponseHeaders,
 	}
@@ -162,6 +168,7 @@ type requestDetail struct {
 	Tokens          tokenStats  `json:"tokens"`
 	Failed          bool        `json:"failed"`
 	Generate        bool        `json:"generate"`
+	Stream          bool        `json:"stream"`
 	Fail            failDetail  `json:"fail"`
 	ResponseHeaders http.Header `json:"response_headers,omitempty"`
 }
