@@ -997,6 +997,8 @@ const (
 	StreamCompletionActionFail StreamCompletionAction = "fail"
 	// StreamCompletionRetryModeReloadSelectedAuth reloads the selected auth after a plugin rewrites it.
 	StreamCompletionRetryModeReloadSelectedAuth StreamCompletionRetryMode = "reload_selected_auth"
+	// StreamCompletionRetryModeReloadAndExcludeSelectedAuth reloads rewritten account state and excludes that account for this request.
+	StreamCompletionRetryModeReloadAndExcludeSelectedAuth StreamCompletionRetryMode = "reload_and_exclude_selected_auth"
 	// StreamCompletionRetryModeExcludeSelectedAuth retries with a different auth without changing account state.
 	StreamCompletionRetryModeExcludeSelectedAuth StreamCompletionRetryMode = "exclude_selected_auth"
 )

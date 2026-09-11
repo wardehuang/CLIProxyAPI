@@ -497,6 +497,11 @@ socks5h://username:pass@ip:port
                 <input id="realtime-guard-token-threshold" type="number" min="1" step="1" value="300" title="输出 token 加思考 token 大于该值才触发">
                 <span class="settings-help">严格大于 · 默认 300</span>
               </label>
+              <label class="settings-field" for="realtime-guard-idle-timeout-seconds">
+                No-progress timeout (seconds)
+                <input id="realtime-guard-idle-timeout-seconds" type="number" min="1" max="86400" step="1" value="500" title="Retry with another account after no output, reasoning or tool-call progress. Heartbeats do not reset the timer.">
+                <span class="settings-help">Default 500 · 1–86400 · Applies to new attempts after saving</span>
+              </label>
               <label class="settings-field" for="realtime-guard-timeout-seconds">
                 首字超时阈值（秒）
                 <input id="realtime-guard-timeout-seconds" type="number" min="1" step="1" value="120" title="首字返回前严格超过该值时判定降智">
@@ -713,6 +718,7 @@ socks5h://username:pass@ip:port
         realtimeGuardGenerationSeconds: document.getElementById("realtime-guard-generation-seconds"),
         realtimeGuardTokenThreshold: document.getElementById("realtime-guard-token-threshold"),
         realtimeGuardTimeoutSeconds: document.getElementById("realtime-guard-timeout-seconds"),
+        realtimeGuardIdleTimeoutSeconds: document.getElementById("realtime-guard-idle-timeout-seconds"),
         realtimeGuardMinSummaryChars: document.getElementById("realtime-guard-min-summary-chars"),
         realtimeGuardMinEncryptedBytes: document.getElementById("realtime-guard-min-encrypted-bytes"),
         realtimeGuardEncryptedBytesPerReasoningToken: document.getElementById("realtime-guard-encrypted-bytes-per-reasoning-token"),
@@ -903,6 +909,7 @@ socks5h://username:pass@ip:port
           elements.realtimeGuardGenerationSeconds.value = String(settings.realtimeGuardGenerationSeconds);
           elements.realtimeGuardTokenThreshold.value = String(settings.realtimeGuardTokenThreshold);
           elements.realtimeGuardTimeoutSeconds.value = String(settings.realtimeGuardTimeoutSeconds);
+          elements.realtimeGuardIdleTimeoutSeconds.value = String(settings.realtimeGuardIdleTimeoutSeconds);
           elements.realtimeGuardMinSummaryChars.value = String(settings.realtimeGuardMinSummaryChars);
           elements.realtimeGuardMinEncryptedBytes.value = String(settings.realtimeGuardMinEncryptedBytes);
           elements.realtimeGuardEncryptedBytesPerReasoningToken.value = String(settings.realtimeGuardEncryptedBytesPerReasoningToken);
@@ -1450,6 +1457,7 @@ socks5h://username:pass@ip:port
           realtimeGuardGenerationSeconds: Number(elements.realtimeGuardGenerationSeconds.value),
           realtimeGuardTokenThreshold: Number(elements.realtimeGuardTokenThreshold.value),
           realtimeGuardTimeoutSeconds: Number(elements.realtimeGuardTimeoutSeconds.value),
+          realtimeGuardIdleTimeoutSeconds: Number(elements.realtimeGuardIdleTimeoutSeconds.value),
           realtimeGuardMinSummaryChars: Number(elements.realtimeGuardMinSummaryChars.value),
           realtimeGuardMinEncryptedBytes: Number(elements.realtimeGuardMinEncryptedBytes.value),
           realtimeGuardEncryptedBytesPerReasoningToken: Number(elements.realtimeGuardEncryptedBytesPerReasoningToken.value),
@@ -1466,6 +1474,10 @@ socks5h://username:pass@ip:port
           managerBaseUrl: elements.managerBaseUrl.value.trim().replace(/\/+$/, ""),
           managerManagementKey: elements.managerManagementKey.value
         };
+        if (!Number.isInteger(settings.realtimeGuardIdleTimeoutSeconds) || settings.realtimeGuardIdleTimeoutSeconds < 1 || settings.realtimeGuardIdleTimeoutSeconds > 86400) {
+          setNotice("No-progress timeout must be an integer between 1 and 86400 seconds.", "error");
+          return;
+        }
         if (!Number.isInteger(settings.realtimeGuardTimeoutSeconds) || settings.realtimeGuardTimeoutSeconds < 1) {
           setNotice("实时守护首字超时阈值必须为正整数。", "error");
           return;

@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -52,7 +53,9 @@ func (e *XAIExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Auth
 	httpReq.Header = finalizedRequest.Headers
 	setRequestBody(httpReq, finalizedRequest.Body)
 	applyFinalizedXAIRequest(prepared, finalizedRequest)
-	requestContext, cancelRequest := context.WithCancel(ctx)
+	requestContext, cancelWithCause := context.WithCancelCause(ctx)
+	cancelRequest := func() { cancelWithCause(nil) }
+	progressWatchdog := helps.NewXAIStreamProgressWatchdog(requestContext, cancelWithCause, finalizedRequest.ProgressTimeout)
 	var firstPayloadTimer *time.Timer
 	if finalizedRequest.FirstPayloadTimeout > 0 {
 		firstPayloadTimer = time.AfterFunc(finalizedRequest.FirstPayloadTimeout, cancelRequest)
@@ -69,6 +72,10 @@ func (e *XAIExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Auth
 	httpClient = reporter.TrackHTTPClient(httpClient)
 	httpResp, err := httpClient.Do(httpReq)
 	if err != nil {
+		progressWatchdog.Stop()
+		if cause := context.Cause(requestContext); errors.Is(cause, cliproxyexecutor.ErrStreamProgressTimeout) {
+			err = cause
+		}
 		stopFirstPayloadTimer()
 		cancelRequest()
 		helps.RecordAPIResponseError(ctx, e.cfg, err)
@@ -76,6 +83,7 @@ func (e *XAIExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Auth
 	}
 	helps.RecordAPIResponseMetadata(ctx, e.cfg, httpResp.StatusCode, httpResp.Header.Clone())
 	if httpResp.StatusCode < 200 || httpResp.StatusCode >= 300 {
+		progressWatchdog.Stop()
 		data, errRead := io.ReadAll(httpResp.Body)
 		if errClose := httpResp.Body.Close(); errClose != nil {
 			log.Errorf("xai executor: close response body error: %v", errClose)
@@ -102,6 +110,12 @@ func (e *XAIExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Auth
 		var completedUsage cliproxyusage.Detail
 		hasCompletedUsage := false
 		defer func() {
+			progressWatchdog.Stop()
+			if cause := context.Cause(requestContext); errors.Is(cause, cliproxyexecutor.ErrStreamProgressTimeout) && completionState.Err == nil && !completionState.Completed {
+				completionState.Err = cause
+				helps.RecordAPIResponseError(ctx, e.cfg, cause)
+				reporter.PublishFailure(ctx, cause)
+			}
 			completionState.UpstreamStartedAt, completionState.FirstResponseByteAt = reporter.ResponseTTFTWindow()
 			if completionState.FinishedAt.IsZero() {
 				completionState.FinishedAt = time.Now()
@@ -161,7 +175,10 @@ func (e *XAIExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Auth
 				eventDataList := xaiNormalizeReasoningSummaryDataEvents(bytes.TrimSpace(line[len(xaiDataTag):]))
 				hasPendingEventLine := pendingEventLine != nil
 				for i, eventData := range eventDataList {
+					// Observe before tool filtering and translation so internal tool work also counts.
+					progressWatchdog.Observe(eventData)
 					if bytes.Equal(eventData, []byte("[DONE]")) && !completionState.Completed {
+						progressWatchdog.Stop()
 						completionState.Completed = true
 						completionState.Body = append([]byte("data: "), eventData...)
 					}
@@ -178,6 +195,7 @@ func (e *XAIExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Auth
 					case "response.output_item.done":
 						xaiCollectOutputItemDone(eventData, outputItemsByIndex, &outputItemsFallback)
 					case "response.completed", "response.incomplete":
+						progressWatchdog.Stop()
 						if detail, ok := helps.ParseCodexUsage(eventData); ok {
 							completedUsage = detail
 							hasCompletedUsage = true
@@ -231,6 +249,9 @@ func (e *XAIExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Auth
 			emitTranslatedLine(xaiNormalizeReasoningSummaryEventLine(pendingEventLine, ""))
 		}
 		if errScan := scanner.Err(); errScan != nil {
+			if cause := context.Cause(requestContext); errors.Is(cause, cliproxyexecutor.ErrStreamProgressTimeout) {
+				errScan = cause
+			}
 			completionState.Err = errScan
 			helps.RecordAPIResponseError(ctx, e.cfg, errScan)
 			reporter.PublishFailure(ctx, errScan)

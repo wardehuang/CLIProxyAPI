@@ -2,6 +2,7 @@ package executor
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"net/url"
 	"time"
@@ -35,6 +36,8 @@ const GenerateMetadataKey = "generate"
 const (
 	// StreamCompletionTimeoutSecondsMetadataKey stores a plugin-requested first-payload timeout.
 	StreamCompletionTimeoutSecondsMetadataKey = "stream_completion_timeout_seconds"
+	// StreamProgressTimeoutSecondsMetadataKey stores a plugin-requested no-progress timeout.
+	StreamProgressTimeoutSecondsMetadataKey = "stream_progress_timeout_seconds"
 	// PinnedAuthMetadataKey locks execution to a specific auth ID.
 	PinnedAuthMetadataKey = "pinned_auth_id"
 	// ExcludedAuthIDsMetadataKey stores auth IDs that credential selection must skip.
@@ -88,6 +91,9 @@ const (
 	// SessionAffinityModelMetadataKey carries the model used during session affinity selection.
 	SessionAffinityModelMetadataKey = "session_affinity_model"
 )
+
+// ErrStreamProgressTimeout identifies a guard-triggered cancellation, not a client cancellation.
+var ErrStreamProgressTimeout = errors.New("stream_progress_timeout")
 
 // Request encapsulates the translated payload that will be sent to a provider executor.
 type Request struct {

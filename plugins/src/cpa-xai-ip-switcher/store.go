@@ -35,6 +35,7 @@ const (
 	defaultRealtimeGuardGenerationSeconds               = 1.25
 	defaultRealtimeGuardTokenThreshold                  = 300
 	defaultRealtimeGuardTimeoutSeconds                  = 120
+	defaultRealtimeGuardIdleTimeoutSeconds              = 500
 	defaultRealtimeGuardMinSummaryChars                 = 32
 	defaultRealtimeGuardMinEncryptedBytes               = 256
 	defaultRealtimeGuardEncryptedBytesPerReasoningToken = 4
@@ -113,6 +114,7 @@ type pluginSettings struct {
 	RealtimeGuardGenerationSeconds               float64
 	RealtimeGuardTokenThreshold                  int
 	RealtimeGuardTimeoutSeconds                  int
+	RealtimeGuardIdleTimeoutSeconds              int
 	RealtimeGuardMinSummaryChars                 int
 	RealtimeGuardMinEncryptedBytes               int
 	RealtimeGuardEncryptedBytesPerReasoningToken int
@@ -401,6 +403,7 @@ INSERT OR IGNORE INTO plugin_settings(setting_key, setting_value) VALUES
     ('realtime_guard_generation_seconds', '1.25'),
     ('realtime_guard_token_threshold', '300'),
     ('realtime_guard_timeout_seconds', '120'),
+    ('realtime_guard_idle_timeout_seconds', '500'),
     ('realtime_guard_min_summary_chars', '32'),
     ('realtime_guard_min_encrypted_bytes', '256'),
     ('realtime_guard_encrypted_bytes_per_reasoning_token', '4'),
@@ -1613,7 +1616,7 @@ WHERE setting_key IN (
     'revive_interval_seconds', 'probe_retry_count', 'schedule_group_count', 'healthy_slot_count', 'healthy_candidate_slot_count',
     'healthy_slot_max_age_minutes',
     'quality_worker_count', 'quality_probe_timeout_seconds', 'quality_probe_model', 'quality_soft_tps', 'quality_hard_tps',
-    'quality_llm_probe_enabled', 'realtime_guard_ttfb_seconds', 'realtime_guard_generation_seconds', 'realtime_guard_token_threshold', 'realtime_guard_timeout_seconds',
+    'quality_llm_probe_enabled', 'realtime_guard_ttfb_seconds', 'realtime_guard_generation_seconds', 'realtime_guard_token_threshold', 'realtime_guard_timeout_seconds', 'realtime_guard_idle_timeout_seconds',
     'realtime_guard_min_summary_chars', 'realtime_guard_min_encrypted_bytes', 'realtime_guard_encrypted_bytes_per_reasoning_token',
     'realtime_guard_min_output_tokens', 'realtime_guard_burst_min_reasoning_tokens', 'realtime_guard_burst_max_visible_tokens', 'realtime_guard_burst_max_window_ms',
     'debug_enabled',
@@ -1697,6 +1700,8 @@ WHERE setting_key IN (
 				settings.RealtimeGuardTokenThreshold = value
 			case "realtime_guard_timeout_seconds":
 				settings.RealtimeGuardTimeoutSeconds = value
+			case "realtime_guard_idle_timeout_seconds":
+				settings.RealtimeGuardIdleTimeoutSeconds = value
 			case "realtime_guard_min_summary_chars":
 				settings.RealtimeGuardMinSummaryChars = value
 			case "realtime_guard_min_encrypted_bytes":
@@ -1760,6 +1765,7 @@ func (store *ipStore) setSettings(settings pluginSettings) error {
 		"realtime_guard_generation_seconds":                  strconv.FormatFloat(settings.RealtimeGuardGenerationSeconds, 'f', -1, 64),
 		"realtime_guard_token_threshold":                     strconv.Itoa(settings.RealtimeGuardTokenThreshold),
 		"realtime_guard_timeout_seconds":                     strconv.Itoa(settings.RealtimeGuardTimeoutSeconds),
+		"realtime_guard_idle_timeout_seconds":                strconv.Itoa(settings.RealtimeGuardIdleTimeoutSeconds),
 		"realtime_guard_min_summary_chars":                   strconv.Itoa(settings.RealtimeGuardMinSummaryChars),
 		"realtime_guard_min_encrypted_bytes":                 strconv.Itoa(settings.RealtimeGuardMinEncryptedBytes),
 		"realtime_guard_encrypted_bytes_per_reasoning_token": strconv.Itoa(settings.RealtimeGuardEncryptedBytesPerReasoningToken),
@@ -1812,6 +1818,9 @@ func validatePluginSettings(settings pluginSettings) error {
 	}
 	if settings.RealtimeGuardTimeoutSeconds < 1 {
 		return fmt.Errorf("realtime guard first-payload timeout must be at least 1 second")
+	}
+	if settings.RealtimeGuardIdleTimeoutSeconds < 1 || settings.RealtimeGuardIdleTimeoutSeconds > 86400 {
+		return fmt.Errorf("realtime guard idle timeout must be between 1 and 86400 seconds")
 	}
 	return validateSlotSettings(settings)
 }

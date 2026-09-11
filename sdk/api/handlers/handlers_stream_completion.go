@@ -581,7 +581,7 @@ func mergeStreamAttemptAuthMetadata(metadata map[string]any, streamResult *coree
 	}
 }
 
-func (h *BaseAPIHandler) reloadSelectedAuthForStreamRetry(ctx context.Context, metadata map[string]any) error {
+func (h *BaseAPIHandler) reloadSelectedAuthForStreamRetry(ctx context.Context, metadata map[string]any, excludeSelected bool) error {
 	authID := metadataString(metadata, coreexecutor.SelectedAuthMetadataKey)
 	if authID == "" {
 		return fmt.Errorf("实时降智守护重试缺少当前 auth")
@@ -589,14 +589,17 @@ func (h *BaseAPIHandler) reloadSelectedAuthForStreamRetry(ctx context.Context, m
 	if _, errReload := h.AuthManager.ReloadAuthRuntimeFromFile(ctx, authID); errReload != nil {
 		return errReload
 	}
+	if excludeSelected {
+		return excludeSelectedAuthForStreamRetry(metadata)
+	}
 	clearSelectedAuthMetadata(metadata)
 	return nil
 }
 
 func (h *BaseAPIHandler) prepareSelectedAuthForStreamRetry(ctx context.Context, metadata map[string]any, retryMode pluginapi.StreamCompletionRetryMode) error {
 	switch retryMode {
-	case pluginapi.StreamCompletionRetryModeReloadSelectedAuth:
-		return h.reloadSelectedAuthForStreamRetry(ctx, metadata)
+	case pluginapi.StreamCompletionRetryModeReloadSelectedAuth, pluginapi.StreamCompletionRetryModeReloadAndExcludeSelectedAuth:
+		return h.reloadSelectedAuthForStreamRetry(ctx, metadata, retryMode == pluginapi.StreamCompletionRetryModeReloadAndExcludeSelectedAuth)
 	case pluginapi.StreamCompletionRetryModeExcludeSelectedAuth:
 		return excludeSelectedAuthForStreamRetry(metadata)
 	default:

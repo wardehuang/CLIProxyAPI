@@ -31,6 +31,7 @@ func finalizeRealtimeGuardRequest(request pluginapi.RequestFinalizeRequest) (plu
 	timeoutMetadata := map[string]any{}
 	if settings, settingsErr := pluginRuntime.currentSettings(); settingsErr == nil {
 		timeoutMetadata[executor.StreamCompletionTimeoutSecondsMetadataKey] = settings.RealtimeGuardTimeoutSeconds
+		timeoutMetadata[executor.StreamProgressTimeoutSecondsMetadataKey] = settings.RealtimeGuardIdleTimeoutSeconds
 	}
 
 	authID := realtimeGuardMetadataString(request.Metadata, executor.SelectedAuthMetadataKey)

@@ -16,6 +16,7 @@ type xaiFinalizedRequest struct {
 	Body                []byte
 	SessionID           string
 	FirstPayloadTimeout time.Duration
+	ProgressTimeout     time.Duration
 }
 
 func finalizeXAIRequest(ctx context.Context, opts cliproxyexecutor.Options, prepared *xaiPreparedRequest, headers http.Header) xaiFinalizedRequest {
@@ -29,15 +30,16 @@ func finalizeXAIRequest(ctx context.Context, opts cliproxyexecutor.Options, prep
 		Headers:             finalHeaders,
 		Body:                finalBody,
 		SessionID:           finalSessionID,
-		FirstPayloadTimeout: realtimeGuardFirstPayloadTimeout(opts.Metadata),
+		FirstPayloadTimeout: realtimeGuardTimeout(opts.Metadata, cliproxyexecutor.StreamCompletionTimeoutSecondsMetadataKey),
+		ProgressTimeout:     realtimeGuardTimeout(opts.Metadata, cliproxyexecutor.StreamProgressTimeoutSecondsMetadataKey),
 	}
 }
 
-func realtimeGuardFirstPayloadTimeout(metadata map[string]any) time.Duration {
+func realtimeGuardTimeout(metadata map[string]any, key string) time.Duration {
 	if metadata == nil {
 		return 0
 	}
-	value, exists := metadata[cliproxyexecutor.StreamCompletionTimeoutSecondsMetadataKey]
+	value, exists := metadata[key]
 	if !exists {
 		return 0
 	}

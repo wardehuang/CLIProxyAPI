@@ -235,6 +235,7 @@ func defaultPluginSettings() pluginSettings {
 		RealtimeGuardGenerationSeconds:               defaultRealtimeGuardGenerationSeconds,
 		RealtimeGuardTokenThreshold:                  defaultRealtimeGuardTokenThreshold,
 		RealtimeGuardTimeoutSeconds:                  defaultRealtimeGuardTimeoutSeconds,
+		RealtimeGuardIdleTimeoutSeconds:              defaultRealtimeGuardIdleTimeoutSeconds,
 		RealtimeGuardMinSummaryChars:                 defaultRealtimeGuardMinSummaryChars,
 		RealtimeGuardMinEncryptedBytes:               defaultRealtimeGuardMinEncryptedBytes,
 		RealtimeGuardEncryptedBytesPerReasoningToken: defaultRealtimeGuardEncryptedBytesPerReasoningToken,

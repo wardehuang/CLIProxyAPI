@@ -10,6 +10,7 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/executor"
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginapi"
 )
 
@@ -125,9 +126,13 @@ func handleStreamCompletionIntercept(completion pluginapi.StreamCompletionInterc
 			Error:      err.Error(),
 		}, nil
 	}
+	retryMode := pluginapi.StreamCompletionRetryModeReloadSelectedAuth
+	if decision.Reason == executor.ErrStreamProgressTimeout.Error() {
+		retryMode = pluginapi.StreamCompletionRetryModeReloadAndExcludeSelectedAuth
+	}
 	return pluginapi.StreamCompletionInterceptResponse{
 		Action:     pluginapi.StreamCompletionAction(decision.Action),
-		RetryMode:  pluginapi.StreamCompletionRetryModeReloadSelectedAuth,
+		RetryMode:  retryMode,
 		Reason:     decision.Reason,
 		StatusCode: http.StatusBadGateway,
 		Error:      decision.Error,
@@ -187,8 +192,18 @@ func classifyRealtimeGuardProbeWithSettings(probe realtimeGuardProbe, settings p
 		Reason:         "within_threshold",
 	}
 	if !probe.FinishedAt.IsZero() && !probe.StartedAt.IsZero() {
+		decision.TotalDurationMs = probe.FinishedAt.Sub(probe.StartedAt).Milliseconds()
+	}
+	if strings.HasPrefix(probe.Error, executor.ErrStreamProgressTimeout.Error()+":") {
+		decision.Action = realtimeGuardActionRetry
+		decision.Classification = realtimeGuardClassificationDegradation
+		decision.QualityLevel = realtimeGuardQualitySoft
+		decision.Reason = executor.ErrStreamProgressTimeout.Error()
+		decision.Error = probe.Error
+		return decision
+	}
+	if !probe.FinishedAt.IsZero() && !probe.StartedAt.IsZero() {
 		requestDuration := probe.FinishedAt.Sub(probe.StartedAt)
-		decision.TotalDurationMs = requestDuration.Milliseconds()
 		if probe.FirstPayloadAt.IsZero() && requestDuration > time.Duration(settings.RealtimeGuardTimeoutSeconds)*time.Second {
 			decision.Action = realtimeGuardActionRetry
 			decision.Classification = realtimeGuardClassificationDegradation

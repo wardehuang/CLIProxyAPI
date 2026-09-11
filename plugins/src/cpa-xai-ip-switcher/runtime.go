@@ -158,6 +158,7 @@ func pluginSettingsEqual(left, right pluginSettings) bool {
 		left.RealtimeGuardGenerationSeconds == right.RealtimeGuardGenerationSeconds &&
 		left.RealtimeGuardTokenThreshold == right.RealtimeGuardTokenThreshold &&
 		left.RealtimeGuardTimeoutSeconds == right.RealtimeGuardTimeoutSeconds &&
+		left.RealtimeGuardIdleTimeoutSeconds == right.RealtimeGuardIdleTimeoutSeconds &&
 		left.RealtimeGuardMinSummaryChars == right.RealtimeGuardMinSummaryChars &&
 		left.RealtimeGuardMinEncryptedBytes == right.RealtimeGuardMinEncryptedBytes &&
 		left.RealtimeGuardEncryptedBytesPerReasoningToken == right.RealtimeGuardEncryptedBytesPerReasoningToken &&
