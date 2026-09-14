@@ -45,10 +45,11 @@ type managerRealtimeDegradationRequest struct {
 }
 
 type managerRealtimeHealthyRequest struct {
-	AccountKey string `json:"accountKey"`
-	FileName   string `json:"fileName"`
-	AuthIndex  string `json:"authIndex"`
-	AccountID  string `json:"accountId"`
+	AccountKey      string `json:"accountKey"`
+	FileName        string `json:"fileName"`
+	AuthIndex       string `json:"authIndex"`
+	AccountID       string `json:"accountId"`
+	CurrentPriority *int   `json:"currentPriority,omitempty"`
 }
 
 type managerRealtimeHealthyResponse struct {
@@ -122,6 +123,10 @@ func syncManagerRealtimeHealthy(managerBaseURL, managerManagementKey string, aut
 		AuthIndex:  auth.Index,
 		AccountID:  accountID,
 	}
+	if auth.PrioritySet {
+		priority := auth.Priority
+		payload.CurrentPriority = &priority
+	}
 	request, err := client.newRequest(http.MethodPost, managerRealtimeHealthyEndpoint, payload)
 	if err != nil {
 		return false, err
@@ -134,19 +139,9 @@ func syncManagerRealtimeHealthy(managerBaseURL, managerManagementKey string, aut
 }
 
 func notifyManagerRealtimeHealthyAsync(probe realtimeGuardProbe) {
+	// Always notify Manager on Normal completions. Local realtime_degraded_auths
+	// can disappear after plugin DB rebuild, which previously skipped the clear.
 	go func() {
-		shouldSync := false
-		if _, err := pluginRuntime.withStore(func(store *ipStore) ([]byte, error) {
-			marked, markedErr := store.hasRealtimeDegradedAuth(probe.AuthIndex)
-			shouldSync = marked
-			return nil, markedErr
-		}); err != nil {
-			logManagerRealtimeHealthyFailure(probe, err)
-			return
-		}
-		if !shouldSync {
-			return
-		}
 		auth, err := getAuthFile(probe.AuthIndex)
 		if err != nil {
 			logManagerRealtimeHealthyFailure(probe, err)
