@@ -291,15 +291,20 @@ func classifyRealtimeGuardProbeWithSettings(probe realtimeGuardProbe, settings p
 		decision.Reason = "hard_tps"
 		return decision
 	}
-	if ttfbDuration.Seconds() > settings.RealtimeGuardTTFBSeconds &&
-		generationDuration.Seconds() < settings.RealtimeGuardGenerationSeconds &&
-		decision.TotalTokens > int64(settings.RealtimeGuardTokenThreshold) {
-		decision.Action = realtimeGuardActionRetry
-		decision.Classification = realtimeGuardClassificationDegradation
-		decision.QualityLevel = realtimeGuardQualitySoft
-		decision.Reason = "ttfb_downgrade"
-		return decision
-	}
+	// Temporarily disable TTFB-based rejection: delayed first bytes followed by
+	// a short generation window can reject valid thinking and tool-call responses.
+	// Keep the original rule and settings for reassessment; TTFB metrics remain active.
+	/*
+		if ttfbDuration.Seconds() > settings.RealtimeGuardTTFBSeconds &&
+			generationDuration.Seconds() < settings.RealtimeGuardGenerationSeconds &&
+			decision.TotalTokens > int64(settings.RealtimeGuardTokenThreshold) {
+			decision.Action = realtimeGuardActionRetry
+			decision.Classification = realtimeGuardClassificationDegradation
+			decision.QualityLevel = realtimeGuardQualitySoft
+			decision.Reason = "ttfb_downgrade"
+			return decision
+		}
+	*/
 	if decision.TPS > settings.QualitySoftTPS && decision.TPS < settings.QualityHardTPS && !decision.IsRealThinking {
 		if decision.CompletedToolCallEvidence {
 			decision.Reason = "completed_tool_call_evidence"
