@@ -112,7 +112,9 @@ LIMIT 1`, proxyURL).Scan(&failure.NodeID, &failure.NodeName, &inputIP, &exitIP)
 		return realtimeDegradationFailure{}, fmt.Errorf("查询实时降智节点: %w", err)
 	}
 	if err == sql.ErrNoRows {
-		return realtimeDegradationFailure{}, fmt.Errorf("实时降智节点不存在: %s", proxyURL)
+		// Expiry may delete the attempted node while its request is in flight.
+		// Preserve the failure even when live node details are no longer available.
+		failure.NodeID = probe.SourceSnapshot.NodeID
 	}
 
 	now := time.Now().UnixMilli()

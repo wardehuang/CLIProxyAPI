@@ -1161,9 +1161,6 @@ func (m *Manager) executeStreamMixedOnce(ctx context.Context, providers []string
 			pooled = false
 		}
 		streamResult, errStream := m.executeStreamWithModelPool(execCtx, executor, auth, provider, execReq, execOpts, routeModel, streamExecutionModel, models, pooled, aliasResult, routing, !homeMode || selection != nil, selection != nil)
-		if streamResult != nil {
-			streamResult.Metadata = cloneAuthSelectionMetadata(execOpts.Metadata)
-		}
 		if errStream != nil {
 			if hasUpstreamExecutionAttempt(errStream) {
 				upstreamErr = errStream
@@ -1228,13 +1225,15 @@ func cloneAuthSelectionMetadata(metadata map[string]any) map[string]any {
 	if metadata == nil {
 		return nil
 	}
-	return map[string]any{
+	cloned := map[string]any{
 		cliproxyexecutor.SelectedAuthMetadataKey:         metadata[cliproxyexecutor.SelectedAuthMetadataKey],
 		cliproxyexecutor.SelectedAuthIndexMetadataKey:    metadata[cliproxyexecutor.SelectedAuthIndexMetadataKey],
 		cliproxyexecutor.SelectedAuthProxyURLMetadataKey: metadata[cliproxyexecutor.SelectedAuthProxyURLMetadataKey],
 		cliproxyexecutor.SelectedAuthProviderMetadataKey: metadata[cliproxyexecutor.SelectedAuthProviderMetadataKey],
 		cliproxyexecutor.SelectedAuthFileNameMetadataKey: metadata[cliproxyexecutor.SelectedAuthFileNameMetadataKey],
 	}
+	cliproxyexecutor.CopyRequestFinalizerMetadata(cloned, metadata)
+	return cloned
 }
 
 func shouldExcludeHomeAuthAfterStreamError(ctx context.Context, _ *Auth, err error) bool {
@@ -1733,6 +1732,7 @@ func publishSelectedAuthMetadata(meta map[string]any, auth *Auth) {
 	if meta == nil || auth == nil {
 		return
 	}
+	cliproxyexecutor.ClearRequestFinalizerMetadata(meta)
 	if authID := strings.TrimSpace(auth.ID); authID != "" {
 		meta[cliproxyexecutor.SelectedAuthMetadataKey] = authID
 		if callback, ok := meta[cliproxyexecutor.SelectedAuthCallbackMetadataKey].(func(string)); ok && callback != nil {

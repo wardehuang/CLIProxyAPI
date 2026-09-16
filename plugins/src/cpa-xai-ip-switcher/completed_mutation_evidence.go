@@ -1,7 +1,6 @@
 package main
 
 import (
-	"bytes"
 	"encoding/json"
 	"strings"
 )
@@ -19,21 +18,27 @@ type completedMutationInputItem struct {
 }
 
 type completedMutationToolResult struct {
-	Success  bool            `json:"success"`
-	Verified bool            `json:"verified"`
-	ExitCode *int            `json:"exit_code"`
-	Error    json.RawMessage `json:"error"`
+	Success  bool `json:"success"`
+	Verified bool `json:"verified"`
 }
 
-func hasCompletedMutationEvidence(requestBody []byte) bool {
+type completedMutationEvidence struct {
+	Matched        bool
+	ScanStartIndex int
+	ToolName       string
+	CallID         string
+}
+
+func scanCompletedMutationEvidence(requestBody []byte) completedMutationEvidence {
+	evidence := completedMutationEvidence{ScanStartIndex: -1}
 	var request completedMutationRequest
 	if err := json.Unmarshal(requestBody, &request); err != nil {
-		return false
+		return evidence
 	}
 
 	var items []completedMutationInputItem
 	if err := json.Unmarshal(request.Input, &items); err != nil {
-		return false
+		return evidence
 	}
 
 	lastUserIndex := -1
@@ -43,10 +48,11 @@ func hasCompletedMutationEvidence(requestBody []byte) bool {
 		}
 	}
 	if lastUserIndex < 0 {
-		return false
+		return evidence
 	}
 
 	scanStartIndex := completedMutationScanStart(items, lastUserIndex)
+	evidence.ScanStartIndex = scanStartIndex
 	mutationCalls := make(map[string]string)
 	for index := scanStartIndex; index < len(items); index++ {
 		item := items[index]
@@ -61,11 +67,14 @@ func hasCompletedMutationEvidence(requestBody []byte) bool {
 		case "function_call_output":
 			toolName, exists := mutationCalls[strings.TrimSpace(item.CallID)]
 			if exists && completedMutationOutputSucceeded(toolName, item.Output) {
-				return true
+				evidence.Matched = true
+				evidence.ToolName = toolName
+				evidence.CallID = strings.TrimSpace(item.CallID)
+				return evidence
 			}
 		}
 	}
-	return false
+	return evidence
 }
 
 func completedMutationScanStart(items []completedMutationInputItem, lastUserIndex int) int {
@@ -83,7 +92,7 @@ func completedMutationScanStart(items []completedMutationInputItem, lastUserInde
 
 func isMutationToolName(toolName string) bool {
 	switch toolName {
-	case "patch", "write_file", "skill_manage", "terminal":
+	case "patch", "write_file", "skill_manage":
 		return true
 	default:
 		return false
@@ -98,13 +107,5 @@ func completedMutationOutputSucceeded(toolName, output string) bool {
 	if toolName == "write_file" {
 		return result.Verified
 	}
-	if toolName == "terminal" {
-		return result.ExitCode != nil && *result.ExitCode == 0 && terminalMutationErrorEmpty(result.Error)
-	}
 	return result.Success
-}
-
-func terminalMutationErrorEmpty(raw json.RawMessage) bool {
-	raw = bytes.TrimSpace(raw)
-	return bytes.Equal(raw, []byte("null")) || bytes.Equal(raw, []byte(`""`))
 }

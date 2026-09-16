@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"strings"
@@ -12,9 +13,12 @@ import (
 
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/executor"
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginapi"
+	log "github.com/sirupsen/logrus"
 )
 
 const probeKindRealtimeGuard = "realtime_guard"
+
+var errRealtimeGuardSourceUnavailable = errors.New("realtime guard source occupancy is no longer available")
 
 type realtimeGuardReplacement struct {
 	HealthySlot     slotRecord
@@ -44,13 +48,40 @@ func handleStreamCompletionIntercept(completion pluginapi.StreamCompletionInterc
 	}
 
 	probe := realtimeGuardProbeFromCompletion(completion)
+	if sourceError := realtimeGuardMetadataString(completion.Metadata, realtimeGuardSourceErrorMetadataKey); sourceError != "" {
+		return pluginapi.StreamCompletionInterceptResponse{
+			Action:     pluginapi.StreamCompletionActionFail,
+			Reason:     "realtime_guard_source_error",
+			StatusCode: http.StatusBadGateway,
+			Error:      sourceError,
+		}, nil
+	}
 	snapshot := realtimeGuardSnapshotFromMetadata(completion.Metadata)
 	if snapshot.SlotID > 0 && snapshot.NodeID > 0 && snapshot.ProxyURL != "" {
+		if snapshot.ProxyURL != probe.ProxyURL {
+			return pluginapi.StreamCompletionInterceptResponse{
+				Action:     pluginapi.StreamCompletionActionFail,
+				Reason:     "realtime_guard_source_mismatch",
+				StatusCode: http.StatusBadGateway,
+				Error:      "Realtime guard snapshot does not match the attempted proxy",
+			}, nil
+		}
 		probe.SourceSnapshot = snapshot
-		probe.ProxyURL = snapshot.ProxyURL
 	}
 	decision := classifyRealtimeGuardProbe(probe)
 	if decision.Classification == realtimeGuardClassificationNormal {
+		if decision.Reason == "completed_mutation_evidence" {
+			_, auditErr := pluginRuntime.withStore(func(store *ipStore) ([]byte, error) {
+				return nil, store.appendProbeLog(
+					logCategoryRealtimeGuard, probe.RequestID, logStatusConnected, logLevelInfo,
+					"realtime_guard.completed_mutation_evidence", probe.SourceSnapshot.NodeID, "",
+					"Completed mutation evidence accepted", realtimeGuardMutationAudit(probe, decision),
+				)
+			})
+			if auditErr != nil {
+				log.WithError(auditErr).WithField("request_id", probe.RequestID).Warn("Failed to persist realtime guard mutation audit")
+			}
+		}
 		_, _ = pluginRuntime.withStore(func(store *ipStore) ([]byte, error) {
 			return nil, store.clearRealtimeDegradationFailure(probe.ProxyURL)
 		})
@@ -126,17 +157,20 @@ func handleStreamCompletionIntercept(completion pluginapi.StreamCompletionInterc
 			Error:      err.Error(),
 		}, nil
 	}
-	retryMode := pluginapi.StreamCompletionRetryModeReloadSelectedAuth
-	if decision.Reason == executor.ErrStreamProgressTimeout.Error() {
-		retryMode = pluginapi.StreamCompletionRetryModeReloadAndExcludeSelectedAuth
-	}
 	return pluginapi.StreamCompletionInterceptResponse{
 		Action:     pluginapi.StreamCompletionAction(decision.Action),
-		RetryMode:  retryMode,
+		RetryMode:  realtimeGuardRetryMode(decision),
 		Reason:     decision.Reason,
 		StatusCode: http.StatusBadGateway,
 		Error:      decision.Error,
 	}, nil
+}
+
+func realtimeGuardRetryMode(decision realtimeGuardDecision) pluginapi.StreamCompletionRetryMode {
+	if decision.Classification == realtimeGuardClassificationDegradation || decision.SourceUnavailable || decision.Reason == executor.ErrStreamProgressTimeout.Error() {
+		return pluginapi.StreamCompletionRetryModeReloadAndExcludeSelectedAuth
+	}
+	return pluginapi.StreamCompletionRetryModeReloadSelectedAuth
 }
 
 func realtimeGuardProbeFromCompletion(completion pluginapi.StreamCompletionInterceptRequest) realtimeGuardProbe {
@@ -174,11 +208,12 @@ func classifyRealtimeGuardProbe(probe realtimeGuardProbe) realtimeGuardDecision 
 	settings, err := pluginRuntime.currentSettings()
 	if err != nil {
 		return realtimeGuardDecision{
-			Action:         realtimeGuardActionFail,
-			Reason:         "settings_unavailable",
-			Classification: realtimeGuardClassificationUnknown,
-			QualityLevel:   realtimeGuardQualityUnknown,
-			Error:          err.Error(),
+			Action:           realtimeGuardActionFail,
+			Reason:           "settings_unavailable",
+			MutationEvidence: completedMutationEvidence{ScanStartIndex: -1},
+			Classification:   realtimeGuardClassificationUnknown,
+			QualityLevel:     realtimeGuardQualityUnknown,
+			Error:            err.Error(),
 		}
 	}
 	return classifyRealtimeGuardProbeWithSettings(probe, settings)
@@ -186,10 +221,11 @@ func classifyRealtimeGuardProbe(probe realtimeGuardProbe) realtimeGuardDecision 
 
 func classifyRealtimeGuardProbeWithSettings(probe realtimeGuardProbe, settings pluginSettings) realtimeGuardDecision {
 	decision := realtimeGuardDecision{
-		Action:         realtimeGuardActionFlush,
-		Classification: realtimeGuardClassificationNormal,
-		QualityLevel:   realtimeGuardQualityHealthy,
-		Reason:         "within_threshold",
+		Action:           realtimeGuardActionFlush,
+		Classification:   realtimeGuardClassificationNormal,
+		QualityLevel:     realtimeGuardQualityHealthy,
+		Reason:           "within_threshold",
+		MutationEvidence: completedMutationEvidence{ScanStartIndex: -1},
 	}
 	if !probe.FinishedAt.IsZero() && !probe.StartedAt.IsZero() {
 		decision.TotalDurationMs = probe.FinishedAt.Sub(probe.StartedAt).Milliseconds()
@@ -216,11 +252,12 @@ func classifyRealtimeGuardProbeWithSettings(probe realtimeGuardProbe, settings p
 	if strings.TrimSpace(probe.Error) != "" {
 		if isRealtimeGuardTransientUpstreamError(probe.Error) {
 			return realtimeGuardDecision{
-				Action:         realtimeGuardActionRetry,
-				Reason:         "upstream_temporarily_unavailable",
-				Classification: realtimeGuardClassificationTransient,
-				QualityLevel:   realtimeGuardQualityUnknown,
-				Error:          probe.Error,
+				Action:           realtimeGuardActionRetry,
+				Reason:           "upstream_temporarily_unavailable",
+				MutationEvidence: completedMutationEvidence{ScanStartIndex: -1},
+				Classification:   realtimeGuardClassificationTransient,
+				QualityLevel:     realtimeGuardQualityUnknown,
+				Error:            probe.Error,
 			}
 		}
 		return realtimeGuardUnknownDecision("upstream_error", probe.Error)
@@ -270,6 +307,7 @@ func classifyRealtimeGuardProbeWithSettings(probe realtimeGuardProbe, settings p
 	decision.GenerationMs = generationDuration.Milliseconds()
 	evidence = evaluateRealtimeGuardThinking(evidence, probe, settings)
 	decision.TotalTokens = evidence.OutputTokens + evidence.ReasoningTokens
+	decision.OutputTokens = evidence.OutputTokens
 	decision.IsRealThinking = evidence.IsRealThinking
 	decision.RealThinkingReason = evidence.Reason
 	decision.SummaryChars = evidence.SummaryChars
@@ -305,19 +343,20 @@ func classifyRealtimeGuardProbeWithSettings(probe realtimeGuardProbe, settings p
 			return decision
 		}
 	*/
-	if decision.TPS > settings.QualitySoftTPS && decision.TPS < settings.QualityHardTPS && !decision.IsRealThinking {
+	if !decision.IsRealThinking {
 		if decision.CompletedToolCallEvidence {
 			decision.Reason = "completed_tool_call_evidence"
 			return decision
 		}
-		if decision.CompletedMessageCount > 0 {
-			decision.CompletedMutationEvidence = hasCompletedMutationEvidence(probe.OriginalRequest)
+		if decision.CompletedMessageCount > 0 && !decision.RefusalDetected {
+			decision.MutationEvidence = scanCompletedMutationEvidence(probe.OriginalRequest)
+			decision.CompletedMutationEvidence = decision.MutationEvidence.Matched
 		}
 		if !decision.CompletedMutationEvidence {
 			decision.Action = realtimeGuardActionRetry
 			decision.Classification = realtimeGuardClassificationDegradation
 			decision.QualityLevel = realtimeGuardQualitySoft
-			decision.Reason = "soft_tps_missing_real_thinking"
+			decision.Reason = "missing_thinking_without_action"
 			return decision
 		}
 		decision.Reason = "completed_mutation_evidence"
@@ -337,11 +376,12 @@ func isRealtimeGuardTransientUpstreamError(message string) bool {
 
 func realtimeGuardUnknownDecision(reason, detail string) realtimeGuardDecision {
 	return realtimeGuardDecision{
-		Action:         realtimeGuardActionFail,
-		Reason:         reason,
-		Classification: realtimeGuardClassificationUnknown,
-		QualityLevel:   realtimeGuardQualityUnknown,
-		Error:          detail,
+		Action:           realtimeGuardActionFail,
+		Reason:           reason,
+		MutationEvidence: completedMutationEvidence{ScanStartIndex: -1},
+		Classification:   realtimeGuardClassificationUnknown,
+		QualityLevel:     realtimeGuardQualityUnknown,
+		Error:            detail,
 	}
 }
 
@@ -620,6 +660,16 @@ func (store *ipStore) applyRealtimeGuard(probe realtimeGuardProbe, decision *rea
 		return err
 	}
 	replacement, err := store.startRealtimeGuardReplacement(probe, *decision)
+	if errors.Is(err, errRealtimeGuardSourceUnavailable) {
+		decision.Action = realtimeGuardActionRetry
+		decision.SourceUnavailable = true
+		return store.appendProbeLog(
+			logCategoryRealtimeGuard, probe.RequestID, logStatusProbing, logLevelWarn,
+			"realtime_guard.source_unavailable", probe.SourceSnapshot.NodeID, "",
+			"Source occupancy unavailable; skipping node replacement and retrying another auth",
+			fmt.Sprintf("auth_index=%s; slot_id=%d; node_id=%d; slot_refresh_at=%d; reason=%s", probe.AuthIndex, probe.SourceSnapshot.SlotID, probe.SourceSnapshot.NodeID, probe.SourceSnapshot.SlotRefreshAt, decision.Reason),
+		)
+	}
 	if err != nil {
 		return err
 	}
@@ -647,6 +697,9 @@ func (store *ipStore) applyRealtimeGuard(probe realtimeGuardProbe, decision *rea
 }
 
 func (store *ipStore) startRealtimeGuardReplacement(probe realtimeGuardProbe, decision realtimeGuardDecision) (realtimeGuardReplacement, error) {
+	if probe.SourceSnapshot.SlotID == 0 || probe.SourceSnapshot.NodeID == 0 || probe.SourceSnapshot.SlotRefreshAt == 0 {
+		return realtimeGuardReplacement{}, errRealtimeGuardSourceUnavailable
+	}
 	transaction, err := store.database.Begin()
 	if err != nil {
 		return realtimeGuardReplacement{}, fmt.Errorf("开始实时守护替换事务: %w", err)
@@ -654,31 +707,17 @@ func (store *ipStore) startRealtimeGuardReplacement(probe realtimeGuardProbe, de
 	defer transaction.Rollback()
 
 	var replacement realtimeGuardReplacement
-	if probe.SourceSnapshot.SlotID > 0 && probe.SourceSnapshot.NodeID > 0 {
-		if err := scanRealtimeHealthySlot(transaction.QueryRow(`
+	if err := scanRealtimeHealthySlot(transaction.QueryRow(`
 SELECT slot_id, slot_kind, node_id, claim_node_id, fallback_origin, fallback_entered_round_id,
        claim_token, claim_stage, claim_started_at, last_processed_round_id, blocked_round_id, refresh_at
 FROM ip_slots
 WHERE slot_id = ? AND node_id = ? AND slot_kind = ?`, probe.SourceSnapshot.SlotID, probe.SourceSnapshot.NodeID, statusHealthy), &replacement.HealthySlot); err != nil {
-			if err == sql.ErrNoRows {
-				return realtimeGuardReplacement{}, fmt.Errorf("实时守护源槽位快照已失效")
-			}
-			return realtimeGuardReplacement{}, err
-		}
-	} else if err := scanRealtimeHealthySlot(transaction.QueryRow(`
-SELECT slots.slot_id, slots.slot_kind, slots.node_id, slots.claim_node_id, slots.fallback_origin, slots.fallback_entered_round_id,
-       slots.claim_token, slots.claim_stage, slots.claim_started_at, slots.last_processed_round_id, slots.blocked_round_id, slots.refresh_at
-FROM ip_slots AS slots
-JOIN ip_nodes AS nodes ON nodes.id = slots.node_id
-WHERE slots.slot_kind = ? AND nodes.proxy_url = ?
-ORDER BY slots.slot_id ASC
-LIMIT 1`, statusHealthy, strings.TrimSpace(probe.ProxyURL)), &replacement.HealthySlot); err != nil {
-		if err == sql.ErrNoRows {
-			return realtimeGuardReplacement{}, fmt.Errorf("实时守护未找到 proxy_url 对应的健康槽位")
+		if errors.Is(err, sql.ErrNoRows) {
+			return realtimeGuardReplacement{}, errRealtimeGuardSourceUnavailable
 		}
 		return realtimeGuardReplacement{}, err
 	}
-	if err := store.validateRealtimeGuardSnapshot(transaction, probe.SourceSnapshot, replacement.HealthySlot); err != nil {
+	if err := validateRealtimeGuardSnapshot(probe.SourceSnapshot, replacement.HealthySlot); err != nil {
 		return realtimeGuardReplacement{}, err
 	}
 	if err := scanProxyNode(transaction.QueryRow(`
@@ -689,8 +728,11 @@ SELECT id, node_name, proxy_url, host, input_ip, port, protocol, domain, batch_i
 FROM ip_nodes WHERE id = ?`, replacement.HealthySlot.NodeID), &replacement.OriginalNode); err != nil {
 		return realtimeGuardReplacement{}, err
 	}
+	if replacement.OriginalNode.ProxyURL != probe.ProxyURL {
+		return realtimeGuardReplacement{}, fmt.Errorf("realtime guard source node proxy changed")
+	}
 	if replacement.OriginalNode.Status != statusHealthy {
-		return realtimeGuardReplacement{}, fmt.Errorf("实时守护节点 %d 当前不是健康状态", replacement.OriginalNode.ID)
+		return realtimeGuardReplacement{}, errRealtimeGuardSourceUnavailable
 	}
 
 	if _, err := transaction.Exec(`
@@ -735,23 +777,11 @@ WHERE id = ? AND status = ?`, statusHealthy, statusHealthy, candidate.ID, status
 	return replacement, nil
 }
 
-func (store *ipStore) validateRealtimeGuardSnapshot(transaction *sql.Tx, snapshot realtimeGuardSourceSnapshot, slot slotRecord) error {
-	if snapshot.SlotID == 0 || snapshot.NodeID == 0 {
-		return nil
-	}
-	if snapshot.SlotID != slot.ID || snapshot.NodeID != slot.NodeID {
-		return fmt.Errorf("实时守护源槽位快照不匹配")
-	}
-	var bindingUpdatedAt int64
-	err := transaction.QueryRow(`
-SELECT updated_at
-FROM ip_slot_auth_bindings
-WHERE auth_identity = ? AND slot_id = ? AND node_id = ? AND proxy_url = ?`, snapshot.AuthIdentity, snapshot.SlotID, snapshot.NodeID, snapshot.ProxyURL).Scan(&bindingUpdatedAt)
-	if err != nil {
-		return fmt.Errorf("验证实时守护源 auth 绑定: %w", err)
-	}
-	if bindingUpdatedAt != snapshot.BindingUpdatedAt {
-		return fmt.Errorf("实时守护源 auth 绑定已变更")
+func validateRealtimeGuardSnapshot(snapshot realtimeGuardSourceSnapshot, slot slotRecord) error {
+	// Auth distribution can refresh bindings while the original node stays in place.
+	// Only the source slot's occupancy, not the current auth binding, authorizes eviction.
+	if snapshot.SlotID != slot.ID || snapshot.NodeID != slot.NodeID || snapshot.SlotRefreshAt != slot.RefreshAt {
+		return errRealtimeGuardSourceUnavailable
 	}
 	return nil
 }
@@ -803,12 +833,19 @@ func ensureRealtimeGuardReplacementAuth(degradedAuthIndex string) error {
 	}
 	for _, auth := range authFiles {
 		negativePriority := auth.PrioritySet && auth.Priority < 0
-		if auth.Index == degradedAuthIndex || auth.Disabled || auth.AccessToken() == "" || negativePriority {
+		if auth.Index == degradedAuthIndex || auth.Disabled || auth.AccessToken() == "" || negativePriority || strings.TrimSpace(auth.ProxyURL) == "" {
 			continue
 		}
 		return nil
 	}
 	return fmt.Errorf("实时守护没有可用的新 xAI auth，拒绝重试")
+}
+
+func realtimeGuardMutationAudit(probe realtimeGuardProbe, decision realtimeGuardDecision) string {
+	return fmt.Sprintf("request_id=%q; trace_id=%q; auth_index=%q; reason=%q; IsRealThinking=%t; RealThinkingReason=%q; completed_function_calls=%d; completed_messages=%d; mutation_scan_start=%d; mutation_matched=%t; mutation_tool=%q; mutation_call_id=%q; TPS=%.2f; output_tokens=%d",
+		probe.RequestID, probe.TraceID, probe.AuthIndex, decision.Reason, decision.IsRealThinking, decision.RealThinkingReason,
+		decision.CompletedFunctionCallCount, decision.CompletedMessageCount, decision.MutationEvidence.ScanStartIndex,
+		decision.MutationEvidence.Matched, decision.MutationEvidence.ToolName, decision.MutationEvidence.CallID, decision.TPS, decision.OutputTokens)
 }
 
 func (store *ipStore) logRealtimeDegradationDetected(probe realtimeGuardProbe, decision realtimeGuardDecision) error {
@@ -822,7 +859,7 @@ func (store *ipStore) logRealtimeDegradationDetected(probe realtimeGuardProbe, d
 		probe.SourceSnapshot.NodeID,
 		"",
 		fmt.Sprintf("【检测到降智】auth:%s，节点:%s，原因:%s", authIdentity, probe.ProxyURL, decision.Reason),
-		fmt.Sprintf("request_id=%s；auth_file=%s；auth_index=%s；节点代理=%s；HTTP=%d；等级=%s；总耗时=%dms；TPS=%.2f；TTFB=%dms；首字后耗时=%dms；输出+思考tokens=%d；isRealThinking=%t；thinking原因=%s；summary字符=%d；encrypted=%d/%d字节；可见tokens=%d；可见倾倒=%dms；outputTextChars=%d；completedMessages=%d；completedFunctionCalls=%d；completedToolCallEvidence=%t；toolCallOnly=%t；completedMutationEvidence=%t；refusalDetected=%t", probe.RequestID, authIdentity, probe.AuthIndex, probe.ProxyURL, probe.StatusCode, decision.QualityLevel, decision.TotalDurationMs, decision.TPS, decision.TTFBMs, decision.GenerationMs, decision.TotalTokens, decision.IsRealThinking, decision.RealThinkingReason, decision.SummaryChars, decision.EncryptedBytes, decision.EncryptedFloor, decision.VisibleTokens, decision.VisibleFlushMs, decision.OutputTextChars, decision.CompletedMessageCount, decision.CompletedFunctionCallCount, decision.CompletedToolCallEvidence, decision.ToolCallOnly, decision.CompletedMutationEvidence, decision.RefusalDetected),
+		fmt.Sprintf("request_id=%s；auth_file=%s；auth_index=%s；节点代理=%s；HTTP=%d；等级=%s；总耗时=%dms；TPS=%.2f；TTFB=%dms；首字后耗时=%dms；输出+思考tokens=%d；isRealThinking=%t；thinking原因=%s；summary字符=%d；encrypted=%d/%d字节；可见tokens=%d；可见倾倒=%dms；outputTextChars=%d；completedMessages=%d；completedFunctionCalls=%d；completedToolCallEvidence=%t；toolCallOnly=%t；completedMutationEvidence=%t；refusalDetected=%t", probe.RequestID, authIdentity, probe.AuthIndex, probe.ProxyURL, probe.StatusCode, decision.QualityLevel, decision.TotalDurationMs, decision.TPS, decision.TTFBMs, decision.GenerationMs, decision.TotalTokens, decision.IsRealThinking, decision.RealThinkingReason, decision.SummaryChars, decision.EncryptedBytes, decision.EncryptedFloor, decision.VisibleTokens, decision.VisibleFlushMs, decision.OutputTextChars, decision.CompletedMessageCount, decision.CompletedFunctionCallCount, decision.CompletedToolCallEvidence, decision.ToolCallOnly, decision.CompletedMutationEvidence, decision.RefusalDetected)+"; "+realtimeGuardMutationAudit(probe, decision),
 	)
 }
 
@@ -866,6 +903,6 @@ func (store *ipStore) logRealtimeGuard(probe realtimeGuardProbe, decision realti
 		originalNode.ID,
 		originalNode.Name,
 		"实时守护发现异常并已处理",
-		fmt.Sprintf("request_id=%s；auth_id=%s；auth_index=%s；HTTP=%d；分类=%s；等级=%s；总耗时=%dms；TPS=%.2f；TTFB=%dms；首字后耗时=%dms；输出+思考tokens=%d；isRealThinking=%t；thinking原因=%s；summary字符=%d；encrypted=%d/%d字节；可见tokens=%d；可见倾倒=%dms；outputTextChars=%d；completedMessages=%d；completedFunctionCalls=%d；completedToolCallEvidence=%t；toolCallOnly=%t；completedMutationEvidence=%t；refusalDetected=%t；原节点=%d；原代理=%s；替换节点=%d；替换代理=%s；动作=%s；重试=%d/%d；错误=%s", probe.RequestID, probe.AuthID, probe.AuthIndex, probe.StatusCode, decision.Classification, decision.QualityLevel, decision.TotalDurationMs, decision.TPS, decision.TTFBMs, decision.GenerationMs, decision.TotalTokens, decision.IsRealThinking, decision.RealThinkingReason, decision.SummaryChars, decision.EncryptedBytes, decision.EncryptedFloor, decision.VisibleTokens, decision.VisibleFlushMs, decision.OutputTextChars, decision.CompletedMessageCount, decision.CompletedFunctionCallCount, decision.CompletedToolCallEvidence, decision.ToolCallOnly, decision.CompletedMutationEvidence, decision.RefusalDetected, originalNode.ID, originalNode.ProxyURL, replacementNode.ID, replacementNode.ProxyURL, decision.Action, probe.RetryCount, probe.MaxRetries, decision.Error),
+		fmt.Sprintf("request_id=%s；auth_id=%s；auth_index=%s；HTTP=%d；分类=%s；等级=%s；总耗时=%dms；TPS=%.2f；TTFB=%dms；首字后耗时=%dms；输出+思考tokens=%d；isRealThinking=%t；thinking原因=%s；summary字符=%d；encrypted=%d/%d字节；可见tokens=%d；可见倾倒=%dms；outputTextChars=%d；completedMessages=%d；completedFunctionCalls=%d；completedToolCallEvidence=%t；toolCallOnly=%t；completedMutationEvidence=%t；refusalDetected=%t；原节点=%d；原代理=%s；替换节点=%d；替换代理=%s；动作=%s；重试=%d/%d；错误=%s", probe.RequestID, probe.AuthID, probe.AuthIndex, probe.StatusCode, decision.Classification, decision.QualityLevel, decision.TotalDurationMs, decision.TPS, decision.TTFBMs, decision.GenerationMs, decision.TotalTokens, decision.IsRealThinking, decision.RealThinkingReason, decision.SummaryChars, decision.EncryptedBytes, decision.EncryptedFloor, decision.VisibleTokens, decision.VisibleFlushMs, decision.OutputTextChars, decision.CompletedMessageCount, decision.CompletedFunctionCallCount, decision.CompletedToolCallEvidence, decision.ToolCallOnly, decision.CompletedMutationEvidence, decision.RefusalDetected, originalNode.ID, originalNode.ProxyURL, replacementNode.ID, replacementNode.ProxyURL, decision.Action, probe.RetryCount, probe.MaxRetries, decision.Error)+"; "+realtimeGuardMutationAudit(probe, decision),
 	)
 }

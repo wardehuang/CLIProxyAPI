@@ -22,6 +22,10 @@ func (e *XAIExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, req 
 	if errProxy := requireXAIAuthProxyURL(auth); errProxy != nil {
 		return resp, errProxy
 	}
+	if opts.Metadata == nil {
+		opts.Metadata = make(map[string]any)
+	}
+	opts.Metadata[cliproxyexecutor.SelectedAuthProxyURLMetadataKey] = auth.ProxyURL
 	ctx = helps.EnsureSessionContext(ctx, opts, req.Payload)
 	if opts.Alt == "responses/compact" {
 		return e.executeCompact(ctx, auth, req, opts)

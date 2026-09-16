@@ -63,6 +63,7 @@ type realtimeGuardDecision struct {
 	TTFBMs                     int64
 	GenerationMs               int64
 	TotalTokens                int64
+	OutputTokens               int64
 	IsRealThinking             bool
 	RealThinkingReason         string
 	SummaryChars               int
@@ -74,10 +75,12 @@ type realtimeGuardDecision struct {
 	CompletedToolCallEvidence  bool
 	ToolCallOnly               bool
 	CompletedMutationEvidence  bool
+	MutationEvidence           completedMutationEvidence
 	OutputTextChars            int
 	CompletedMessageCount      int
 	RefusalDetected            bool
 	Error                      string
+	SourceUnavailable          bool
 	OriginalNodeID             int64
 	ReplacementNodeID          int64
 	OriginalProxyURL           string

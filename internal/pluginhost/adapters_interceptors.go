@@ -136,6 +136,8 @@ func (h *Host) FinalizeRequestExcept(ctx context.Context, req pluginapi.RequestF
 		Body:     bytes.Clone(req.Body),
 		Metadata: cloneInterceptorMetadata(req.Metadata),
 	}
+	metadataUpdates := make(map[string]any)
+	metadataClears := make(map[string]struct{})
 	skipPluginID = strings.TrimSpace(skipPluginID)
 	for _, record := range h.activeRecords() {
 		finalizer := record.plugin.Capabilities.RequestFinalizer
@@ -149,10 +151,23 @@ func (h *Host) FinalizeRequestExcept(ctx context.Context, req pluginapi.RequestF
 		if resp, ok := h.callRequestFinalizer(ctx, record, finalizer, nextReq); ok {
 			current.Headers = mergeHeadersPreserveCase(current.Headers, resp.Headers, resp.ClearHeaders)
 			current.Metadata = mergePluginMetadata(current.Metadata, resp.Metadata, resp.ClearMetadata)
+			for _, key := range resp.ClearMetadata {
+				delete(metadataUpdates, key)
+				metadataClears[key] = struct{}{}
+			}
+			for key, value := range resp.Metadata {
+				metadataUpdates[key] = value
+				delete(metadataClears, key)
+			}
 			if len(resp.Body) > 0 {
 				current.Body = bytes.Clone(resp.Body)
 			}
 		}
+	}
+	// Return only plugin-owned mutations, not unchanged request metadata.
+	current.Metadata = metadataUpdates
+	for key := range metadataClears {
+		current.ClearMetadata = append(current.ClearMetadata, key)
 	}
 	return current
 }

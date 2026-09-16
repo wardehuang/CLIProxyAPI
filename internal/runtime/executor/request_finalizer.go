@@ -12,6 +12,7 @@ import (
 )
 
 func applyRequestFinalizer(ctx context.Context, opts cliproxyexecutor.Options, toFormat sdktranslator.Format, model string, headers http.Header, body []byte) (http.Header, []byte) {
+	cliproxyexecutor.ClearRequestFinalizerMetadata(opts.Metadata)
 	if opts.RequestFinalizer == nil {
 		return headers, body
 	}
@@ -80,15 +81,7 @@ func deleteFinalizerHeader(headers http.Header, key string) {
 }
 
 func mergeFinalizerMetadata(current, updates map[string]any, clear []string) {
-	if current == nil {
-		return
-	}
-	for _, key := range clear {
-		delete(current, key)
-	}
-	for key, value := range updates {
-		current[key] = value
-	}
+	cliproxyexecutor.ApplyRequestFinalizerMetadata(current, updates, clear)
 }
 
 func setRequestBody(req *http.Request, body []byte) {

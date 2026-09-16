@@ -568,6 +568,7 @@ func mergeStreamAttemptAuthMetadata(metadata map[string]any, streamResult *coree
 	if metadata == nil || streamResult == nil {
 		return
 	}
+	coreexecutor.ClearRequestFinalizerMetadata(metadata)
 	for _, key := range []string{
 		coreexecutor.SelectedAuthMetadataKey,
 		coreexecutor.SelectedAuthIndexMetadataKey,
@@ -579,6 +580,7 @@ func mergeStreamAttemptAuthMetadata(metadata map[string]any, streamResult *coree
 			metadata[key] = value
 		}
 	}
+	coreexecutor.CopyRequestFinalizerMetadata(metadata, streamResult.Metadata)
 }
 
 func (h *BaseAPIHandler) reloadSelectedAuthForStreamRetry(ctx context.Context, metadata map[string]any, excludeSelected bool) error {
@@ -637,6 +639,7 @@ func excludeSelectedAuthForStreamRetry(metadata map[string]any) error {
 }
 
 func clearSelectedAuthMetadata(metadata map[string]any) {
+	coreexecutor.ClearRequestFinalizerMetadata(metadata)
 	delete(metadata, coreexecutor.SelectedAuthMetadataKey)
 	delete(metadata, coreexecutor.SelectedAuthIndexMetadataKey)
 	delete(metadata, coreexecutor.SelectedAuthProxyURLMetadataKey)

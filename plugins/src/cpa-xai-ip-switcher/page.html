@@ -479,8 +479,8 @@ socks5h://username:pass@ip:port
               <h4 id="settings-realtime-guard-title" class="settings-card-title">实时守护</h4>
               <span class="settings-card-badge live">立即生效</span>
             </div>
-            <p class="settings-card-help">hard TPS 仍无条件判定降智。soft TPS 区间改用真实思考判定：TPS &gt; soft 且 &lt; hard，并且 <code>isRealThinking=false</code> 时判定降智。输出 token 低于最低输出阈值时跳过真实性检查，直接视为 <code>isRealThinking=true</code>。</p>
-            <p class="settings-card-help"><code>isRealThinking = (summary 字符达标 OR completed reasoning item 的 encrypted_content 字节达到 max(最少字节, reasoning_tokens × 每 token 字节)) AND 非 burst 倾倒</code>。burst 倾倒要求 reasoning token 达到下限、可见 token 严格小于上限、首个可见正文到流结束严格小于窗口。</p>
+            <p class="settings-card-help">hard TPS 仍无条件判定降智。无思考时不再要求处于 soft TPS 区间：当前响应有完整有效工具调用且无 refusal 则放行；否则仅当 completed message 且无 refusal、并在当前任务窗口有配对成功的 <code>patch</code> / <code>write_file</code> / <code>skill_manage</code> 时按 mutation 放行。<code>terminal</code> 不再作为 mutation 证据。soft TPS 仍用于节点智商探测。</p>
+            <p class="settings-card-help">思考证据仍看 summary 字符，或 completed reasoning item 的 encrypted_content。<code>below_minimum_output_tokens</code> 与 <code>burst_dump_disabled</code> 仍是策略豁免，不表示真实思考。TTFB 拦截保持禁用，设置和指标保留。</p>
             <div class="settings-grid cols-3">
               <label class="settings-field" for="realtime-guard-ttfb-seconds">
                 首字（TTFB）阈值（秒）
