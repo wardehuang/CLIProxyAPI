@@ -245,7 +245,11 @@ func (m *Manager) updateInternal(ctx context.Context, base, auth *Auth, mode upd
 		m.scheduler.upsertAuth(authClone.Clone())
 	}
 	m.queueRefreshReschedule(auth.ID)
-	_ = m.persist(ctx, auth)
+	persistCtx := ctx
+	if mode == updateModeRefresh {
+		persistCtx = WithPreserveAuthPriority(ctx)
+	}
+	_ = m.persist(persistCtx, auth)
 	m.hook.OnAuthUpdated(ctx, auth.Clone())
 	if cooldownStateChanged {
 		m.persistCooldownStates(context.Background())

@@ -3,7 +3,27 @@ package auth
 import "context"
 
 type skipPersistContextKey struct{}
+type preserveAuthPriorityContextKey struct{}
 type deferAPIKeyModelAliasRebuildContextKey struct{}
+
+// WithPreserveAuthPriority returns a derived context that keeps the priority already stored in the auth file.
+// Refresh persistence uses it because priority is managed independently from refreshed credentials.
+func WithPreserveAuthPriority(ctx context.Context) context.Context {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	return context.WithValue(ctx, preserveAuthPriorityContextKey{}, true)
+}
+
+// ShouldPreserveAuthPriority reports whether refresh persistence must keep the file's priority value.
+func ShouldPreserveAuthPriority(ctx context.Context) bool {
+	if ctx == nil {
+		return false
+	}
+	v := ctx.Value(preserveAuthPriorityContextKey{})
+	enabled, ok := v.(bool)
+	return ok && enabled
+}
 
 // WithSkipPersist returns a derived context that disables persistence for Manager Update/Register calls.
 // It is intended for code paths that are reacting to file watcher events, where the file on disk is

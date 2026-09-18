@@ -101,6 +101,13 @@ func (s *FileTokenStore) Save(ctx context.Context, auth *cliproxyauth.Auth) (str
 	if err = os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return "", fmt.Errorf("auth filestore: create dir failed: %w", err)
 	}
+	if cliproxyauth.ShouldPreserveAuthPriority(ctx) {
+		preservedMetadata, errPreserve := preserveAuthPriority(path, auth.Metadata)
+		if errPreserve != nil {
+			return "", errPreserve
+		}
+		auth.Metadata = preservedMetadata
+	}
 
 	// metadataSetter is a private interface for TokenStorage implementations that support metadata injection.
 	type metadataSetter interface {
@@ -163,6 +170,28 @@ func (s *FileTokenStore) Save(ctx context.Context, auth *cliproxyauth.Auth) (str
 	}
 
 	return path, nil
+}
+
+func preserveAuthPriority(path string, metadata map[string]any) (map[string]any, error) {
+	existingRaw, errRead := os.ReadFile(path)
+	if errRead != nil {
+		return nil, fmt.Errorf("auth filestore: read existing for priority preservation failed: %w", errRead)
+	}
+	var existing map[string]any
+	if errUnmarshal := json.Unmarshal(existingRaw, &existing); errUnmarshal != nil {
+		return nil, fmt.Errorf("auth filestore: decode existing for priority preservation failed: %w", errUnmarshal)
+	}
+
+	preserved := make(map[string]any, len(metadata))
+	for key, value := range metadata {
+		if key != "priority" {
+			preserved[key] = value
+		}
+	}
+	if priority, exists := existing["priority"]; exists {
+		preserved["priority"] = priority
+	}
+	return preserved, nil
 }
 
 // List enumerates all auth JSON files under the configured directory.

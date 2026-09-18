@@ -146,6 +146,52 @@ func TestFileTokenStoreSaveExistingMetadataSetsFileAttributes(t *testing.T) {
 	}
 }
 
+func TestFileTokenStoreRefreshSavePreservesExistingPriority(t *testing.T) {
+	baseDir := t.TempDir()
+	fileName := "xai-user.json"
+	path := filepath.Join(baseDir, fileName)
+	if errWrite := os.WriteFile(path, []byte(`{"type":"xai","access_token":"old-token","priority":-1,"disabled":false}`), 0o600); errWrite != nil {
+		t.Fatalf("write existing auth file: %v", errWrite)
+	}
+
+	store := NewFileTokenStore()
+	store.SetBaseDir(baseDir)
+	auth := &cliproxyauth.Auth{
+		ID:       fileName,
+		FileName: fileName,
+		Metadata: map[string]any{
+			"type":         "xai",
+			"access_token": "refreshed-token",
+			"priority":     1,
+		},
+	}
+
+	if _, errSave := store.Save(cliproxyauth.WithPreserveAuthPriority(context.Background()), auth); errSave != nil {
+		t.Fatalf("Save() error = %v", errSave)
+	}
+	persisted, errRead := os.ReadFile(path)
+	if errRead != nil {
+		t.Fatalf("read saved auth file: %v", errRead)
+	}
+	want := []byte(`{"type":"xai","access_token":"refreshed-token","priority":-1,"disabled":false}`)
+	if !jsonEqual(persisted, want) {
+		t.Fatalf("saved auth file = %s, want JSON equal to %s", persisted, want)
+	}
+
+	auth.Metadata["priority"] = 1
+	if _, errSave := store.Save(context.Background(), auth); errSave != nil {
+		t.Fatalf("normal Save() error = %v", errSave)
+	}
+	persisted, errRead = os.ReadFile(path)
+	if errRead != nil {
+		t.Fatalf("read normally saved auth file: %v", errRead)
+	}
+	want = []byte(`{"type":"xai","access_token":"refreshed-token","priority":1,"disabled":false}`)
+	if !jsonEqual(persisted, want) {
+		t.Fatalf("normally saved auth file = %s, want JSON equal to %s", persisted, want)
+	}
+}
+
 func TestFileTokenStoreNormalizesLegacyCredentialMetadata(t *testing.T) {
 	t.Run("save", func(t *testing.T) {
 		baseDir := t.TempDir()
