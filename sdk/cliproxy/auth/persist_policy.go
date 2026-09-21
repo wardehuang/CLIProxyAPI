@@ -5,6 +5,28 @@ import "context"
 type skipPersistContextKey struct{}
 type preserveAuthPriorityContextKey struct{}
 type deferAPIKeyModelAliasRebuildContextKey struct{}
+type authCreationIntentContextKey struct{}
+
+// WithAuthCreationIntent returns a derived context that allows a token store to
+// create a missing disabled credential. It is intended only for the immediate
+// persistence performed by login and credential migration flows.
+func WithAuthCreationIntent(ctx context.Context) context.Context {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	return context.WithValue(ctx, authCreationIntentContextKey{}, true)
+}
+
+// HasAuthCreationIntent reports whether the current save is part of a login or
+// credential migration flow that may intentionally create a disabled record.
+func HasAuthCreationIntent(ctx context.Context) bool {
+	if ctx == nil {
+		return false
+	}
+	v := ctx.Value(authCreationIntentContextKey{})
+	enabled, ok := v.(bool)
+	return ok && enabled
+}
 
 // WithPreserveAuthPriority returns a derived context that keeps the priority already stored in the auth file.
 // Refresh persistence uses it because priority is managed independently from refreshed credentials.

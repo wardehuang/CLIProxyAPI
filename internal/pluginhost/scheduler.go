@@ -9,40 +9,51 @@ import (
 )
 
 func (h *Host) PickAuth(ctx context.Context, req pluginapi.SchedulerPickRequest) (pluginapi.SchedulerPickResponse, bool, error) {
-	if h == nil {
+	record := h.schedulerRecord()
+	if record == nil {
 		return pluginapi.SchedulerPickResponse{}, false, nil
+	}
+
+	resp, handled, errPick := h.callScheduler(ctx, *record, req)
+	if errPick != nil || !handled {
+		return resp, handled, errPick
+	}
+	if !resp.Handled {
+		return pluginapi.SchedulerPickResponse{}, false, nil
+	}
+
+	resp, valid, reason := normalizeSchedulerResponse(resp, req)
+	if !valid {
+		log.WithField("plugin_id", record.id).Warnf("pluginhost: scheduler returned invalid response: %s", reason)
+		return pluginapi.SchedulerPickResponse{}, false, nil
+	}
+	return resp, true, nil
+}
+
+func (h *Host) HasScheduler() bool {
+	return h.schedulerRecord() != nil
+}
+
+func (h *Host) SchedulerWantsAcrossPriorities() bool {
+	record := h.schedulerRecord()
+	if record == nil {
+		return false
+	}
+	return schedulerWantsAcrossPriorities(record.plugin.Capabilities)
+}
+
+func (h *Host) schedulerRecord() *capabilityRecord {
+	if h == nil {
+		return nil
 	}
 	for _, record := range h.activeRecords() {
 		if h.isPluginFused(record.id) || record.plugin.Capabilities.Scheduler == nil {
 			continue
 		}
-		resp, invoked, errPick := h.callScheduler(ctx, record, req)
-		if errPick != nil {
-			return resp, true, errPick
-		}
-		if !invoked || !resp.Handled {
-			continue
-		}
-		resp, valid, reason := normalizeSchedulerResponse(resp, req)
-		if !valid {
-			log.WithField("plugin_id", record.id).Warnf("pluginhost: scheduler returned invalid response: %s", reason)
-			continue
-		}
-		return resp, true, nil
+		copyRecord := record
+		return &copyRecord
 	}
-	return pluginapi.SchedulerPickResponse{}, false, nil
-}
-
-func (h *Host) HasScheduler() bool {
-	if h == nil {
-		return false
-	}
-	for _, record := range h.activeRecords() {
-		if !h.isPluginFused(record.id) && record.plugin.Capabilities.Scheduler != nil {
-			return true
-		}
-	}
-	return false
+	return nil
 }
 
 func (h *Host) callScheduler(ctx context.Context, record capabilityRecord, req pluginapi.SchedulerPickRequest) (resp pluginapi.SchedulerPickResponse, handled bool, err error) {
