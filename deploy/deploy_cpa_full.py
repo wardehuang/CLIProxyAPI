@@ -77,12 +77,9 @@ MANAGED_PLUGINS = (
     "cpa-prompt-cache-usage",
     "cpa-strip-visible-files",
     "cpa-xai-ip-switcher",
-    "cpa-xai-web-search-alias",
 )
 
-REQUIRED_ENABLED_PLUGIN_CONFIGS = (
-    "cpa-xai-web-search-alias",
-)
+REQUIRED_ENABLED_PLUGIN_CONFIGS = ()
 
 EXPECTED_PLUGIN_IDS = (
     "codexcomp",
@@ -1066,7 +1063,7 @@ for marker in 'response.created' 'response.in_progress'; do
   log "MAIN_BINARY_MARKER[$marker]=1"
 done
 
-step "BUILD ALL SEVEN REPOSITORY PLUGINS"
+step "BUILD ALL MANAGED REPOSITORY PLUGINS"
 : > "$MANAGED_MANIFEST_BUILD"
 for plugin in "${MANAGED_PLUGINS[@]}"; do
   plugin_source="$SOURCE_ROOT/plugins/src/$plugin"
