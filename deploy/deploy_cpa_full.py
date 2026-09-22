@@ -135,6 +135,7 @@ FORBIDDEN_SOURCE_PREFIXES = (
 )
 ALLOWED_SOURCE_PATHS = {
     "deploy/deploy_cpa_full.py",
+    "deploy/update_xai_auth_headers.py",
 }
 STABLE_TAG_PATTERN = re.compile(r"^v(\d+\.\d+\.\d+)$")
 VERSION_PATTERN = re.compile(r"^(\d+\.\d+\.\d+)\.(\d{4})$")
