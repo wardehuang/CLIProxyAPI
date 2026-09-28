@@ -379,7 +379,7 @@ func (f *fallbackRoundTripper) NetworkObservation(req *http.Request) networkObse
 // for Anthropic and a Chrome profile for ChatGPT, with a standard-transport
 // fallback for other hosts.
 func NewUtlsHTTPClient(ctx context.Context, cfg *config.Config, auth *cliproxyauth.Auth, timeout time.Duration) *http.Client {
-	proxyURL, proxySource := resolveConfiguredProxy(cfg, auth)
+	proxyURL, proxySource := resolveEffectiveProxy(ctx, cfg, auth)
 	ctxRoundTripper, hasContextRoundTripper := contextRoundTripper(ctx)
 
 	var chromeRT http.RoundTripper = newUtlsRoundTripper(proxyURL)

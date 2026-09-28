@@ -370,7 +370,7 @@ func (r *UsageReporter) setEgressIPResult(ip, status string, observedAt time.Tim
 
 // SetProxyRoute records the route used by an upstream WebSocket connection.
 func (r *UsageReporter) SetProxyRoute(ctx context.Context, cfg *config.Config, auth *cliproxyauth.Auth, upstreamURL string) {
-	proxyURL, source := resolveConfiguredProxy(cfg, auth)
+	proxyURL, source := resolveEffectiveProxy(ctx, cfg, auth)
 	observation := resolveEnvironmentObservation(upstreamURL)
 	var probeTransport http.RoundTripper
 	var closableTransport *http.Transport

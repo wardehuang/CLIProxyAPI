@@ -63,6 +63,16 @@ func TranslateOpenAICompatRequest(ctx context.Context, headers http.Header, cfg 
 	return ConvertOpenAIChatCompletionsRequestToResponses(model, chatPayload, stream)
 }
 
+// TranslateOpenAICompatRequestPair avoids translating identical inputs twice
+// while keeping the openai-compat Responses hop in TranslateOpenAICompatRequest.
+func TranslateOpenAICompatRequestPair(ctx context.Context, headers http.Header, cfg *config.Config, from, to sdktranslator.Format, model string, originalPayload, requestPayload []byte, stream, isCompat bool) (original, working []byte) {
+	original = TranslateOpenAICompatRequest(ctx, headers, cfg, from, to, model, originalPayload, stream, isCompat)
+	if sameByteSlice(originalPayload, requestPayload) && !sdktranslator.HasPluginHooks() {
+		return original, append([]byte(nil), original...)
+	}
+	return original, TranslateOpenAICompatRequest(ctx, headers, cfg, from, to, model, requestPayload, stream, isCompat)
+}
+
 // ConvertOpenAIChatCompletionsRequestToResponses converts a chat-completions JSON body into Responses API JSON.
 // It reuses the mature Codex chat→responses mapping, then strips Codex-only defaults and restores common generation fields.
 func ConvertOpenAIChatCompletionsRequestToResponses(modelName string, chatPayload []byte, stream bool) []byte {
