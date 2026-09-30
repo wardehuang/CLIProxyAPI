@@ -77,6 +77,7 @@ const (
 	managementAPIPath   = "/xai-guardian/api"
 	managementNodesPath = "/xai-guardian/nodes"
 	resourceContentType = "text/html; charset=utf-8"
+	pluginUIHeader      = "X-CPA-Plugin-UI"
 )
 
 //go:embed page.html
@@ -355,7 +356,7 @@ func stripManagementBasePath(path, base string) string {
 }
 
 func handleUIProxy(request managementRequest) ([]byte, error) {
-	if !strings.EqualFold(strings.TrimSpace(request.Method), http.MethodPost) || request.Headers.Get("X-CPA-XAI-GUARDIAN-UI") != "1" {
+	if !strings.EqualFold(strings.TrimSpace(request.Method), http.MethodPost) || strings.TrimSpace(request.Headers.Get(pluginUIHeader)) != pluginName {
 		return managementJSON(http.StatusForbidden, errorMessage("forbidden", "forbidden"))
 	}
 	var proxyRequest uiProxyRequest

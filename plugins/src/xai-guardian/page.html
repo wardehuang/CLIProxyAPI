@@ -417,7 +417,7 @@
     const apiEndpoint = '/v0/management/xai-guardian/api';
     const inPluginFrame = window.parent !== window;
     let bridgeRequestSequence = 0;
-    const callParentManagementAPI = (payload) => new Promise((resolve, reject) => {
+    const callParentPluginAPI = (payload) => new Promise((resolve, reject) => {
       const requestId = `xai-guardian-${++bridgeRequestSequence}`;
       const timeoutId = window.setTimeout(() => {
         window.removeEventListener('message', receiveResponse);
@@ -426,7 +426,7 @@
       const receiveResponse = (event) => {
         if (event.source !== window.parent) return;
         const data = event.data;
-        if (!data || data.type !== 'cpa-plugin-management-response' || data.requestId !== requestId) return;
+        if (!data || data.type !== 'cpa-plugin-api-response' || data.requestId !== requestId) return;
         window.clearTimeout(timeoutId);
         window.removeEventListener('message', receiveResponse);
         if (data.ok) {
@@ -436,7 +436,7 @@
         }
       };
       window.addEventListener('message', receiveResponse);
-      window.parent.postMessage({type:'cpa-plugin-management-request', requestId, endpoint:apiEndpoint, ...payload}, '*');
+      window.parent.postMessage({type:'cpa-plugin-api-request', requestId, endpoint:apiEndpoint, ...payload}, '*');
     });
     const state = {
       accounts: [], nodes: [], degradation: [], logs: [], settings: null,
@@ -487,9 +487,9 @@
       if (body !== undefined) payload.body = body;
       let envelope;
       if (inPluginFrame) {
-        envelope = await callParentManagementAPI(payload);
+        envelope = await callParentPluginAPI(payload);
       } else {
-        const headers = {'content-type':'application/json','X-CPA-XAI-GUARDIAN-UI':'1'};
+        const headers = {'content-type':'application/json','X-CPA-Plugin-UI':'xai-guardian'};
         const response = await fetch(apiEndpoint, {method:'POST', headers, body:JSON.stringify(payload)});
         const text = await response.text();
         try { envelope = text ? JSON.parse(text) : {}; } catch (_error) { throw new Error('服务端返回了无效响应'); }

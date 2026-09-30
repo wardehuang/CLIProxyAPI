@@ -16,7 +16,7 @@
 
 ## 管理页面鉴权链路
 
-页面作为 CPA Manager 的资源 iframe 加载时，不读取或接收管理密钥。页面通过 `postMessage` 请求固定的 `/v0/management/xai-guardian/api`，Manager 使用自身已认证的 `apiClient` 转发请求并回传响应。插件仍在 `main.go` 中校验 `X-CPA-XAI-GUARDIAN-UI`，并通过 `isAllowedUIPath` 限制页面代理 API 路径。
+页面作为 CPA Manager 的资源 iframe 加载时，不读取或接收管理密钥。页面通过通用 `postMessage` 插件 API bridge 请求 `/v0/management/xai-guardian/api`，Manager 只负责 iframe 和通用鉴权转发，使用自身已认证的 `apiClient` 回传响应。插件通过 `X-CPA-Plugin-UI: xai-guardian` 标记 UI 请求，并通过 `isAllowedUIPath` 限制页面代理 API 路径。
 
 直接把资源页面当顶层页面打开时没有 Manager 的鉴权桥接，管理 API 会按 Host 鉴权规则拒绝；应从 CPA Manager 的插件菜单进入。
 
