@@ -14,6 +14,12 @@
 
 旧插件中的第三方网关、健康保底、外部管理器通信和旧生命周期接口没有迁移。
 
+## 管理页面鉴权链路
+
+页面作为 CPA Manager 的资源 iframe 加载时，不读取或接收管理密钥。页面通过 `postMessage` 请求固定的 `/v0/management/xai-guardian/api`，Manager 使用自身已认证的 `apiClient` 转发请求并回传响应。插件仍在 `main.go` 中校验 `X-CPA-XAI-GUARDIAN-UI`，并通过 `isAllowedUIPath` 限制页面代理 API 路径。
+
+直接把资源页面当顶层页面打开时没有 Manager 的鉴权桥接，管理 API 会按 Host 鉴权规则拒绝；应从 CPA Manager 的插件菜单进入。
+
 ## CPA 核心改动
 
 核心改动使用成对的 `BEGIN/END xAI Guardian core extension` 注释包裹，且只在 xAI provider 执行路径生效。

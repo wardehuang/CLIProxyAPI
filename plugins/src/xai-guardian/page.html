@@ -415,6 +415,29 @@
   <script>
   (() => {
     const apiEndpoint = '/v0/management/xai-guardian/api';
+    const inPluginFrame = window.parent !== window;
+    let bridgeRequestSequence = 0;
+    const callParentManagementAPI = (payload) => new Promise((resolve, reject) => {
+      const requestId = `xai-guardian-${++bridgeRequestSequence}`;
+      const timeoutId = window.setTimeout(() => {
+        window.removeEventListener('message', receiveResponse);
+        reject(new Error('管理请求超时'));
+      }, 15000);
+      const receiveResponse = (event) => {
+        if (event.source !== window.parent) return;
+        const data = event.data;
+        if (!data || data.type !== 'cpa-plugin-management-response' || data.requestId !== requestId) return;
+        window.clearTimeout(timeoutId);
+        window.removeEventListener('message', receiveResponse);
+        if (data.ok) {
+          resolve(data.response);
+        } else {
+          reject(new Error(typeof data.error === 'string' ? data.error : '请求失败'));
+        }
+      };
+      window.addEventListener('message', receiveResponse);
+      window.parent.postMessage({type:'cpa-plugin-management-request', requestId, endpoint:apiEndpoint, ...payload}, '*');
+    });
     const state = {
       accounts: [], nodes: [], degradation: [], logs: [], settings: null,
       inspection: {run: null, results: []}, summary: null,
@@ -462,14 +485,17 @@
     async function api(path, method = 'GET', body) {
       const payload = {method, path};
       if (body !== undefined) payload.body = body;
-      const response = await fetch(apiEndpoint, {method:'POST', headers:{'content-type':'application/json','X-CPA-XAI-GUARDIAN-UI':'1'}, body:JSON.stringify(payload)});
-      const text = await response.text();
       let envelope;
-      try { envelope = text ? JSON.parse(text) : {}; } catch (_error) { throw new Error('服务端返回了无效响应'); }
-      if (!response.ok || envelope.ok === false) {
-        const error = envelope.error && typeof envelope.error.message === 'string' ? envelope.error.message : '请求失败';
-        throw new Error(error);
+      if (inPluginFrame) {
+        envelope = await callParentManagementAPI(payload);
+      } else {
+        const headers = {'content-type':'application/json','X-CPA-XAI-GUARDIAN-UI':'1'};
+        const response = await fetch(apiEndpoint, {method:'POST', headers, body:JSON.stringify(payload)});
+        const text = await response.text();
+        try { envelope = text ? JSON.parse(text) : {}; } catch (_error) { throw new Error('服务端返回了无效响应'); }
+        if (!response.ok) throw new Error(envelope.error && typeof envelope.error.message === 'string' ? envelope.error.message : '请求失败');
       }
+      if (envelope.ok === false) throw new Error(envelope.error && typeof envelope.error.message === 'string' ? envelope.error.message : '请求失败');
       return envelope.data;
     }
 
