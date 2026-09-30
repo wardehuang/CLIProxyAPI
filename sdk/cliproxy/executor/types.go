@@ -4,6 +4,7 @@ import (
 	"context"
 	"net/http"
 	"net/url"
+	"time"
 
 	sdktranslator "github.com/router-for-me/CLIProxyAPI/v8/sdk/translator"
 )
@@ -32,6 +33,11 @@ const ServiceTierMetadataKey = "service_tier"
 const GenerateMetadataKey = "generate"
 
 const (
+	// BEGIN xAI Guardian core extension: xAI-only retry exclusion state.
+	// XAIExcludedAuthIDsMetadataKey is consumed only by the xAI auth selection path.
+	XAIExcludedAuthIDsMetadataKey = "xai_excluded_auth_ids"
+	// END xAI Guardian core extension.
+
 	// PinnedAuthMetadataKey locks execution to a specific auth ID.
 	PinnedAuthMetadataKey = "pinned_auth_id"
 	// SelectedAuthMetadataKey stores the auth ID selected by the scheduler.
@@ -97,6 +103,94 @@ type Request struct {
 	// Metadata carries optional provider specific execution hints.
 	Metadata map[string]any
 }
+
+// BEGIN xAI Guardian core extension: xAI-only stream guard contract.
+
+// XAIStreamGuard prepares an xAI attempt and evaluates its fully consumed stream.
+// Other provider executors never call this interface.
+type XAIStreamGuard interface {
+	PrepareXAIStream(context.Context, XAIStreamPrepareRequest) (XAIStreamPrepareResponse, error)
+	CompleteXAIStream(context.Context, XAIStreamCompletionRequest) (XAIStreamCompletionResponse, error)
+}
+
+const (
+	XAIStreamActionFlush = "flush"
+	XAIStreamActionRetry = "retry"
+	XAIStreamActionFail  = "fail"
+
+	XAIStreamRetryModeReloadSelectedAuth           = "reload_selected_auth"
+	XAIStreamRetryModeReloadAndExcludeSelectedAuth = "reload_and_exclude_selected_auth"
+	XAIStreamRetryModeExcludeSelectedAuth          = "exclude_selected_auth"
+)
+
+// XAIStreamPrepareRequest describes an xAI attempt before upstream send.
+type XAIStreamPrepareRequest struct {
+	RequestID       string
+	TraceID         string
+	Provider        string
+	SourceFormat    string
+	Model           string
+	RequestedModel  string
+	AuthID          string
+	AuthIndex       string
+	AuthFileName    string
+	ProxyURL        string
+	RequestHeaders  http.Header
+	OriginalRequest []byte
+	RequestBody     []byte
+	StartedAt       time.Time
+	Metadata        map[string]any
+}
+
+// XAIStreamPrepareResponse returns xAI-only timing policy and guard state.
+type XAIStreamPrepareResponse struct {
+	FirstPayloadTimeoutSeconds int
+	ProgressTimeoutSeconds     int
+	MaxRetries                 int
+	Metadata                   map[string]any
+}
+
+// XAIStreamCompletionRequest describes one consumed xAI stream attempt.
+type XAIStreamCompletionRequest struct {
+	RequestID           string
+	TraceID             string
+	Provider            string
+	SourceFormat        string
+	Model               string
+	RequestedModel      string
+	AuthID              string
+	AuthIndex           string
+	AuthFileName        string
+	ProxyURL            string
+	RequestHeaders      http.Header
+	ResponseHeaders     http.Header
+	OriginalRequest     []byte
+	RequestBody         []byte
+	Body                []byte
+	StatusCode          int
+	Error               string
+	Completed           bool
+	StartedAt           time.Time
+	UpstreamStartedAt   time.Time
+	FirstResponseByteAt time.Time
+	FirstPayloadAt      time.Time
+	FirstVisibleAt      time.Time
+	FinishedAt          time.Time
+	RetryCount          int
+	MaxRetries          int
+	Metadata            map[string]any
+}
+
+// XAIStreamCompletionResponse returns the xAI stream action.
+type XAIStreamCompletionResponse struct {
+	Action     string
+	RetryMode  string
+	Reason     string
+	StatusCode int
+	Error      string
+}
+
+// END xAI Guardian core extension.
 
 // RequestAfterAuthInterceptor rewrites a request after credential selection and before executor translation.
 type RequestAfterAuthInterceptor func(context.Context, RequestAfterAuthInterceptRequest) RequestAfterAuthInterceptResponse
@@ -221,6 +315,11 @@ type Options struct {
 	// ProxyURL overrides the credential and global proxy for this execution only.
 	// Credential refresh and token exchange must ignore it.
 	ProxyURL string
+	// BEGIN xAI Guardian core extension: request correlation and xAI-only guard.
+	RequestID      string
+	TraceID        string
+	XAIStreamGuard XAIStreamGuard
+	// END xAI Guardian core extension.
 }
 
 // EnsureMetadata initializes and returns Metadata, ensuring it is non-nil.
@@ -264,7 +363,93 @@ type StreamResult struct {
 	Headers http.Header
 	// Chunks is the channel of streaming payload units.
 	Chunks <-chan StreamChunk
+	// BEGIN xAI Guardian core extension: populated only by the xAI executor when
+	// Options.XAIStreamGuard is set.
+	XAICompletion <-chan XAIStreamCompletion
+	// END xAI Guardian core extension.
 }
+
+// BEGIN xAI Guardian core extension: xAI stream completion state.
+
+// XAIStreamCompletion reports timing and terminal state for one xAI attempt.
+type XAIStreamCompletion struct {
+	Provider            string
+	AuthID              string
+	AuthIndex           string
+	AuthFileName        string
+	ProxyURL            string
+	ResponseHeaders     http.Header
+	Body                []byte
+	StatusCode          int
+	Err                 error
+	Completed           bool
+	StartedAt           time.Time
+	UpstreamStartedAt   time.Time
+	FirstResponseByteAt time.Time
+	FirstPayloadAt      time.Time
+	FirstVisibleAt      time.Time
+	FinishedAt          time.Time
+	RetryCount          int
+	MaxRetries          int
+	Metadata            map[string]any
+}
+
+// END xAI Guardian core extension.
+
+// BEGIN xAI Guardian core extension: xAI guard retry boundary.
+
+// XAIStreamGuardError carries a synchronous guard decision into the auth
+// conductor. Retry decisions are credential-scoped; fail decisions are
+// request-scoped and must not rotate credentials.
+type XAIStreamGuardError struct {
+	Action    string
+	RetryMode string
+	AuthID    string
+	Status    int
+	Reason    string
+	Cause     error
+}
+
+func (e *XAIStreamGuardError) Error() string {
+	if e == nil {
+		return ""
+	}
+	if e.Reason != "" {
+		return e.Reason
+	}
+	if e.Cause != nil {
+		return e.Cause.Error()
+	}
+	return "xAI stream guard rejected the stream"
+}
+
+func (e *XAIStreamGuardError) Unwrap() error {
+	if e == nil {
+		return nil
+	}
+	return e.Cause
+}
+
+func (e *XAIStreamGuardError) StatusCode() int {
+	if e == nil {
+		return 0
+	}
+	return e.Status
+}
+
+func (e *XAIStreamGuardError) IsRequestScoped() bool {
+	return e != nil && e.Action == "fail"
+}
+
+func (e *XAIStreamGuardError) IsCredentialScoped() bool {
+	return e != nil && e.Action == "retry"
+}
+
+func (e *XAIStreamGuardError) ExcludesSelectedAuth() bool {
+	return e != nil && e.Action == "retry" && e.RetryMode != XAIStreamRetryModeReloadSelectedAuth
+}
+
+// END xAI Guardian core extension.
 
 // StatusError represents an error that carries an HTTP-like status code.
 // Provider executors should implement this when possible to enable

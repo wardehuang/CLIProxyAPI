@@ -116,6 +116,12 @@ type Capabilities struct {
 	ResponseInterceptor ResponseInterceptor
 	// StreamChunkInterceptor rewrites successful HTTP stream chunks before downstream delivery.
 	StreamChunkInterceptor StreamChunkInterceptor
+	// BEGIN xAI Guardian core extension: xAI-only stream guard capability.
+	// XAIStreamGuard observes xAI stream attempts and synchronously decides whether
+	// the buffered attempt is flushed, retried, or failed. It is never called for
+	// another provider.
+	XAIStreamGuard XAIStreamGuard
+	// END xAI Guardian core extension.
 	// WebSocketResponseObserver receives upstream WebSocket response events during execution.
 	WebSocketResponseObserver WebSocketResponseObserver
 	// ThinkingApplier applies validated thinking configuration to provider payloads.
@@ -1070,6 +1076,103 @@ type ResponseInterceptor interface {
 type StreamChunkInterceptor interface {
 	InterceptStreamChunk(context.Context, StreamChunkInterceptRequest) (StreamChunkInterceptResponse, error)
 }
+
+// BEGIN xAI Guardian core extension: xAI-only plugin API contract.
+
+// XAIStreamGuard prepares an xAI stream attempt and evaluates its terminal state.
+// The host invokes it synchronously only on the xAI executor path.
+type XAIStreamGuard interface {
+	PrepareXAIStream(context.Context, XAIStreamPrepareRequest) (XAIStreamPrepareResponse, error)
+	CompleteXAIStream(context.Context, XAIStreamCompletionRequest) (XAIStreamCompletionResponse, error)
+}
+
+// XAIStreamAction is the terminal action returned by XAIStreamGuard.
+type XAIStreamAction string
+
+const (
+	XAIStreamActionFlush XAIStreamAction = "flush"
+	XAIStreamActionRetry XAIStreamAction = "retry"
+	XAIStreamActionFail  XAIStreamAction = "fail"
+)
+
+// XAIStreamRetryMode controls credential handling before an xAI stream retry.
+type XAIStreamRetryMode string
+
+const (
+	XAIStreamRetryModeReloadSelectedAuth           XAIStreamRetryMode = "reload_selected_auth"
+	XAIStreamRetryModeReloadAndExcludeSelectedAuth XAIStreamRetryMode = "reload_and_exclude_selected_auth"
+	XAIStreamRetryModeExcludeSelectedAuth          XAIStreamRetryMode = "exclude_selected_auth"
+)
+
+// XAIStreamPrepareRequest describes an xAI stream before the upstream request starts.
+// RequestHeaders are the host request headers before provider authorization headers are added.
+type XAIStreamPrepareRequest struct {
+	RequestID       string
+	TraceID         string
+	Provider        string
+	SourceFormat    string
+	Model           string
+	RequestedModel  string
+	AuthID          string
+	AuthIndex       string
+	AuthFileName    string
+	ProxyURL        string
+	RequestHeaders  http.Header
+	OriginalRequest []byte
+	RequestBody     []byte
+	StartedAt       time.Time
+	Metadata        map[string]any
+}
+
+// XAIStreamPrepareResponse returns xAI-only stream timing policies and opaque guard state.
+type XAIStreamPrepareResponse struct {
+	FirstPayloadTimeoutSeconds int
+	ProgressTimeoutSeconds     int
+	MaxRetries                 int
+	Metadata                   map[string]any
+}
+
+// XAIStreamCompletionRequest describes one fully consumed xAI stream attempt.
+type XAIStreamCompletionRequest struct {
+	RequestID           string
+	TraceID             string
+	Provider            string
+	SourceFormat        string
+	Model               string
+	RequestedModel      string
+	AuthID              string
+	AuthIndex           string
+	AuthFileName        string
+	ProxyURL            string
+	RequestHeaders      http.Header
+	ResponseHeaders     http.Header
+	OriginalRequest     []byte
+	RequestBody         []byte
+	Body                []byte
+	StatusCode          int
+	Error               string
+	Completed           bool
+	StartedAt           time.Time
+	UpstreamStartedAt   time.Time
+	FirstResponseByteAt time.Time
+	FirstPayloadAt      time.Time
+	FirstVisibleAt      time.Time
+	FinishedAt          time.Time
+	RetryCount          int
+	MaxRetries          int
+	Metadata            map[string]any
+}
+
+// XAIStreamCompletionResponse returns the synchronous xAI stream decision.
+type XAIStreamCompletionResponse struct {
+	Action     XAIStreamAction
+	RetryMode  XAIStreamRetryMode
+	Reason     string
+	StatusCode int
+	Error      string
+}
+
+// END xAI Guardian core extension.
 
 // WebSocketResponseObserver observes upstream WebSocket response events received during execution.
 type WebSocketResponseObserver interface {

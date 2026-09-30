@@ -1,0 +1,77 @@
+﻿diff --git a/internal/runtime/executor/codex_executor.go b/internal/runtime/executor/codex_executor.go
+index 1295d1b4..db270a9b 100644
+--- a/internal/runtime/executor/codex_executor.go
++++ b/internal/runtime/executor/codex_executor.go
+@@ -1114,6 +1114,8 @@ func (e *CodexExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, re
+ 	if baseURL == "" {
+ 		baseURL = "https://chatgpt.com/backend-api/codex"
+ 	}
++	url := strings.TrimSuffix(baseURL, "/") + "/responses"
++	ctx = helps.WithUpstreamURLMetadata(ctx, url)
+ 
+ 	reporter := helps.NewExecutorUsageReporter(ctx, e, baseModel, auth)
+ 	defer reporter.TrackFailure(ctx, &err)
+@@ -1156,7 +1158,6 @@ func (e *CodexExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, re
+ 	}
+ 	reporter.SetTranslatedReasoningEffort(body, to.String())
+ 
+-	url := strings.TrimSuffix(baseURL, "/") + "/responses"
+ 	var identityState codexIdentityConfuseState
+ 	httpReq, upstreamBody, identityState, err := e.cacheHelper(ctx, from, url, auth, req, originalPayloadSource, body, opts.Headers)
+ 	if err != nil {
+@@ -1165,6 +1166,10 @@ func (e *CodexExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, re
+ 	applyCodexHeaders(httpReq, auth, apiKey, true, e.cfg)
+ 	applyModelHeaderOverrides(httpReq.Header, baseModel)
+ 	applyCodexIdentityConfuseHeaders(httpReq.Header, &identityState)
++	finalHeaders, finalBody := applyRequestFinalizer(ctx, opts, to, baseModel, httpReq.Header, upstreamBody)
++	httpReq.Header = finalHeaders
++	upstreamBody = finalBody
++	setRequestBody(httpReq, upstreamBody)
+ 	var authID, authLabel, authType, authValue string
+ 	if auth != nil {
+ 		authID = auth.ID
+@@ -1283,6 +1288,8 @@ func (e *CodexExecutor) executeCompact(ctx context.Context, auth *cliproxyauth.A
+ 	if baseURL == "" {
+ 		baseURL = "https://chatgpt.com/backend-api/codex"
+ 	}
++	url := strings.TrimSuffix(baseURL, "/") + "/responses/compact"
++	ctx = helps.WithUpstreamURLMetadata(ctx, url)
+ 
+ 	reporter := helps.NewExecutorUsageReporter(ctx, e, baseModel, auth)
+ 	defer reporter.TrackFailure(ctx, &err)
+@@ -1313,7 +1320,6 @@ func (e *CodexExecutor) executeCompact(ctx context.Context, auth *cliproxyauth.A
+ 	body, optimizeMultiAgentV2 := helps.OptimizeCodexMultiAgentV2Request(ctx, opts.Headers, body, e.cfg)
+ 	reporter.SetTranslatedReasoningEffort(body, to.String())
+ 
+-	url := strings.TrimSuffix(baseURL, "/") + "/responses/compact"
+ 	var identityState codexIdentityConfuseState
+ 	httpReq, upstreamBody, identityState, err := e.cacheHelper(ctx, from, url, auth, req, originalPayloadSource, body, opts.Headers)
+ 	if err != nil {
+@@ -1390,6 +1396,8 @@ func (e *CodexExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Au
+ 	if baseURL == "" {
+ 		baseURL = "https://chatgpt.com/backend-api/codex"
+ 	}
++	url := strings.TrimSuffix(baseURL, "/") + "/responses"
++	ctx = helps.WithUpstreamURLMetadata(ctx, url)
+ 
+ 	reporter := helps.NewExecutorUsageReporter(ctx, e, baseModel, auth)
+ 	defer reporter.TrackFailure(ctx, &err)
+@@ -1431,7 +1439,6 @@ func (e *CodexExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Au
+ 	}
+ 	reporter.SetTranslatedReasoningEffort(body, to.String())
+ 
+-	url := strings.TrimSuffix(baseURL, "/") + "/responses"
+ 	var identityState codexIdentityConfuseState
+ 	httpReq, upstreamBody, identityState, err := e.cacheHelper(ctx, from, url, auth, req, originalPayloadSource, body, opts.Headers)
+ 	if err != nil {
+@@ -1440,6 +1447,10 @@ func (e *CodexExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Au
+ 	applyCodexHeaders(httpReq, auth, apiKey, true, e.cfg)
+ 	applyModelHeaderOverrides(httpReq.Header, baseModel)
+ 	applyCodexIdentityConfuseHeaders(httpReq.Header, &identityState)
++	finalHeaders, finalBody := applyRequestFinalizer(ctx, opts, to, baseModel, httpReq.Header, upstreamBody)
++	httpReq.Header = finalHeaders
++	upstreamBody = finalBody
++	setRequestBody(httpReq, upstreamBody)
+ 	var authID, authLabel, authType, authValue string
+ 	if auth != nil {
+ 		authID = auth.ID

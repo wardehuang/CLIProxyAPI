@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/runtime/executor/helps"
 	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
@@ -33,6 +34,15 @@ func (e *XAIExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Auth
 		return nil, err
 	}
 
+	// BEGIN xAI Guardian core extension: only the xAI stream executor installs
+	// the synchronous guard context and progress policy.
+	guardCtx, guardRuntime, _, errGuard := prepareXAIStreamGuard(ctx, auth, prepared, req, opts)
+	if errGuard != nil {
+		return nil, errGuard
+	}
+	ctx = guardCtx
+	// END xAI Guardian core extension.
+
 	reporter := helps.NewExecutorUsageReporter(ctx, e, prepared.baseModel, auth)
 	defer reporter.TrackFailure(ctx, &err)
 	reporter.SetTranslatedReasoningEffort(prepared.body, e.Identifier())
@@ -45,31 +55,86 @@ func (e *XAIExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Auth
 	applyXAIChatHeaders(httpReq, auth, token, true, prepared.sessionID, opts.Headers)
 	e.recordXAIRequest(ctx, auth, url, httpReq.Header.Clone(), prepared.body)
 
+	// BEGIN xAI Guardian core extension: capture xAI attempt failures for the guard.
+	upstreamStartedAt := time.Now()
 	httpClient := helps.NewProxyAwareHTTPClient(ctx, e.cfg, auth, 0)
 	httpClient = reporter.TrackHTTPClient(httpClient)
 	httpResp, err := httpClient.Do(httpReq)
 	if err != nil {
 		helps.RecordAPIResponseError(ctx, e.cfg, err)
+		if guardRuntime != nil {
+			return xAIStreamGuardFailureResult(auth, opts, prepared, guardRuntime, upstreamStartedAt, time.Time{}, nil, nil, 0, err), nil
+		}
 		return nil, err
 	}
+	firstResponseByteAt := time.Time{}
 	helps.RecordAPIResponseMetadata(ctx, e.cfg, httpResp.StatusCode, httpResp.Header.Clone())
 	if httpResp.StatusCode < 200 || httpResp.StatusCode >= 300 {
+		firstResponseByteAt = time.Now()
 		data, errRead := io.ReadAll(httpResp.Body)
 		if errClose := httpResp.Body.Close(); errClose != nil {
 			log.Errorf("xai executor: close response body error: %v", errClose)
 		}
 		if errRead != nil {
 			helps.RecordAPIResponseError(ctx, e.cfg, errRead)
+			if guardRuntime != nil {
+				return xAIStreamGuardFailureResult(auth, opts, prepared, guardRuntime, upstreamStartedAt, firstResponseByteAt, httpResp.Header, nil, httpResp.StatusCode, errRead), nil
+			}
 			return nil, errRead
 		}
 		helps.AppendAPIResponseChunk(ctx, e.cfg, data)
 		helps.LogWithRequestID(ctx).Debugf("request error, error status: %d, error message: %s", httpResp.StatusCode, helps.SummarizeErrorBody(httpResp.Header.Get("Content-Type"), data))
-		return nil, xaiStatusErr(httpResp.StatusCode, data)
+		statusErr := xaiStatusErr(httpResp.StatusCode, data)
+		if guardRuntime != nil {
+			return xAIStreamGuardFailureResult(auth, opts, prepared, guardRuntime, upstreamStartedAt, firstResponseByteAt, httpResp.Header, data, httpResp.StatusCode, statusErr), nil
+		}
+		return nil, statusErr
 	}
+	// END xAI Guardian core extension.
 
 	out := make(chan cliproxyexecutor.StreamChunk)
+	// BEGIN xAI Guardian core extension: expose one terminal completion record.
+	var completion chan cliproxyexecutor.XAIStreamCompletion
+	if guardRuntime != nil {
+		completion = make(chan cliproxyexecutor.XAIStreamCompletion, 1)
+	}
+	// END xAI Guardian core extension.
 	go func() {
-		defer close(out)
+		var guardBody bytes.Buffer
+		var guardErr error
+		var guardCompleted bool
+		defer func() {
+			// BEGIN xAI Guardian core extension: publish buffered xAI stream state.
+			if guardRuntime != nil {
+				guardRuntime.stop()
+				if guardRuntime.timeoutError() != nil {
+					guardErr = guardRuntime.timeoutError()
+				}
+				completion <- cliproxyexecutor.XAIStreamCompletion{
+					Provider:            "xai",
+					AuthID:              auth.ID,
+					AuthIndex:           auth.Index,
+					AuthFileName:        auth.FileName,
+					ProxyURL:            auth.ProxyURL,
+					ResponseHeaders:     httpResp.Header.Clone(),
+					Body:                guardBody.Bytes(),
+					StatusCode:          httpResp.StatusCode,
+					Err:                 guardErr,
+					Completed:           guardCompleted,
+					StartedAt:           upstreamStartedAt,
+					UpstreamStartedAt:   upstreamStartedAt,
+					FirstResponseByteAt: firstResponseByteAt,
+					FirstPayloadAt:      guardRuntime.firstPayloadTime(),
+					FirstVisibleAt:      guardRuntime.firstVisibleTime(),
+					FinishedAt:          time.Now(),
+					MaxRetries:          guardRuntime.maxRetries,
+					Metadata:            guardRuntime.metadata,
+				}
+				close(completion)
+			}
+			// END xAI Guardian core extension.
+			close(out)
+		}()
 		defer func() {
 			if errClose := httpResp.Body.Close(); errClose != nil {
 				log.Errorf("xai executor: close response body error: %v", errClose)
@@ -85,6 +150,11 @@ func (e *XAIExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Auth
 		namespaceRestorer := newXAINamespaceRestorer(prepared.namespaceTools)
 		var pendingEventLine []byte
 		emitTranslatedLine := func(translatedLine []byte) bool {
+			// BEGIN xAI Guardian core extension: record xAI visible output.
+			if guardRuntime != nil && xAIStreamLineHasVisibleOutput(translatedLine) {
+				guardRuntime.markVisible()
+			}
+			// END xAI Guardian core extension.
 			chunks := helps.TranslateStreamWithClaudeInputTokens(ctx, prepared.to, prepared.responseFormat, req.Model, prepared.originalPayload, prepared.body, translatedLine, &param, claudeInputTokens)
 			for i := range chunks {
 				select {
@@ -97,6 +167,21 @@ func (e *XAIExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Auth
 		}
 		for scanner.Scan() {
 			line := scanner.Bytes()
+			// BEGIN xAI Guardian core extension: observe xAI payload progress.
+			if firstResponseByteAt.IsZero() {
+				firstResponseByteAt = time.Now()
+			}
+			if guardRuntime != nil {
+				if xAIStreamLineHasPayload(line) {
+					guardRuntime.observeFirstPayload()
+				}
+				if xAIStreamLineHasProgress(line) {
+					guardRuntime.observeProgress()
+				}
+				guardBody.Write(line)
+				guardBody.WriteByte('\n')
+			}
+			// END xAI Guardian core extension.
 			helps.AppendAPIResponseChunk(ctx, e.cfg, line)
 
 			if bytes.HasPrefix(line, xaiEventTag) {
@@ -128,6 +213,9 @@ func (e *XAIExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Auth
 					case "response.output_item.done":
 						xaiCollectOutputItemDone(eventData, outputItemsByIndex, &outputItemsFallback)
 					case "response.completed", "response.incomplete":
+						// BEGIN xAI Guardian core extension: record terminal xAI response.
+						guardCompleted = true
+						// END xAI Guardian core extension.
 						if detail, ok := helps.ParseCodexUsage(eventData); ok {
 							reporter.Publish(ctx, detail)
 						}
@@ -172,6 +260,9 @@ func (e *XAIExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Auth
 			emitTranslatedLine(xaiNormalizeReasoningSummaryEventLine(pendingEventLine, ""))
 		}
 		if errScan := scanner.Err(); errScan != nil {
+			// BEGIN xAI Guardian core extension: preserve xAI stream read failure.
+			guardErr = errScan
+			// END xAI Guardian core extension.
 			helps.RecordAPIResponseError(ctx, e.cfg, errScan)
 			reporter.PublishFailure(ctx, errScan)
 			select {
@@ -180,5 +271,8 @@ func (e *XAIExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Auth
 			}
 		}
 	}()
-	return &cliproxyexecutor.StreamResult{Headers: httpResp.Header.Clone(), Chunks: out}, nil
+	// BEGIN xAI Guardian core extension: attach completion only to xAI streams.
+	result := &cliproxyexecutor.StreamResult{Headers: httpResp.Header.Clone(), Chunks: out, XAICompletion: completion}
+	// END xAI Guardian core extension.
+	return result, nil
 }

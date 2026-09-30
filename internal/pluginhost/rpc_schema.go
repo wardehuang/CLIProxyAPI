@@ -40,12 +40,15 @@ type rpcCapabilities struct {
 	ResponseAfterTranslator       bool                         `json:"response_after_translator"`
 	ResponseInterceptor           bool                         `json:"response_interceptor"`
 	StreamChunkInterceptor        bool                         `json:"response_stream_interceptor"`
-	WebSocketResponseObserver     bool                         `json:"websocket_response_observer"`
-	ThinkingApplier               bool                         `json:"thinking_applier"`
-	UsagePlugin                   bool                         `json:"usage_plugin"`
-	CommandLinePlugin             bool                         `json:"command_line_plugin"`
-	ManagementAPI                 bool                         `json:"management_api"`
-	QuotaProvider                 bool                         `json:"quota_provider"`
+	// BEGIN xAI Guardian core extension: xAI-only capability flag.
+	XAIStreamGuard bool `json:"xai_stream_guard"`
+	// END xAI Guardian core extension.
+	WebSocketResponseObserver bool `json:"websocket_response_observer"`
+	ThinkingApplier           bool `json:"thinking_applier"`
+	UsagePlugin               bool `json:"usage_plugin"`
+	CommandLinePlugin         bool `json:"command_line_plugin"`
+	ManagementAPI             bool `json:"management_api"`
+	QuotaProvider             bool `json:"quota_provider"`
 }
 
 type rpcIdentifierResponse struct {
@@ -112,6 +115,20 @@ type rpcStreamChunkInterceptRequest struct {
 	pluginapi.StreamChunkInterceptRequest
 	HostCallbackID string `json:"host_callback_id,omitempty"`
 }
+
+// BEGIN xAI Guardian core extension: xAI guard RPC payloads.
+
+type rpcXAIStreamPrepareRequest struct {
+	pluginapi.XAIStreamPrepareRequest
+	HostCallbackID string `json:"host_callback_id,omitempty"`
+}
+
+type rpcXAIStreamCompletionRequest struct {
+	pluginapi.XAIStreamCompletionRequest
+	HostCallbackID string `json:"host_callback_id,omitempty"`
+}
+
+// END xAI Guardian core extension.
 
 type rpcWebSocketResponseEvent struct {
 	pluginapi.WebSocketResponseEvent
@@ -182,12 +199,15 @@ func rpcCapabilitiesFromPlugin(plugin pluginapi.Plugin) rpcCapabilities {
 		ResponseAfterTranslator:       caps.ResponseAfterTranslator != nil,
 		ResponseInterceptor:           caps.ResponseInterceptor != nil,
 		StreamChunkInterceptor:        caps.StreamChunkInterceptor != nil,
-		WebSocketResponseObserver:     caps.WebSocketResponseObserver != nil,
-		ThinkingApplier:               caps.ThinkingApplier != nil,
-		UsagePlugin:                   caps.UsagePlugin != nil,
-		CommandLinePlugin:             caps.CommandLinePlugin != nil,
-		ManagementAPI:                 caps.ManagementAPI != nil,
-		QuotaProvider:                 caps.QuotaProvider != nil,
+		// BEGIN xAI Guardian core extension: advertise xAI-only capability.
+		XAIStreamGuard: caps.XAIStreamGuard != nil,
+		// END xAI Guardian core extension.
+		WebSocketResponseObserver: caps.WebSocketResponseObserver != nil,
+		ThinkingApplier:           caps.ThinkingApplier != nil,
+		UsagePlugin:               caps.UsagePlugin != nil,
+		CommandLinePlugin:         caps.CommandLinePlugin != nil,
+		ManagementAPI:             caps.ManagementAPI != nil,
+		QuotaProvider:             caps.QuotaProvider != nil,
 	}
 }
 

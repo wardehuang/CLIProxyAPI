@@ -23,6 +23,123 @@ type PluginInterceptorHost interface {
 	InterceptStreamChunk(context.Context, pluginapi.StreamChunkInterceptRequest) pluginapi.StreamChunkInterceptResponse
 }
 
+// BEGIN xAI Guardian core extension: xAI-only synchronous guard bridge.
+
+type xAIStreamGuardHost interface {
+	PrepareXAIStream(context.Context, pluginapi.XAIStreamPrepareRequest) (pluginapi.XAIStreamPrepareResponse, error)
+	CompleteXAIStream(context.Context, pluginapi.XAIStreamCompletionRequest) (pluginapi.XAIStreamCompletionResponse, error)
+}
+
+type xAIStreamGuardSkipHost interface {
+	PrepareXAIStreamExcept(context.Context, pluginapi.XAIStreamPrepareRequest, string) (pluginapi.XAIStreamPrepareResponse, error)
+	CompleteXAIStreamExcept(context.Context, pluginapi.XAIStreamCompletionRequest, string) (pluginapi.XAIStreamCompletionResponse, error)
+}
+
+type xAIStreamGuardDetector interface {
+	HasXAIStreamGuards() bool
+}
+
+type xAIStreamGuardAdapter struct {
+	host         PluginInterceptorHost
+	skipPluginID string
+}
+
+func (a xAIStreamGuardAdapter) PrepareXAIStream(ctx context.Context, req coreexecutor.XAIStreamPrepareRequest) (coreexecutor.XAIStreamPrepareResponse, error) {
+	request := pluginapi.XAIStreamPrepareRequest{
+		RequestID:       req.RequestID,
+		TraceID:         req.TraceID,
+		Provider:        req.Provider,
+		SourceFormat:    req.SourceFormat,
+		Model:           req.Model,
+		RequestedModel:  req.RequestedModel,
+		AuthID:          req.AuthID,
+		AuthIndex:       req.AuthIndex,
+		AuthFileName:    req.AuthFileName,
+		ProxyURL:        req.ProxyURL,
+		RequestHeaders:  req.RequestHeaders,
+		OriginalRequest: req.OriginalRequest,
+		RequestBody:     req.RequestBody,
+		StartedAt:       req.StartedAt,
+		Metadata:        req.Metadata,
+	}
+	var response pluginapi.XAIStreamPrepareResponse
+	var err error
+	if skipHost, ok := a.host.(xAIStreamGuardSkipHost); ok {
+		response, err = skipHost.PrepareXAIStreamExcept(ctx, request, a.skipPluginID)
+	} else {
+		response, err = a.host.(xAIStreamGuardHost).PrepareXAIStream(ctx, request)
+	}
+	return coreexecutor.XAIStreamPrepareResponse{
+		FirstPayloadTimeoutSeconds: response.FirstPayloadTimeoutSeconds,
+		ProgressTimeoutSeconds:     response.ProgressTimeoutSeconds,
+		MaxRetries:                 response.MaxRetries,
+		Metadata:                   response.Metadata,
+	}, err
+}
+
+func (a xAIStreamGuardAdapter) CompleteXAIStream(ctx context.Context, req coreexecutor.XAIStreamCompletionRequest) (coreexecutor.XAIStreamCompletionResponse, error) {
+	request := pluginapi.XAIStreamCompletionRequest{
+		RequestID:           req.RequestID,
+		TraceID:             req.TraceID,
+		Provider:            req.Provider,
+		SourceFormat:        req.SourceFormat,
+		Model:               req.Model,
+		RequestedModel:      req.RequestedModel,
+		AuthID:              req.AuthID,
+		AuthIndex:           req.AuthIndex,
+		AuthFileName:        req.AuthFileName,
+		ProxyURL:            req.ProxyURL,
+		RequestHeaders:      req.RequestHeaders,
+		ResponseHeaders:     req.ResponseHeaders,
+		OriginalRequest:     req.OriginalRequest,
+		RequestBody:         req.RequestBody,
+		Body:                req.Body,
+		StatusCode:          req.StatusCode,
+		Error:               req.Error,
+		Completed:           req.Completed,
+		StartedAt:           req.StartedAt,
+		UpstreamStartedAt:   req.UpstreamStartedAt,
+		FirstResponseByteAt: req.FirstResponseByteAt,
+		FirstPayloadAt:      req.FirstPayloadAt,
+		FirstVisibleAt:      req.FirstVisibleAt,
+		FinishedAt:          req.FinishedAt,
+		RetryCount:          req.RetryCount,
+		MaxRetries:          req.MaxRetries,
+		Metadata:            req.Metadata,
+	}
+	var response pluginapi.XAIStreamCompletionResponse
+	var err error
+	if skipHost, ok := a.host.(xAIStreamGuardSkipHost); ok {
+		response, err = skipHost.CompleteXAIStreamExcept(ctx, request, a.skipPluginID)
+	} else {
+		response, err = a.host.(xAIStreamGuardHost).CompleteXAIStream(ctx, request)
+	}
+	return coreexecutor.XAIStreamCompletionResponse{
+		Action:     string(response.Action),
+		RetryMode:  string(response.RetryMode),
+		Reason:     response.Reason,
+		StatusCode: response.StatusCode,
+		Error:      response.Error,
+	}, err
+}
+
+func (h *BaseAPIHandler) xAIStreamGuard(skipPluginID string) coreexecutor.XAIStreamGuard {
+	host := h.interceptorHost()
+	if host == nil {
+		return nil
+	}
+	detector, ok := host.(xAIStreamGuardDetector)
+	if !ok || !detector.HasXAIStreamGuards() {
+		return nil
+	}
+	if _, ok := host.(xAIStreamGuardHost); !ok {
+		return nil
+	}
+	return xAIStreamGuardAdapter{host: host, skipPluginID: skipPluginID}
+}
+
+// END xAI Guardian core extension.
+
 type pluginInterceptorSkipHost interface {
 	InterceptRequestBeforeAuthExcept(context.Context, pluginapi.RequestInterceptRequest, string) pluginapi.RequestInterceptResponse
 	InterceptRequestAfterAuthExcept(context.Context, pluginapi.RequestInterceptRequest, string) pluginapi.RequestInterceptResponse
@@ -140,6 +257,16 @@ func (t *requestLifecycleTracker) requestID() string {
 	}
 	return t.completion.RequestID
 }
+
+// BEGIN xAI Guardian core extension: expose the existing lifecycle trace ID to xAI guards.
+func (t *requestLifecycleTracker) traceID() string {
+	if t == nil {
+		return ""
+	}
+	return t.completion.TraceID
+}
+
+// END xAI Guardian core extension.
 
 func (t *requestLifecycleTracker) complete(outcome pluginapi.RequestCompletionOutcome, statusCode int, err error) {
 	if t == nil {

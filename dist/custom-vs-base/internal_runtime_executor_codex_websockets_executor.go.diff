@@ -1,0 +1,14 @@
+﻿diff --git a/internal/runtime/executor/codex_websockets_executor.go b/internal/runtime/executor/codex_websockets_executor.go
+index 68f93704..652ded17 100644
+--- a/internal/runtime/executor/codex_websockets_executor.go
++++ b/internal/runtime/executor/codex_websockets_executor.go
+@@ -512,6 +512,9 @@ func (e *CodexWebsocketsExecutor) Execute(ctx context.Context, auth *cliproxyaut
+ 	wsHeaders = applyCodexWebsocketHeaders(ctx, wsHeaders, auth, apiKey, e.cfg)
+ 	applyModelHeaderOverrides(wsHeaders, baseModel)
+ 	applyCodexIdentityConfuseHeaders(wsHeaders, &identityState)
++	finalHeaders, finalBody := applyRequestFinalizer(ctx, opts, to, baseModel, wsHeaders, upstreamBody)
++	wsHeaders = finalHeaders
++	upstreamBody = finalBody
+ 
+ 	var authID, authLabel, authType, authValue string
+ 	if auth != nil {

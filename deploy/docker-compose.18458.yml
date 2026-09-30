@@ -1,0 +1,19 @@
+services:
+  cli-proxy-api-hook-min-v2:
+    image: cli-proxy-api-hook-min-v2:${VERSION:?VERSION is required}
+    build:
+      context: ./source
+      dockerfile: Dockerfile
+      args:
+        VERSION: ${VERSION:?VERSION is required}
+        COMMIT: ${COMMIT:?COMMIT is required}
+        BUILD_DATE: ${BUILD_DATE:?BUILD_DATE is required}
+    container_name: cli-proxy-api-hook-min-v2
+    ports:
+      - "18458:18458"
+    volumes:
+      - ./config.yaml:/CLIProxyAPI/config.yaml
+      - ./auths:/home/ubuntu/.cli-proxy-api
+      - ./logs:/CLIProxyAPI/logs
+      - ./plugins:/CLIProxyAPI/plugins
+    restart: unless-stopped

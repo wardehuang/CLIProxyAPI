@@ -28,9 +28,11 @@ func TestEnvelopeRoundTrip(t *testing.T) {
 }
 
 func TestMethodNamesAreStable(t *testing.T) {
-	if SchemaVersion != 6 {
-		t.Fatalf("SchemaVersion = %d, want 6", SchemaVersion)
+	// BEGIN xAI Guardian core extension: assert the xAI RPC schema version.
+	if SchemaVersion != 7 {
+		t.Fatalf("SchemaVersion = %d, want 7", SchemaVersion)
 	}
+	// END xAI Guardian core extension.
 	if SchemaVersionWebSocketResponseObserver != 4 {
 		t.Fatalf("SchemaVersionWebSocketResponseObserver = %d, want 4", SchemaVersionWebSocketResponseObserver)
 	}

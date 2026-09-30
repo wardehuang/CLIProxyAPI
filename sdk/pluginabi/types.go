@@ -17,7 +17,10 @@ const (
 	// Version 6 preserves raw JSON bodies for plugin management responses.
 	// Plugins that still require HTML entity escaping on JSON response strings
 	// should keep schema_version < 6.
-	SchemaVersion uint32 = 6
+	// BEGIN xAI Guardian core extension: schema version for xAI stream guard RPCs.
+	// Version 7 adds the xAI stream guard capability and its prepare/complete RPC payloads.
+	SchemaVersion uint32 = 7
+	// END xAI Guardian core extension.
 	// SchemaVersionStreamChunkOmitRequestBody is the first schema version that omits
 	// request bodies on payload stream-chunk interceptor calls.
 	SchemaVersionStreamChunkOmitRequestBody uint32 = 3
@@ -73,6 +76,10 @@ const (
 	MethodResponseNormalizeAfter       = "response.normalize_after"
 	MethodResponseInterceptAfter       = "response.intercept_after"
 	MethodResponseInterceptStreamChunk = "response.intercept_stream_chunk"
+	// BEGIN xAI Guardian core extension: xAI-only RPC methods.
+	MethodXAIStreamPrepare  = "xai.stream.prepare"
+	MethodXAIStreamComplete = "xai.stream.complete"
+	// END xAI Guardian core extension.
 
 	MethodWebSocketResponseEvent = "websocket.response_event"
 

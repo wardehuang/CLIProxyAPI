@@ -1,6 +1,7 @@
 package auth
 
 import (
+	"bytes"
 	"context"
 	"net/http"
 	"strings"
@@ -8,6 +9,51 @@ import (
 
 	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/executor"
 )
+
+// BEGIN xAI Guardian core extension: xAI retry exclusion metadata.
+
+func hasXAIProvider(providers []string) bool {
+	for _, provider := range providers {
+		if strings.EqualFold(strings.TrimSpace(provider), "xai") {
+			return true
+		}
+	}
+	return false
+}
+
+func xAIExcludedAuthIDs(metadata map[string]any) []string {
+	if metadata == nil {
+		return nil
+	}
+	ids, ok := metadata[cliproxyexecutor.XAIExcludedAuthIDsMetadataKey].([]string)
+	if !ok {
+		return nil
+	}
+	return ids
+}
+
+func withXAIExcludedAuthID(opts cliproxyexecutor.Options, authID string) cliproxyexecutor.Options {
+	if strings.TrimSpace(authID) == "" {
+		return opts
+	}
+	metadata := make(map[string]any, len(opts.Metadata)+1)
+	for key, value := range opts.Metadata {
+		metadata[key] = value
+	}
+	ids := append([]string(nil), xAIExcludedAuthIDs(opts.Metadata)...)
+	for _, existing := range ids {
+		if existing == authID {
+			opts.Metadata = metadata
+			return opts
+		}
+	}
+	ids = append(ids, authID)
+	metadata[cliproxyexecutor.XAIExcludedAuthIDsMetadataKey] = ids
+	opts.Metadata = metadata
+	return opts
+}
+
+// END xAI Guardian core extension.
 
 func discardStreamChunks(ch <-chan cliproxyexecutor.StreamChunk) {
 	if ch == nil {
@@ -119,6 +165,162 @@ func readStreamBootstrap(ctx context.Context, ch <-chan cliproxyexecutor.StreamC
 		}
 	}
 }
+
+// BEGIN xAI Guardian core extension: synchronous xAI stream completion.
+
+func (m *Manager) completeXAIStreamGuard(ctx context.Context, auth *Auth, provider string, execReq cliproxyexecutor.Request, opts cliproxyexecutor.Options, resultModel, routeModel string, streamResult *cliproxyexecutor.StreamResult, buffered []cliproxyexecutor.StreamChunk, closed bool, bootstrapErr error) ([]cliproxyexecutor.StreamChunk, bool, error) {
+	if opts.XAIStreamGuard == nil || !strings.EqualFold(strings.TrimSpace(provider), "xai") {
+		return buffered, closed, nil
+	}
+	if streamResult.XAICompletion == nil {
+		return nil, true, &cliproxyexecutor.XAIStreamGuardError{
+			Action: "fail",
+			AuthID: auth.ID,
+			Status: http.StatusBadGateway,
+			Reason: "xAI stream completion data is missing",
+		}
+	}
+
+	allChunks := append([]cliproxyexecutor.StreamChunk(nil), buffered...)
+	if !closed {
+		for chunk := range streamResult.Chunks {
+			allChunks = append(allChunks, chunk)
+		}
+	}
+	var completion cliproxyexecutor.XAIStreamCompletion
+	for item := range streamResult.XAICompletion {
+		completion = item
+	}
+	streamErr := bootstrapErr
+	if completion.Err != nil {
+		streamErr = completion.Err
+	}
+	if streamErr != nil {
+		hasChunkError := false
+		for _, chunk := range allChunks {
+			if chunk.Err != nil {
+				hasChunkError = true
+				break
+			}
+		}
+		if !hasChunkError {
+			allChunks = append(allChunks, cliproxyexecutor.StreamChunk{Err: streamErr})
+		}
+	}
+	responseHeaders := completion.ResponseHeaders
+	if responseHeaders == nil {
+		responseHeaders = streamResult.Headers
+	}
+	statusCode := completion.StatusCode
+	if statusCode == 0 {
+		if streamErr == nil {
+			statusCode = http.StatusOK
+		} else {
+			statusCode = http.StatusBadGateway
+		}
+	}
+	errorText := ""
+	if streamErr != nil {
+		errorText = streamErr.Error()
+	}
+	completionRequest := cliproxyexecutor.XAIStreamCompletionRequest{
+		RequestID:           opts.RequestID,
+		TraceID:             opts.TraceID,
+		Provider:            provider,
+		SourceFormat:        opts.SourceFormat.String(),
+		Model:               execReq.Model,
+		RequestedModel:      routeModel,
+		AuthID:              auth.ID,
+		AuthIndex:           auth.Index,
+		AuthFileName:        auth.FileName,
+		ProxyURL:            auth.ProxyURL,
+		RequestHeaders:      cloneRequestHeaders(opts.Headers),
+		ResponseHeaders:     cloneRequestHeaders(responseHeaders),
+		OriginalRequest:     bytes.Clone(opts.OriginalRequest),
+		RequestBody:         bytes.Clone(execReq.Payload),
+		Body:                bytes.Clone(completion.Body),
+		StatusCode:          statusCode,
+		Error:               errorText,
+		Completed:           completion.Completed && streamErr == nil,
+		StartedAt:           completion.StartedAt,
+		UpstreamStartedAt:   completion.UpstreamStartedAt,
+		FirstResponseByteAt: completion.FirstResponseByteAt,
+		FirstPayloadAt:      completion.FirstPayloadAt,
+		FirstVisibleAt:      completion.FirstVisibleAt,
+		FinishedAt:          completion.FinishedAt,
+		RetryCount:          completion.RetryCount,
+		MaxRetries:          completion.MaxRetries,
+		Metadata:            completion.Metadata,
+	}
+	decision, errComplete := opts.XAIStreamGuard.CompleteXAIStream(ctx, completionRequest)
+	if errComplete != nil {
+		return nil, true, &cliproxyexecutor.XAIStreamGuardError{
+			Action: "fail",
+			AuthID: auth.ID,
+			Status: http.StatusBadGateway,
+			Reason: "xAI stream guard completion failed: " + errComplete.Error(),
+			Cause:  errComplete,
+		}
+	}
+	action := strings.ToLower(strings.TrimSpace(decision.Action))
+	if action == "" {
+		action = "flush"
+	}
+	switch action {
+	case "flush":
+		return allChunks, true, nil
+	case "retry":
+		retryMode := strings.TrimSpace(decision.RetryMode)
+		if retryMode == "" {
+			retryMode = cliproxyexecutor.XAIStreamRetryModeReloadAndExcludeSelectedAuth
+		}
+		status := decision.StatusCode
+		if status == 0 {
+			status = http.StatusServiceUnavailable
+		}
+		reason := strings.TrimSpace(decision.Reason)
+		if reason == "" {
+			reason = strings.TrimSpace(decision.Error)
+		}
+		if reason == "" {
+			reason = "xAI stream guard requested a retry"
+		}
+		return nil, true, &cliproxyexecutor.XAIStreamGuardError{
+			Action:    action,
+			RetryMode: retryMode,
+			AuthID:    auth.ID,
+			Status:    status,
+			Reason:    reason,
+		}
+	case "fail":
+		status := decision.StatusCode
+		if status == 0 {
+			status = http.StatusBadGateway
+		}
+		reason := strings.TrimSpace(decision.Reason)
+		if reason == "" {
+			reason = strings.TrimSpace(decision.Error)
+		}
+		if reason == "" {
+			reason = "xAI stream guard rejected the stream"
+		}
+		return nil, true, &cliproxyexecutor.XAIStreamGuardError{
+			Action: "fail",
+			AuthID: auth.ID,
+			Status: status,
+			Reason: reason,
+		}
+	default:
+		return nil, true, &cliproxyexecutor.XAIStreamGuardError{
+			Action: "fail",
+			AuthID: auth.ID,
+			Status: http.StatusBadGateway,
+			Reason: "xAI stream guard returned unsupported action: " + action,
+		}
+	}
+}
+
+// END xAI Guardian core extension.
 
 func (m *Manager) wrapStreamResult(ctx context.Context, auth *Auth, provider, resultModel, routeModel string, headers http.Header, buffered []cliproxyexecutor.StreamChunk, remaining <-chan cliproxyexecutor.StreamChunk, aliasResult OAuthModelAliasResult, ephemeralResult bool, opts cliproxyexecutor.Options) *cliproxyexecutor.StreamResult {
 	out := make(chan cliproxyexecutor.StreamChunk)
@@ -321,8 +523,22 @@ func (m *Manager) executeStreamWithModelPool(ctx context.Context, executor Provi
 		if hasUpstreamExecutionAttempt(bootstrapErr) {
 			upstreamErr = newStreamBootstrapError(bootstrapErr, streamResult.Headers)
 		}
+		// BEGIN xAI Guardian core extension: evaluate only xAI stream completions.
+		guardEnabled := opts.XAIStreamGuard != nil && strings.EqualFold(strings.TrimSpace(provider), "xai")
+		guardDecisionErr := false
+		if guardEnabled {
+			var guardErr error
+			buffered, closed, guardErr = m.completeXAIStreamGuard(ctx, auth, provider, execReq, opts, resultModel, routeModel, streamResult, buffered, closed, bootstrapErr)
+			if guardErr != nil {
+				guardDecisionErr = true
+				bootstrapErr = markUpstreamExecutionAttemptFromContext(ctx, guardErr)
+			} else {
+				bootstrapErr = nil
+			}
+		}
+		// END xAI Guardian core extension.
 		if bootstrapErr != nil {
-			if errCtx := ctx.Err(); errCtx != nil {
+			if errCtx := ctx.Err(); errCtx != nil && !guardDecisionErr {
 				discardStreamChunks(streamResult.Chunks)
 				return nil, errCtx
 			}

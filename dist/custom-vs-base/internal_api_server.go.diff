@@ -1,0 +1,12 @@
+﻿diff --git a/internal/api/server.go b/internal/api/server.go
+index f263e82f..45e8c202 100644
+--- a/internal/api/server.go
++++ b/internal/api/server.go
+@@ -952,6 +952,7 @@ func (s *Server) registerManagementRoutes() {
+ 		mgmt.GET("/config", s.mgmt.GetConfig)
+ 		mgmt.GET("/config.yaml", s.mgmt.GetConfigYAML)
+ 		mgmt.PUT("/config.yaml", s.mgmt.PutConfigYAML)
++		mgmt.GET("/xai-client-version", s.mgmt.GetXAIClientVersion)
+ 		mgmt.GET("/latest-version", s.mgmt.GetLatestVersion)
+ 		mgmt.GET("/plugins", s.mgmt.ListPlugins)
+ 		mgmt.GET("/plugin-store", s.mgmt.ListPluginStore)

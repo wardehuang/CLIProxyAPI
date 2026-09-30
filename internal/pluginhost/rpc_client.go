@@ -151,6 +151,11 @@ func registerRPCPlugin(ctx context.Context, host *Host, id string, client plugin
 	if resp.Capabilities.StreamChunkInterceptor {
 		plugin.Capabilities.StreamChunkInterceptor = adapter
 	}
+	// BEGIN xAI Guardian core extension: register the xAI-only RPC capability.
+	if resp.Capabilities.XAIStreamGuard {
+		plugin.Capabilities.XAIStreamGuard = adapter
+	}
+	// END xAI Guardian core extension.
 	if resp.Capabilities.WebSocketResponseObserver {
 		plugin.Capabilities.WebSocketResponseObserver = adapter
 	}
@@ -263,6 +268,20 @@ func sanitizePluginRequest(request any) any {
 	case rpcStreamChunkInterceptRequest:
 		req.Metadata = sanitizePluginMetadata(req.Metadata)
 		return req
+	// BEGIN xAI Guardian core extension: sanitize xAI guard RPC metadata.
+	case pluginapi.XAIStreamPrepareRequest:
+		req.Metadata = sanitizePluginMetadata(req.Metadata)
+		return req
+	case pluginapi.XAIStreamCompletionRequest:
+		req.Metadata = sanitizePluginMetadata(req.Metadata)
+		return req
+	case rpcXAIStreamPrepareRequest:
+		req.Metadata = sanitizePluginMetadata(req.Metadata)
+		return req
+	case rpcXAIStreamCompletionRequest:
+		req.Metadata = sanitizePluginMetadata(req.Metadata)
+		return req
+	// END xAI Guardian core extension.
 	case rpcWebSocketResponseEvent:
 		req.Metadata = sanitizePluginMetadata(req.Metadata)
 		return req
@@ -582,6 +601,28 @@ func (a *rpcPluginAdapter) InterceptStreamChunk(ctx context.Context, req plugina
 		HostCallbackID:              callbackID,
 	})
 }
+
+// BEGIN xAI Guardian core extension: xAI guard RPC adapter.
+
+func (a *rpcPluginAdapter) PrepareXAIStream(ctx context.Context, req pluginapi.XAIStreamPrepareRequest) (pluginapi.XAIStreamPrepareResponse, error) {
+	callbackID, closeCallback := a.openHostCallbackContext(ctx)
+	defer closeCallback()
+	return callPlugin[pluginapi.XAIStreamPrepareResponse](ctx, a.client, pluginabi.MethodXAIStreamPrepare, rpcXAIStreamPrepareRequest{
+		XAIStreamPrepareRequest: req,
+		HostCallbackID:          callbackID,
+	})
+}
+
+func (a *rpcPluginAdapter) CompleteXAIStream(ctx context.Context, req pluginapi.XAIStreamCompletionRequest) (pluginapi.XAIStreamCompletionResponse, error) {
+	callbackID, closeCallback := a.openHostCallbackContext(ctx)
+	defer closeCallback()
+	return callPlugin[pluginapi.XAIStreamCompletionResponse](ctx, a.client, pluginabi.MethodXAIStreamComplete, rpcXAIStreamCompletionRequest{
+		XAIStreamCompletionRequest: req,
+		HostCallbackID:             callbackID,
+	})
+}
+
+// END xAI Guardian core extension.
 
 func (a *rpcPluginAdapter) ObserveWebSocketResponseEvent(ctx context.Context, event pluginapi.WebSocketResponseEvent) error {
 	callbackID, closeCallback := a.openHostCallbackContext(ctx)

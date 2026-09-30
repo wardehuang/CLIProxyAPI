@@ -3,6 +3,7 @@ package pluginhost
 import (
 	"bytes"
 	"context"
+	"fmt"
 	"io"
 	"net/http"
 	"net/url"
@@ -307,6 +308,102 @@ func (h *Host) InterceptStreamChunkExcept(ctx context.Context, req pluginapi.Str
 	}
 	return current
 }
+
+// BEGIN xAI Guardian core extension: synchronous xAI guard dispatch.
+
+func (h *Host) PrepareXAIStream(ctx context.Context, req pluginapi.XAIStreamPrepareRequest) (pluginapi.XAIStreamPrepareResponse, error) {
+	return h.PrepareXAIStreamExcept(ctx, req, "")
+}
+
+func (h *Host) PrepareXAIStreamExcept(ctx context.Context, req pluginapi.XAIStreamPrepareRequest, skipPluginID string) (pluginapi.XAIStreamPrepareResponse, error) {
+	if h == nil {
+		return pluginapi.XAIStreamPrepareResponse{}, nil
+	}
+	skipPluginID = strings.TrimSpace(skipPluginID)
+	for _, record := range h.activeRecords() {
+		guard := record.plugin.Capabilities.XAIStreamGuard
+		if h.isPluginFused(record.id) || guard == nil || record.id == skipPluginID || !h.recordCurrent(record) {
+			continue
+		}
+		next := req
+		next.RequestHeaders = cloneHeader(req.RequestHeaders)
+		next.OriginalRequest = bytes.Clone(req.OriginalRequest)
+		next.RequestBody = bytes.Clone(req.RequestBody)
+		next.Metadata = cloneInterceptorMetadata(req.Metadata)
+		return h.callXAIStreamPrepare(ctx, record, guard, next)
+	}
+	return pluginapi.XAIStreamPrepareResponse{}, nil
+}
+
+func (h *Host) CompleteXAIStream(ctx context.Context, req pluginapi.XAIStreamCompletionRequest) (pluginapi.XAIStreamCompletionResponse, error) {
+	return h.CompleteXAIStreamExcept(ctx, req, "")
+}
+
+func (h *Host) CompleteXAIStreamExcept(ctx context.Context, req pluginapi.XAIStreamCompletionRequest, skipPluginID string) (pluginapi.XAIStreamCompletionResponse, error) {
+	if h == nil {
+		return pluginapi.XAIStreamCompletionResponse{}, nil
+	}
+	skipPluginID = strings.TrimSpace(skipPluginID)
+	for _, record := range h.activeRecords() {
+		guard := record.plugin.Capabilities.XAIStreamGuard
+		if h.isPluginFused(record.id) || guard == nil || record.id == skipPluginID || !h.recordCurrent(record) {
+			continue
+		}
+		next := req
+		next.RequestHeaders = cloneHeader(req.RequestHeaders)
+		next.ResponseHeaders = cloneHeader(req.ResponseHeaders)
+		next.OriginalRequest = bytes.Clone(req.OriginalRequest)
+		next.RequestBody = bytes.Clone(req.RequestBody)
+		next.Body = bytes.Clone(req.Body)
+		next.Metadata = cloneInterceptorMetadata(req.Metadata)
+		return h.callXAIStreamComplete(ctx, record, guard, next)
+	}
+	return pluginapi.XAIStreamCompletionResponse{}, nil
+}
+
+func (h *Host) HasXAIStreamGuards() bool {
+	if h == nil {
+		return false
+	}
+	for _, record := range h.activeRecords() {
+		if !h.isPluginFused(record.id) && record.plugin.Capabilities.XAIStreamGuard != nil {
+			return true
+		}
+	}
+	return false
+}
+
+func (h *Host) callXAIStreamPrepare(ctx context.Context, record capabilityRecord, guard pluginapi.XAIStreamGuard, req pluginapi.XAIStreamPrepareRequest) (out pluginapi.XAIStreamPrepareResponse, errOut error) {
+	if ctx == nil {
+		ctx = context.Background()
+	} else {
+		ctx = context.WithoutCancel(ctx)
+	}
+	defer func() {
+		if recovered := recover(); recovered != nil {
+			h.fusePlugin(record.id, "XAIStreamGuard.PrepareXAIStream", recovered)
+			errOut = fmt.Errorf("xAI stream guard %s panicked: %v", record.id, recovered)
+		}
+	}()
+	return guard.PrepareXAIStream(ctx, req)
+}
+
+func (h *Host) callXAIStreamComplete(ctx context.Context, record capabilityRecord, guard pluginapi.XAIStreamGuard, req pluginapi.XAIStreamCompletionRequest) (out pluginapi.XAIStreamCompletionResponse, errOut error) {
+	if ctx == nil {
+		ctx = context.Background()
+	} else {
+		ctx = context.WithoutCancel(ctx)
+	}
+	defer func() {
+		if recovered := recover(); recovered != nil {
+			h.fusePlugin(record.id, "XAIStreamGuard.CompleteXAIStream", recovered)
+			errOut = fmt.Errorf("xAI stream guard %s panicked: %v", record.id, recovered)
+		}
+	}()
+	return guard.CompleteXAIStream(ctx, req)
+}
+
+// END xAI Guardian core extension.
 
 func (h *Host) HasStreamInterceptors() bool {
 	if h == nil {

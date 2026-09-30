@@ -1,0 +1,67 @@
+﻿diff --git a/internal/runtime/executor/xai_executor.go b/internal/runtime/executor/xai_executor.go
+index fec8a3b4..98afbda3 100644
+--- a/internal/runtime/executor/xai_executor.go
++++ b/internal/runtime/executor/xai_executor.go
+@@ -154,6 +154,10 @@ func (e *XAIExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, req
+ 		return resp, err
+ 	}
+ 	applyXAIChatHeaders(httpReq, auth, token, true, prepared.sessionID)
++	finalizedRequest := finalizeXAIRequest(ctx, opts, prepared, httpReq.Header)
++	httpReq.Header = finalizedRequest.Headers
++	setRequestBody(httpReq, finalizedRequest.Body)
++	applyFinalizedXAIRequest(prepared, finalizedRequest)
+ 	e.recordXAIRequest(ctx, auth, url, httpReq.Header.Clone(), prepared.body)
+ 
+ 	httpClient := helps.NewProxyAwareHTTPClient(ctx, e.cfg, auth, 0)
+@@ -257,6 +261,10 @@ func (e *XAIExecutor) executeCompactRequest(ctx context.Context, auth *cliproxya
+ 	// Official API / custom compact endpoints use standard API headers, not CLI
+ 	// chat-proxy identity headers (which applyXAIChatHeaders may still attach for OAuth chat).
+ 	applyXAIHeaders(httpReq, auth, token, false, prepared.sessionID)
++	finalizedRequest := finalizeXAIRequest(ctx, opts, prepared, httpReq.Header)
++	httpReq.Header = finalizedRequest.Headers
++	setRequestBody(httpReq, finalizedRequest.Body)
++	applyFinalizedXAIRequest(prepared, finalizedRequest)
+ 	e.recordXAIRequest(ctx, auth, requestURL, httpReq.Header.Clone(), prepared.body)
+ 
+ 	httpClient := helps.NewProxyAwareHTTPClient(ctx, e.cfg, auth, 0)
+@@ -635,6 +643,10 @@ func (e *XAIExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Auth
+ 		return nil, err
+ 	}
+ 	applyXAIChatHeaders(httpReq, auth, token, true, prepared.sessionID)
++	finalizedRequest := finalizeXAIRequest(ctx, opts, prepared, httpReq.Header)
++	httpReq.Header = finalizedRequest.Headers
++	setRequestBody(httpReq, finalizedRequest.Body)
++	applyFinalizedXAIRequest(prepared, finalizedRequest)
+ 	e.recordXAIRequest(ctx, auth, url, httpReq.Header.Clone(), prepared.body)
+ 
+ 	httpClient := helps.NewProxyAwareHTTPClient(ctx, e.cfg, auth, 0)
+@@ -2909,11 +2921,28 @@ func xaiStatusErr(code int, body []byte) statusErr {
+ 	if msg == "" {
+ 		msg = strings.ToLower(string(body))
+ 	}
++	classification := "generic_429"
+ 	if strings.Contains(codeStr, "free-usage-exhausted") ||
+ 		strings.Contains(msg, "free-usage-exhausted") ||
+ 		strings.Contains(msg, "included free usage") {
+ 		d := xaiFreeUsageExhaustedCooldown
+ 		err.retryAfter = &d
+-	}
++		classification = "free_usage_exhausted"
++	}
++	log.WithFields(log.Fields{
++		"provider":            "xai",
++		"status_code":         code,
++		"classification":      classification,
++		"upstream_error_code": codeStr,
++		"retry_after_seconds": durationSeconds(err.retryAfter),
++		"response_body_size":  len(body),
++	}).Warn("xAI 429 classified for credential cooldown")
+ 	return err
+ }
++
++func durationSeconds(duration *time.Duration) int64 {
++	if duration == nil {
++		return 0
++	}
++	return int64(duration.Seconds())
++}

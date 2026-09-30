@@ -95,6 +95,13 @@ func unwrapExecutionBoundaryError(err error) error {
 }
 
 func preferredExecutionAttemptError(fallback, upstream error) error {
+	// BEGIN xAI Guardian core extension: preserve the synchronous xAI guard
+	// decision instead of replacing it with the lower-level stream error.
+	var xAIGuardErr *cliproxyexecutor.XAIStreamGuardError
+	if errors.As(fallback, &xAIGuardErr) && xAIGuardErr != nil {
+		return fallback
+	}
+	// END xAI Guardian core extension.
 	if errors.Is(fallback, context.Canceled) || errors.Is(fallback, context.DeadlineExceeded) {
 		return fallback
 	}
@@ -260,6 +267,12 @@ func (m *Manager) ExecuteStream(ctx context.Context, providers []string, req cli
 		if errStream == nil {
 			return result, nil
 		}
+		// BEGIN xAI Guardian core extension: feed xAI-only auth exclusions into
+		// the existing retry-round selector.
+		if guardErr, ok := errors.AsType[*cliproxyexecutor.XAIStreamGuardError](errStream); ok && guardErr != nil && guardErr.ExcludesSelectedAuth() {
+			opts = withXAIExcludedAuthID(opts, guardErr.AuthID)
+		}
+		// END xAI Guardian core extension.
 		if hasUpstreamExecutionAttempt(errStream) {
 			preferredUpstreamErr = errStream
 		}
@@ -910,12 +923,21 @@ func (m *Manager) executeStreamMixedOnce(ctx context.Context, providers []string
 	homeMode := m.HomeEnabled()
 	homeAuthCount := 1
 	tried := make(map[string]struct{})
+	// BEGIN xAI Guardian core extension: seed exclusions only for requests
+	// whose provider set contains xAI.
+	homeExcludedAuthIDs := make(map[string]struct{})
+	if hasXAIProvider(providers) {
+		for _, authID := range xAIExcludedAuthIDs(opts.Metadata) {
+			tried[authID] = struct{}{}
+			homeExcludedAuthIDs[authID] = struct{}{}
+		}
+	}
+	// END xAI Guardian core extension.
 	if !homeMode {
 		for authID := range m.requestRetryRoundExclusions(retryRound, defaultRequestRetry) {
 			tried[authID] = struct{}{}
 		}
 	}
-	homeExcludedAuthIDs := make(map[string]struct{})
 	homeSameAuthRetries := make(map[string]int)
 	lastHomeAuthID := ""
 	homeSameAuthRetryPending := false
@@ -1227,6 +1249,12 @@ func shouldExcludeHomeAuthAfterStreamError(ctx context.Context, _ *Auth, err err
 	if err == nil || isConnectionLifecycleError(err) {
 		return false
 	}
+	// BEGIN xAI Guardian core extension: xAI retry decisions control whether
+	// the selected xAI credential is excluded from the next Home selection.
+	if guardErr, ok := errors.AsType[*cliproxyexecutor.XAIStreamGuardError](err); ok && guardErr != nil && guardErr.Action == cliproxyexecutor.XAIStreamActionRetry {
+		return guardErr.ExcludesSelectedAuth()
+	}
+	// END xAI Guardian core extension.
 	// A 426 during a downstream websocket attempt is a transport fallback
 	// signal and may retry the same credential once.
 	if cliproxyexecutor.DownstreamWebsocket(ctx) && statusCodeFromError(err) == http.StatusUpgradeRequired {

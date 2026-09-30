@@ -346,6 +346,11 @@ func (h *BaseAPIHandler) executeStreamWithAuthManagerFormats(ctx context.Context
 		RequestAfterAuthInterceptor: h.requestAfterAuthInterceptor(afterAuthCapture, lifecycle.requestID(), execOptions.SkipInterceptorPluginID),
 		WebSocketResponseObserver:   h.webSocketResponseObserver(lifecycle.requestID(), execOptions.SkipInterceptorPluginID),
 		ProxyURL:                    execOptions.ProxyURL,
+		// BEGIN xAI Guardian core extension: only xAI executor consumes this guard.
+		RequestID:      lifecycle.requestID(),
+		TraceID:        lifecycle.traceID(),
+		XAIStreamGuard: h.xAIStreamGuard(execOptions.SkipInterceptorPluginID),
+		// END xAI Guardian core extension.
 	}
 	opts.Metadata = reqMeta
 	ctx = enrichContextWithSessionHierarchy(ctx, opts.Headers, req.Payload, opts.Metadata)
