@@ -67,6 +67,11 @@ management:
   # Leave empty to disable the Management API entirely (404 for /v0/management and /v8/management routes).
   secret-key: ""
 
+  # IPs and CIDRs exempt from failed management-key bans. The management key is still required.
+  # ip-allowlist:
+  #   - "192.168.1.100"
+  #   - "192.168.1.0/24"
+
   # Disable the bundled management control panel asset download and HTTP route when true.
   disable-control-panel: false
 

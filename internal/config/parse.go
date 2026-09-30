@@ -47,6 +47,9 @@ func ParseConfigBytes(data []byte) (*Config, error) {
 	if errValidate := validateTrustedProxies(cfg.TrustedProxies); errValidate != nil {
 		return nil, errValidate
 	}
+	if errValidate := validateManagementIPAllowlist(cfg.RemoteManagement.IPAllowlist); errValidate != nil {
+		return nil, errValidate
+	}
 
 	cfg.CredentialConcurrency = cfg.CredentialConcurrency.WithDefaults()
 	if errValidate := cfg.CredentialInFlight.Validate(); errValidate != nil {

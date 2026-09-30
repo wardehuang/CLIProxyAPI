@@ -308,12 +308,14 @@ func (h *Handler) AuthenticateManagementKey(clientIP string, localClient bool, p
 
 	cfg := h.cfg
 	var (
-		allowRemote bool
-		secretHash  string
+		allowRemote   bool
+		secretHash    string
+		ipAllowlisted bool
 	)
 	if cfg != nil {
 		allowRemote = cfg.RemoteManagement.AllowRemote
 		secretHash = cfg.RemoteManagement.SecretKey
+		ipAllowlisted = isManagementIPAllowlisted(clientIP, cfg.RemoteManagement.IPAllowlist)
 	}
 	if h.allowRemoteOverride {
 		allowRemote = true
@@ -323,7 +325,7 @@ func (h *Handler) AuthenticateManagementKey(clientIP string, localClient bool, p
 	now := time.Now()
 	h.attemptsMu.Lock()
 	ai := h.failedAttempts[clientIP]
-	if ai != nil && !ai.blockedUntil.IsZero() {
+	if !ipAllowlisted && ai != nil && !ai.blockedUntil.IsZero() {
 		if now.Before(ai.blockedUntil) {
 			remaining := ai.blockedUntil.Sub(now).Round(time.Second)
 			h.attemptsMu.Unlock()
@@ -340,6 +342,9 @@ func (h *Handler) AuthenticateManagementKey(clientIP string, localClient bool, p
 	}
 
 	fail := func() {
+		if ipAllowlisted {
+			return
+		}
 		h.attemptsMu.Lock()
 		aip := h.failedAttempts[clientIP]
 		if aip == nil {
