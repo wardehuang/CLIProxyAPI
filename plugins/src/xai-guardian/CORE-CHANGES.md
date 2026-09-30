@@ -1,16 +1,22 @@
 # xAI降智守护 / xAI Guardian
 
-## 当前阶段
+## 插件职责
 
-本目录当前只保存迁移说明，**未实现插件业务**。
+`plugins/src/xai-guardian` 是独立的 CPA v8 动态插件，提供三个管理页签：
 
-后续插件使用自己的 SQLite 保存配置、节点、账号绑定、巡检记录、日志和降智状态。SQLite 不保存 xAI token。xAI token 仍由 CPA auth 文件及现有认证链管理。
+- **账号状态**：读取 CPA Host Auth API 暴露的 xAI 账号元数据，保存账号与巡检节点的绑定关系。
+- **服务端巡检**：保存代理节点，使用节点执行出口连通性巡检，保存每轮巡检及结果。
+- **降智守护**：接收 xAI stream completion，依据思考或工具行动证据决定 `flush`、`retry`、`fail`，保存降智次数和日志。
 
-旧 `cpa-xai-ip-switcher` 中的 `grok2api`、健康保底、Manager 通信和 Manager 配置不迁移。
+插件 SQLite 只保存配置、代理节点、账号绑定元数据、巡检记录、日志和降智状态。xAI token、Authorization header、密码和代理认证信息不写入 SQLite、不写入页面、不写入日志。
+
+插件通过 `host.auth.list` 临时读取 CPA 管理的认证元数据；认证值仍由 CPA 认证链管理，插件不请求、不持久化认证值。
+
+旧插件中的第三方网关、健康保底、外部管理器通信和旧生命周期接口没有迁移。
 
 ## CPA 核心改动
 
-所有核心改动使用 `BEGIN/END xAI Guardian core extension` 注释包裹，便于审查和移除。
+核心改动使用成对的 `BEGIN/END xAI Guardian core extension` 注释包裹，且只在 xAI provider 执行路径生效。
 
 ### 1. 插件能力与 RPC
 
@@ -21,22 +27,22 @@
   - 支持 `flush`、`retry`、`fail`。
   - 支持 `reload_selected_auth`、`reload_and_exclude_selected_auth`、`exclude_selected_auth`。
 - `sdk/pluginabi/types.go`
-  - RPC schema 升至 `7`。
+  - RPC schema 为 `7`。
   - 增加 `xai.stream.prepare` 和 `xai.stream.complete`。
 - `internal/pluginhost/rpc_schema.go`
   - 增加 xAI 守护请求的 RPC 包装结构。
 - `internal/pluginhost/rpc_client.go`
   - 增加 xAI 守护能力映射和 RPC 调用。
 - `internal/pluginhost/adapters_interceptors.go`
-  - 增加 xAI 守护能力的 Host 分发、插件隔离和异常熔断。
+  - 增加 xAI 守护能力的 Host 分发、插件隔离和错误处理。
 
 ### 2. Handler 到 Executor 的最小桥接
 
 - `sdk/api/handlers/handlers_interceptors.go`
   - 将 xAI 守护能力适配到核心 executor 接口。
-  - 暴露已有生命周期 `TraceID`。
+  - 传递已有生命周期 `TraceID`。
 - `sdk/api/handlers/handlers_stream.go`
-  - 仅向流请求传递 `RequestID`、`TraceID` 和 `XAIStreamGuard`。
+  - 仅向 xAI 流请求传递 `RequestID`、`TraceID` 和 `XAIStreamGuard`。
   - 其他 provider executor 不读取该能力。
 
 ### 3. xAI 原生流执行器
@@ -57,28 +63,21 @@
   - 增加 xAI 守护完成状态、重试边界错误和 xAI 专用排除认证元数据。
 - `sdk/cliproxy/auth/conductor_stream.go`
   - 在认证流完成后同步调用 xAI 守护。
-  - `flush` 回放已缓存流；`retry` 将当前认证作为 credential-scoped 错误交回认证选择链；`fail` 作为 request-scoped 错误停止换号。
-  - `reload_selected_auth` 保留当前认证再次选择的可能性；另外两种重试模式把当前认证加入本次请求后续轮次的 xAI 排除集合。
+  - `flush` 回放已缓存流；`retry` 将当前认证交回认证选择链；`fail` 作为请求级错误停止换号。
+  - 重试模式按插件响应决定是否排除当前认证。
 - `sdk/cliproxy/auth/conductor_execution.go`
-  - 仅对包含 `xai` provider 的流请求消费 xAI 排除集合。
-  - Home 和普通认证选择路径均保留该排除状态。
+  - 仅对 xAI provider 流请求消费 xAI 排除集合。
+  - 普通 provider 认证选择路径保持原行为。
 
 ## Provider 范围
 
-守护能力只由 `XAIExecutor.ExecuteStream` 读取，并由认证流在 provider 为 `xai` 时消费。
+守护能力只由 xAI executor 读取，并由认证流在 provider 为 `xai` 时消费。非 xAI provider 不调用 xAI 守护回调、不安装 xAI 超时、不读取 xAI 排除集合。
 
-非 xAI provider 不调用 xAI 守护回调、不安装 xAI 超时、不读取 xAI 排除集合。
+## 构建与核验状态
 
-## 未实现和未承诺
-
-- 本目录没有插件入口、SQLite schema、WebUI、账号状态页、服务端巡检页或降智判定业务。
-- 尚未把旧插件完整业务迁移到 v8 API。
-- 核心只提供流生命周期和认证重试边界；账号状态、巡检规则、SQLite 读写和降智分类由后续 `xai-guardian` 插件实现。
-- 没有恢复旧 v7 的 Host Storage、`RequestMetadataEnricher`、`RequestFinalizer` 或 `StreamCompletionInterceptor`。
-
-## 核验记录
-
+- 已完成插件入口、SQLite schema、账号状态 API、服务端巡检 API、降智守护 API、三页签 HTML 和 v8 RPC 适配。
 - 已执行 `gofmt`。
-- 已执行 `go build ./internal/... ./sdk/...`，成功。
-- 未运行测试，因本任务未要求运行测试。
+- 核心定向构建已通过：`go build ./internal/... ./sdk/...`。
+- 插件 c-shared 构建尚未通过：当前 Windows 环境缺少 cgo 所需的 `gcc`，启用 cgo 时返回 `cgo: C compiler "gcc" not found`。
+- 未运行测试。
 - 未执行 Git commit、部署或远端写入。

@@ -1,0 +1,21 @@
+module github.com/wardehuang/xai-guardian
+
+go 1.26.0
+
+require (
+	github.com/mattn/go-sqlite3 v1.14.49
+	github.com/router-for-me/CLIProxyAPI/v8 v8.0.0
+	golang.org/x/net v0.57.0
+	gopkg.in/yaml.v3 v3.0.1
+)
+
+require (
+	github.com/sirupsen/logrus v1.9.3 // indirect
+	github.com/tidwall/gjson v1.18.0 // indirect
+	github.com/tidwall/match v1.1.1 // indirect
+	github.com/tidwall/pretty v1.2.0 // indirect
+	github.com/tidwall/sjson v1.2.5 // indirect
+	golang.org/x/sys v0.47.0 // indirect
+)
+
+replace github.com/router-for-me/CLIProxyAPI/v8 => ../../..
