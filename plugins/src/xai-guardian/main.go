@@ -250,7 +250,7 @@ func handleMethod(method string, request []byte) ([]byte, error) {
 				{Method: http.MethodPost, Path: managementAPIPath, Description: "xAI Guardian API"},
 				{Method: http.MethodPost, Path: managementNodesPath, Description: "Add xAI inspection nodes"},
 			},
-			Resources: []pluginapi.ResourceRoute{{Path: resourcePath, Menu: "xAI Guardian", Description: "xAI account status, server inspection, and degradation guard"}},
+			Resources: []pluginapi.ResourceRoute{{Path: resourcePath, Menu: "xAI降智守护", Description: "xAI Guardian：账号状态、服务端巡检和降智守护"}},
 		})
 	case pluginabi.MethodManagementHandle:
 		return handleManagement(request)

@@ -5,84 +5,623 @@
   <meta name="viewport" content="width=device-width,initial-scale=1">
   <title>xAI Guardian</title>
   <style>
-    :root{color-scheme:light;--ink:#202523;--muted:#6a716d;--line:#d9ddd6;--paper:#f9f8f1;--card:#fffef8;--green:#2e7659;--red:#b55050;--amber:#9c741d;--shadow:0 8px 24px rgb(0 0 0 / 5%)}
-    *{box-sizing:border-box}body{margin:0;background:var(--paper);color:var(--ink);font:14px/1.55 system-ui,-apple-system,"Segoe UI",sans-serif}main{max-width:1180px;margin:0 auto;padding:28px 24px 56px}.eyebrow{color:var(--green);font-size:11px;font-weight:700;letter-spacing:.14em;text-transform:uppercase}.hero{display:flex;justify-content:space-between;gap:20px;align-items:end;margin-bottom:22px}.hero h1{margin:5px 0 0;font-size:30px;line-height:1.1}.hero p{margin:8px 0 0;color:var(--muted)}.hero-meta{color:var(--muted);font-size:12px;text-align:right}.tabs{display:flex;gap:6px;border-bottom:1px solid var(--line);margin-bottom:22px}.tab{border:0;background:transparent;color:var(--muted);cursor:pointer;padding:11px 15px;font-weight:700}.tab.active{color:var(--green);border-bottom:2px solid var(--green)}.panel{display:none}.panel.active{display:block}.grid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:12px;margin-bottom:18px}.card{background:color-mix(in srgb,var(--card) 75%,transparent);border:1px solid var(--line);box-shadow:var(--shadow);padding:16px;border-radius:12px}.metric{font-size:28px;font-weight:750}.metric-label{color:var(--muted);font-size:12px}.section{margin-top:16px}.section-head{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:10px}.section-head h2{font-size:17px;margin:0}.section-head h2::before{content:"▍";color:var(--green);margin-right:6px}.toolbar{display:flex;flex-wrap:wrap;gap:8px;align-items:center}.button{border:1px solid var(--line);background:var(--card);color:var(--ink);border-radius:8px;cursor:pointer;padding:8px 12px;font-weight:650}.button.primary{background:var(--green);border-color:var(--green);color:white}.button.danger{color:var(--red)}.input,.textarea{width:100%;border:1px solid var(--line);border-radius:8px;background:#fffefb;padding:9px;color:var(--ink);font:inherit}.textarea{min-height:92px;resize:vertical}.form-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:12px}.field label{display:block;color:var(--muted);font-size:12px;margin-bottom:4px}.table-wrap{overflow:auto;border:1px solid var(--line);border-radius:10px;background:var(--card)}table{border-collapse:collapse;width:100%;min-width:720px}th,td{text-align:left;border-bottom:1px solid var(--line);padding:10px 12px;white-space:nowrap}th{color:var(--muted);font-size:12px;font-weight:700}tr:last-child td{border-bottom:0}.state{font-weight:700}.state.healthy{color:var(--green)}.state.unhealthy,.state.degraded{color:var(--red)}.state.available{color:var(--green)}.state.unavailable{color:var(--amber)}.notice{color:var(--muted);padding:18px 4px}.error{color:var(--red);white-space:pre-wrap}.small{font-size:12px;color:var(--muted)}@media(max-width:800px){main{padding:20px 14px 40px}.hero{display:block}.hero-meta{text-align:left;margin-top:12px}.grid,.form-grid{grid-template-columns:1fr 1fr}}@media(max-width:520px){.grid,.form-grid{grid-template-columns:1fr}.tabs{overflow:auto}.tab{white-space:nowrap}}
+    :root {
+      color-scheme: dark;
+      --bg-primary: #171c2b;
+      --bg-secondary: #0b172b;
+      --bg-tertiary: #202534;
+      --text-primary: #f1f5fb;
+      --text-secondary: #aeb6c6;
+      --text-tertiary: #7c879a;
+      --border-color: rgba(148, 163, 184, .18);
+      --border-primary: rgba(148, 163, 184, .28);
+      --primary-color: #3b9cff;
+      --primary-active: #2083e6;
+      --primary-contrast: #fff;
+      --success-color: #55c83f;
+      --warning-color: #d99a27;
+      --danger-color: #f36b76;
+      --shadow-md: 0 8px 24px rgba(0, 0, 0, .14);
+      --shadow-lg: 0 18px 42px rgba(0, 0, 0, .18);
+      --app-radius-md: 12px;
+    }
+
+    *, *::before, *::after { box-sizing: border-box; }
+    html { min-height: 100%; background: var(--bg-secondary); }
+    body {
+      min-height: 100vh;
+      margin: 0;
+      overflow-x: hidden;
+      background: var(--bg-secondary);
+      color: var(--text-primary);
+      font: 14px/1.5 Inter, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    }
+    button, input, select, textarea { font: inherit; }
+    button { color: inherit; }
+    button:disabled { cursor: not-allowed; opacity: .58; }
+
+    .page {
+      container: xai-guardian-page / inline-size;
+      display: grid;
+      gap: 16px;
+      min-width: 0;
+      max-width: 2200px;
+      margin: 0 auto;
+      padding: 30px 28px 48px;
+      color: var(--text-primary);
+    }
+
+    .mode-switch-panel {
+      display: flex;
+      align-items: stretch;
+      gap: 14px;
+      min-width: 0;
+      padding: 8px 10px;
+      border: 1px solid var(--border-color);
+      border-radius: 18px;
+      background: var(--bg-primary);
+      box-shadow: var(--shadow-md);
+    }
+    .mode-switch-main { display: flex; align-items: center; width: 100%; min-width: 0; }
+    .segmented-tabs {
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+      min-width: 0;
+      padding: 4px;
+      border: 1px solid var(--border-color);
+      border-radius: 14px;
+      background: var(--bg-tertiary);
+    }
+    .segmented-tab {
+      min-height: 40px;
+      padding: 0 26px;
+      border: 1px solid transparent;
+      border-radius: 12px;
+      color: var(--text-secondary);
+      background: transparent;
+      font-weight: 700;
+      cursor: pointer;
+      white-space: nowrap;
+    }
+    .segmented-tab:hover,
+    .segmented-tab.active {
+      border-color: color-mix(in srgb, var(--primary-color) 32%, var(--border-color));
+      color: var(--primary-color);
+      background: color-mix(in srgb, var(--primary-color) 13%, var(--bg-primary));
+    }
+    .mode-switch-copy { min-width: 0; margin-left: 14px; color: var(--text-secondary); font-size: 13px; line-height: 1.4; }
+    .mode-switch-copy strong { display: block; color: var(--text-primary); font-weight: 700; }
+    .mode-switch-copy p { margin: 2px 0 0; }
+
+    .view { display: none; min-width: 0; }
+    .view.active { display: grid; gap: 16px; }
+    .panel {
+      min-width: 0;
+      border: 1px solid var(--border-color);
+      border-radius: 24px;
+      background: var(--bg-primary);
+      box-shadow: var(--shadow-lg);
+    }
+    .account-panel, .server-panel, .guard-panel { display: grid; gap: 14px; padding: 18px; }
+
+    .summary-grid { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 12px; }
+    .summary-card {
+      --summary-accent: var(--primary-color);
+      isolation: isolate;
+      position: relative;
+      display: flex;
+      min-width: 0;
+      min-height: 112px;
+      flex-direction: column;
+      gap: 9px;
+      overflow: hidden;
+      padding: 16px 16px 14px 20px;
+      border: 1px solid color-mix(in srgb, var(--summary-accent) 42%, var(--border-color));
+      border-radius: 18px;
+      background:
+        radial-gradient(circle at 88% 16%, color-mix(in srgb, var(--summary-accent) 19%, transparent), transparent 33%),
+        linear-gradient(135deg, color-mix(in srgb, var(--summary-accent) 12%, transparent), transparent 58%),
+        var(--bg-tertiary);
+      box-shadow: 0 10px 24px color-mix(in srgb, var(--summary-accent) 11%, transparent);
+    }
+    .summary-card::before { position: absolute; inset: 0 auto 0 0; width: 5px; background: linear-gradient(180deg, var(--summary-accent), color-mix(in srgb, var(--summary-accent) 35%, transparent)); content: ""; }
+    .summary-card::after {
+      position: absolute;
+      right: 12px;
+      bottom: 9px;
+      width: 100px;
+      height: 38px;
+      opacity: .46;
+      background:
+        linear-gradient(135deg, transparent 10%, color-mix(in srgb, var(--summary-accent) 25%, transparent) 10% 14%, transparent 14% 38%, color-mix(in srgb, var(--summary-accent) 20%, transparent) 38% 42%, transparent 42% 68%, color-mix(in srgb, var(--summary-accent) 22%, transparent) 68% 72%, transparent 72%),
+        radial-gradient(circle at 18% 78%, color-mix(in srgb, var(--summary-accent) 28%, transparent) 0 2px, transparent 3px),
+        radial-gradient(circle at 56% 42%, color-mix(in srgb, var(--summary-accent) 25%, transparent) 0 2px, transparent 3px),
+        radial-gradient(circle at 86% 62%, color-mix(in srgb, var(--summary-accent) 23%, transparent) 0 2px, transparent 3px);
+      content: "";
+      pointer-events: none;
+    }
+    .summary-card.tone-blue { --summary-accent: #3b9cff; }
+    .summary-card.tone-green { --summary-accent: #59c83e; }
+    .summary-card.tone-violet { --summary-accent: #a47cf0; }
+    .summary-card.tone-amber { --summary-accent: #d99a27; }
+    .summary-card.tone-red { --summary-accent: #f36b76; }
+    .summary-header { position: relative; z-index: 1; display: flex; align-items: center; gap: 9px; min-width: 0; }
+    .summary-icon { display: inline-flex; width: 32px; height: 32px; flex: 0 0 32px; align-items: center; justify-content: center; border-radius: 9px; color: var(--summary-accent); background: color-mix(in srgb, var(--summary-accent) 15%, transparent); font-size: 17px; font-weight: 800; }
+    .summary-label { overflow: hidden; color: var(--text-secondary); font-size: 13px; font-weight: 700; text-overflow: ellipsis; white-space: nowrap; }
+    .summary-value { position: relative; z-index: 1; margin-top: auto; color: var(--text-primary); font-size: 26px; line-height: 1; }
+
+    .data-panel { min-width: 0; overflow: hidden; border: 1px solid var(--border-color); border-radius: 18px; background: var(--bg-primary); }
+    .data-header { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 12px; padding: 12px; border-bottom: 1px solid var(--border-color); background: color-mix(in srgb, var(--bg-primary) 82%, var(--bg-tertiary)); }
+    .search-input { min-width: 260px; min-height: 40px; flex: 1 1 320px; padding: 0 14px; border: 1px solid var(--border-color); border-radius: 12px; outline: none; background: var(--bg-primary); color: var(--text-primary); }
+    .search-input:focus, .settings-input:focus, .node-input:focus { border-color: var(--primary-color); box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--primary-color) 24%, transparent); }
+    .data-actions, .toggle-group, .filter-pills, .toolbar-actions, .pager-controls { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+    .data-actions { justify-content: flex-end; }
+    .refresh-button, .pill-button, .secondary-button, .primary-button, .danger-button { min-height: 34px; padding: 0 13px; border: 1px solid var(--border-color); border-radius: 999px; background: var(--bg-tertiary); color: var(--text-secondary); font-size: 12px; font-weight: 800; cursor: pointer; white-space: nowrap; }
+    .primary-button, .refresh-button { border-color: color-mix(in srgb, var(--primary-color) 45%, var(--border-color)); background: color-mix(in srgb, var(--primary-color) 17%, var(--bg-tertiary)); color: var(--primary-color); }
+    .danger-button { color: var(--danger-color); }
+    .pill-button.active, .toggle-group .active { border-color: color-mix(in srgb, var(--primary-color) 34%, var(--border-color)); background: color-mix(in srgb, var(--primary-color) 19%, var(--bg-tertiary)); color: var(--primary-color); }
+    .toggle-group, .filter-pills { gap: 2px; padding: 3px; border: 1px solid var(--border-color); border-radius: 999px; background: var(--bg-tertiary); }
+    .toggle-group .pill-button, .filter-pills .pill-button { min-height: 28px; padding-inline: 11px; border-color: transparent; background: transparent; }
+
+    .table-wrap { min-width: 0; max-width: 100%; overflow-x: auto; padding: 12px; }
+    .data-table { width: 100%; min-width: 1260px; border-collapse: separate; border-spacing: 0 8px; table-layout: fixed; }
+    .data-table th, .data-table td { box-sizing: border-box; padding: 12px; text-align: center; vertical-align: middle; }
+    .data-table th { padding-block: 10px; border-top: 1px solid color-mix(in srgb, var(--border-color) 88%, transparent); border-bottom: 1px solid color-mix(in srgb, var(--border-color) 88%, transparent); background: color-mix(in srgb, var(--bg-primary) 88%, var(--bg-tertiary)); color: var(--text-secondary); font-size: 12px; font-weight: 700; white-space: nowrap; }
+    .data-table th:first-child { border-left: 1px solid color-mix(in srgb, var(--border-color) 88%, transparent); border-radius: 12px 0 0 12px; }
+    .data-table th:last-child { border-right: 1px solid color-mix(in srgb, var(--border-color) 88%, transparent); border-radius: 0 12px 12px 0; }
+    .data-table tbody td { border-top: 1px solid color-mix(in srgb, var(--border-color) 88%, transparent); border-bottom: 1px solid color-mix(in srgb, var(--border-color) 88%, transparent); background: var(--bg-primary); box-shadow: 0 1px 2px rgba(0, 0, 0, .15); transition: background-color .18s ease, border-color .18s ease; }
+    .data-table tbody tr.data-row { cursor: pointer; }
+    .data-table tbody tr.data-row:hover td { background: color-mix(in srgb, var(--primary-color) 7%, var(--bg-primary)); }
+    .data-table tbody td:first-child { border-left: 1px solid color-mix(in srgb, var(--border-color) 88%, transparent); border-radius: 14px 0 0 14px; text-align: left; }
+    .data-table tbody td:last-child { border-right: 1px solid color-mix(in srgb, var(--border-color) 88%, transparent); border-radius: 0 14px 14px 0; }
+    .data-table .empty-cell { min-height: 180px; padding: 64px 16px; color: var(--text-secondary); text-align: center; cursor: default; }
+    .account-table th:nth-child(1), .account-table td:nth-child(1) { width: 230px; }
+    .account-table th:nth-child(2), .account-table td:nth-child(2) { width: 142px; }
+    .account-table th:nth-child(3), .account-table td:nth-child(3) { width: 100px; }
+    .account-table th:nth-child(4), .account-table td:nth-child(4) { width: 122px; }
+    .account-table th:nth-child(5), .account-table td:nth-child(5) { width: 80px; }
+    .account-table th:nth-child(6), .account-table td:nth-child(6) { width: 96px; }
+    .account-table th:nth-child(7), .account-table td:nth-child(7) { width: 244px; }
+    .account-table th:nth-child(8), .account-table td:nth-child(8) { width: 220px; }
+    .account-table th:nth-child(9), .account-table td:nth-child(9) { width: 126px; }
+    .node-table th:nth-child(1), .node-table td:nth-child(1) { width: 70px; }
+    .node-table th:nth-child(2), .node-table td:nth-child(2) { width: 330px; text-align: left; }
+    .node-table th:nth-child(3), .node-table td:nth-child(3) { width: 128px; }
+    .node-table th:nth-child(4), .node-table td:nth-child(4) { width: 120px; }
+    .node-table th:nth-child(5), .node-table td:nth-child(5) { width: 150px; }
+    .node-table th:nth-child(6), .node-table td:nth-child(6) { width: 110px; }
+    .node-table th:nth-child(7), .node-table td:nth-child(7) { width: 180px; }
+    .node-table th:nth-child(8), .node-table td:nth-child(8) { width: 120px; }
+    .guard-table th:nth-child(1), .guard-table td:nth-child(1) { width: 250px; text-align: left; }
+    .guard-table th:nth-child(2), .guard-table td:nth-child(2) { width: 150px; }
+    .guard-table th:nth-child(3), .guard-table td:nth-child(3) { width: 90px; }
+    .guard-table th:nth-child(4), .guard-table td:nth-child(4) { width: 330px; text-align: left; }
+    .guard-table th:nth-child(5), .guard-table td:nth-child(5) { width: 180px; }
+    .guard-table th:nth-child(6), .guard-table td:nth-child(6) { width: 110px; }
+
+    .account-cell, .status-cell, .quota-cell, .cost-cell, .node-cell, .log-cell { display: flex; min-width: 0; flex-direction: column; gap: 4px; }
+    .account-cell strong { overflow: hidden; font-size: 13px; text-overflow: ellipsis; white-space: nowrap; }
+    .muted, .subline { color: var(--text-tertiary); font-size: 11px; }
+    .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+    .status-badge, .type-badge, .number-badge, .node-status, .level-badge { display: inline-flex; min-height: 30px; align-items: center; justify-content: center; gap: 7px; width: max-content; max-width: 100%; margin: 0 auto; padding: 0 11px; overflow: hidden; border: 1px solid var(--border-color); border-radius: 999px; background: var(--bg-tertiary); color: var(--text-secondary); font-size: 12px; font-weight: 800; text-overflow: ellipsis; white-space: nowrap; }
+    .status-badge::before, .node-status::before { width: 8px; height: 8px; flex: 0 0 8px; border-radius: 50%; background: currentColor; content: ""; }
+    .status-good, .node-healthy { border-color: color-mix(in srgb, var(--success-color) 35%, var(--border-color)); color: var(--success-color); background: color-mix(in srgb, var(--success-color) 10%, var(--bg-tertiary)); }
+    .status-warn, .node-inspecting { border-color: color-mix(in srgb, var(--warning-color) 35%, var(--border-color)); color: var(--warning-color); background: color-mix(in srgb, var(--warning-color) 10%, var(--bg-tertiary)); }
+    .status-bad, .node-unhealthy { border-color: color-mix(in srgb, var(--danger-color) 35%, var(--border-color)); color: var(--danger-color); background: color-mix(in srgb, var(--danger-color) 10%, var(--bg-tertiary)); }
+    .status-violet { border-color: color-mix(in srgb, #a47cf0 38%, var(--border-color)); color: #b495ff; background: color-mix(in srgb, #a47cf0 12%, var(--bg-tertiary)); }
+    .node-uninspected { color: var(--text-tertiary); }
+    .type-badge { color: #aebbd0; border-color: #5b6980; }
+    .number-badge { min-width: 52px; }
+    .quota-empty { display: inline-flex; align-items: center; justify-content: center; min-height: 30px; padding: 0 15px; border: 1px solid var(--border-color); border-radius: 999px; color: var(--text-tertiary); white-space: nowrap; }
+    .quota-item { display: grid; gap: 4px; }
+    .quota-header { display: flex; justify-content: space-between; gap: 8px; color: var(--text-secondary); font-size: 11px; }
+    .quota-header strong { color: var(--success-color); }
+    .quota-meter { height: 7px; overflow: hidden; border-radius: 999px; background: color-mix(in srgb, var(--border-color) 70%, transparent); }
+    .quota-meter span { display: block; height: 100%; border-radius: inherit; background: linear-gradient(90deg, #34d399, #22c55e); }
+    .usage-badge, .cost-badge { display: inline-flex; min-width: 150px; flex-direction: column; align-items: flex-start; gap: 1px; padding: 7px 10px; border: 1px solid color-mix(in srgb, var(--primary-color) 55%, var(--border-color)); border-radius: 11px; color: var(--primary-color); background: color-mix(in srgb, var(--primary-color) 8%, var(--bg-tertiary)); text-align: left; }
+    .cost-badge { border-color: color-mix(in srgb, var(--warning-color) 62%, var(--border-color)); color: var(--warning-color); background: color-mix(in srgb, var(--warning-color) 9%, var(--bg-tertiary)); }
+    .usage-badge small, .cost-badge small { font-size: 10px; font-weight: 700; }
+    .usage-badge strong, .cost-badge strong { color: var(--text-primary); font-size: 13px; }
+
+    .detail-row td { padding: 0 12px 12px; border: 0 !important; border-radius: 0 !important; background: transparent !important; box-shadow: none !important; }
+    .detail-panel { display: grid; gap: 14px; padding: 18px; border: 1px solid color-mix(in srgb, var(--primary-color) 23%, var(--border-color)); border-radius: 16px; background: color-mix(in srgb, var(--primary-color) 5%, var(--bg-tertiary)); text-align: left; }
+    .detail-hero { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 12px; }
+    .detail-hero h3 { margin: 3px 0 0; font-size: 17px; }
+    .detail-eyebrow { color: var(--primary-color); font-size: 11px; font-weight: 800; letter-spacing: .08em; text-transform: uppercase; }
+    .detail-badges { display: flex; flex-wrap: wrap; gap: 8px; }
+    .detail-badges .status-badge, .detail-badges .type-badge, .detail-badges .number-badge { margin: 0; }
+    .detail-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; }
+    .detail-section { min-width: 0; padding: 13px; border: 1px solid var(--border-color); border-radius: 13px; background: color-mix(in srgb, var(--bg-primary) 78%, transparent); }
+    .detail-section h4 { margin: 0 0 10px; font-size: 13px; }
+    .detail-list { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px 14px; margin: 0; }
+    .detail-list div { min-width: 0; }
+    .detail-list dt { color: var(--text-tertiary); font-size: 11px; }
+    .detail-list dd { margin: 2px 0 0; overflow: hidden; color: var(--text-primary); font-size: 12px; text-overflow: ellipsis; white-space: nowrap; }
+
+    .pagination { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 12px; padding: 0 12px 12px; color: var(--text-secondary); font-size: 12px; }
+    .page-size { min-height: 34px; padding: 0 9px; border: 1px solid var(--border-color); border-radius: 10px; background: var(--bg-tertiary); color: var(--text-primary); }
+    .pager-button { min-height: 34px; padding: 0 12px; border: 1px solid var(--border-color); border-radius: 10px; background: var(--bg-tertiary); color: var(--text-secondary); cursor: pointer; }
+
+    .panel-header { display: flex; flex-wrap: wrap; align-items: flex-start; justify-content: space-between; gap: 12px; }
+    .panel-title { margin: 0; font-size: 19px; font-weight: 700; letter-spacing: -.02em; }
+    .panel-subtitle { margin: 6px 0 0; color: var(--text-secondary); font-size: 13px; line-height: 1.6; }
+    .panel-extra { display: flex; flex-wrap: wrap; align-items: center; justify-content: flex-end; gap: 8px; }
+    .server-summary-grid, .guard-summary-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px; }
+    .guard-summary-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+    .server-input-panel, .settings-panel, .run-panel, .logs-panel { display: grid; gap: 12px; padding: 18px; border: 1px solid var(--border-color); border-radius: 18px; background: var(--bg-primary); }
+    .node-input { width: 100%; min-height: 112px; resize: vertical; padding: 12px 14px; border: 1px solid var(--border-color); border-radius: 12px; outline: none; background: var(--bg-tertiary); color: var(--text-primary); line-height: 1.6; }
+    .help-text { color: var(--text-tertiary); font-size: 12px; }
+    .message { min-height: 20px; color: var(--success-color); font-size: 12px; }
+    .message.error { color: var(--danger-color); }
+    .run-summary { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 10px; }
+    .run-stat { padding: 12px; border: 1px solid var(--border-color); border-radius: 13px; background: var(--bg-tertiary); }
+    .run-stat small { display: block; color: var(--text-tertiary); font-size: 11px; }
+    .run-stat strong { display: block; margin-top: 5px; font-size: 18px; }
+    .settings-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px; }
+    .settings-field { display: grid; gap: 6px; }
+    .settings-field label { color: var(--text-secondary); font-size: 12px; font-weight: 700; }
+    .settings-input { width: 100%; min-height: 38px; padding: 0 10px; border: 1px solid var(--border-color); border-radius: 10px; outline: none; background: var(--bg-tertiary); color: var(--text-primary); }
+    .log-table { min-width: 850px; }
+    .log-table th:nth-child(1), .log-table td:nth-child(1) { width: 170px; }
+    .log-table th:nth-child(2), .log-table td:nth-child(2) { width: 80px; }
+    .log-table th:nth-child(3), .log-table td:nth-child(3) { width: 240px; text-align: left; }
+    .log-table th:nth-child(4), .log-table td:nth-child(4) { text-align: left; }
+    .level-info { color: var(--primary-color); }
+    .level-warn { color: var(--warning-color); }
+    .level-error { color: var(--danger-color); }
+
+    .overlay { position: fixed; inset: 0; z-index: 10; display: grid; place-items: center; padding: 20px; background: rgba(2, 6, 23, .68); backdrop-filter: blur(4px); }
+    .operation-card { display: grid; width: min(460px, 100%); gap: 8px; padding: 22px; border: 1px solid var(--border-primary); border-radius: 18px; background: var(--bg-primary); box-shadow: var(--shadow-lg); text-align: center; }
+    .operation-card strong { font-size: 15px; }
+    .operation-card small { color: var(--text-secondary); }
+    .spinner { width: 34px; height: 34px; margin: 0 auto 4px; border: 3px solid color-mix(in srgb, var(--primary-color) 22%, transparent); border-top-color: var(--primary-color); border-radius: 50%; animation: spin 1s linear infinite; }
+    @keyframes spin { to { transform: rotate(360deg); } }
+    .hidden { display: none !important; }
+
+    @container xai-guardian-page (max-width: 1080px) {
+      .summary-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+      .server-summary-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+      .settings-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    }
+    @container xai-guardian-page (max-width: 720px) {
+      .page { padding: 18px 14px 32px; }
+      .mode-switch-main { align-items: stretch; flex-direction: column; }
+      .segmented-tabs { width: 100%; }
+      .segmented-tab { flex: 1 1 0; padding-inline: 10px; }
+      .mode-switch-copy { margin: 10px 2px 2px; }
+      .summary-grid, .server-summary-grid, .guard-summary-grid, .settings-grid, .detail-grid, .run-summary { grid-template-columns: 1fr; }
+      .account-panel, .server-panel, .guard-panel { padding: 12px; border-radius: 18px; }
+      .data-header { align-items: stretch; }
+      .data-actions { justify-content: flex-start; }
+      .search-input { min-width: 100%; }
+      .pagination { align-items: flex-start; flex-direction: column; }
+    }
   </style>
   <style>/*__HALLMARK_TOKENS__*/</style>
 </head>
 <body>
-<main>
-  <header class="hero">
-    <div><div class="eyebrow">xAI Guardian</div><h1>xAI 降智守护</h1><p>账号状态、服务端巡检、实时降智守护。</p></div>
-    <div class="hero-meta" id="last-refresh">尚未刷新</div>
-  </header>
-  <nav class="tabs" aria-label="xAI Guardian sections">
-    <button class="tab active" data-tab="accounts">账号状态</button>
-    <button class="tab" data-tab="inspection">服务端巡检</button>
-    <button class="tab" data-tab="guard">降智守护</button>
-  </nav>
+  <main class="page">
+    <section class="mode-switch-panel" aria-label="xAI Guardian 页面">
+      <div class="mode-switch-main">
+        <div class="segmented-tabs" role="tablist" aria-label="xAI Guardian 页面">
+          <button class="segmented-tab active" type="button" role="tab" aria-selected="true" data-mode="accounts">账号状态</button>
+          <button class="segmented-tab" type="button" role="tab" aria-selected="false" data-mode="inspection">服务端巡检</button>
+          <button class="segmented-tab" type="button" role="tab" aria-selected="false" data-mode="guard">降智守护</button>
+        </div>
+        <div class="mode-switch-copy">
+          <strong id="mode-title">账号状态</strong>
+          <p id="mode-description">查看 xAI 账号状态、节点绑定、优先级和最近巡检结果。</p>
+        </div>
+      </div>
+    </section>
 
-  <section class="panel active" data-panel="accounts">
-    <div class="grid" id="account-metrics"><div class="card"><div class="metric">—</div><div class="metric-label">账号总数</div></div><div class="card"><div class="metric">—</div><div class="metric-label">可用账号</div></div><div class="card"><div class="metric">—</div><div class="metric-label">异常账号</div></div><div class="card"><div class="metric">—</div><div class="metric-label">降智账号</div></div></div>
-    <div class="section"><div class="section-head"><h2>账号绑定</h2><button class="button" id="refresh-accounts">刷新</button></div><div id="accounts-table" class="table-wrap"><div class="notice">加载中…</div></div></div>
-  </section>
+    <section class="view active" data-view="accounts" role="tabpanel">
+      <section class="panel account-panel">
+        <div class="summary-grid" id="account-summary"></div>
+        <div class="data-panel">
+          <div class="data-header">
+            <input class="search-input" id="account-search" type="search" placeholder="搜索账号" aria-label="搜索账号">
+            <div class="data-actions">
+              <button class="refresh-button" id="refresh-accounts" type="button">刷新</button>
+              <div class="toggle-group" aria-label="账号显示方式">
+                <button class="pill-button active" type="button" data-mask="full">完整</button>
+                <button class="pill-button" type="button" data-mask="masked">脱敏</button>
+              </div>
+              <div class="filter-pills" aria-label="账号状态筛选">
+                <button class="pill-button active" type="button" data-filter="all">全部账号</button>
+                <button class="pill-button" type="button" data-filter="enabled">已启用</button>
+                <button class="pill-button" type="button" data-filter="quota">额度耗尽</button>
+                <button class="pill-button" type="button" data-filter="disabled">已停用</button>
+                <button class="pill-button" type="button" data-filter="abnormal">账号异常</button>
+              </div>
+            </div>
+          </div>
+          <div id="accounts-error" class="message error hidden"></div>
+          <div class="table-wrap" id="accounts-table"></div>
+          <div class="pagination">
+            <span id="accounts-page-info">第 1 / 1 页，显示 0 - 0 / 0</span>
+            <div class="pager-controls">
+              <label>每页 <select class="page-size" id="account-page-size"><option value="20">20 条/页</option><option value="50">50 条/页</option><option value="100" selected>100 条/页</option><option value="150">150 条/页</option></select></label>
+              <button class="pager-button" id="account-page-prev" type="button">上一页</button>
+              <button class="pager-button" id="account-page-next" type="button">下一页</button>
+            </div>
+          </div>
+        </div>
+      </section>
+    </section>
 
-  <section class="panel" data-panel="inspection">
-    <div class="card"><div class="section-head"><h2>录入巡检节点</h2><button class="button primary" id="run-inspection">立即巡检</button></div><textarea class="textarea" id="node-input" placeholder="每行一个代理，例如 http://203.0.113.10:8080；也支持 host:port,出口IP,port,protocol"></textarea><div class="small">不接受带用户名或密码的代理地址。代理凭据不写入插件 SQLite。</div><div id="node-message" class="small"></div></div>
-    <div class="section"><div class="section-head"><h2>节点状态</h2><button class="button" id="refresh-inspection">刷新</button></div><div id="nodes-table" class="table-wrap"><div class="notice">加载中…</div></div></div>
-    <div class="section"><div class="section-head"><h2>最近巡检</h2></div><div id="inspection-run" class="card notice">加载中…</div></div>
-  </section>
+    <section class="view" data-view="inspection" role="tabpanel">
+      <section class="panel server-panel">
+        <div class="server-summary-grid" id="node-summary"></div>
+        <div class="server-input-panel">
+          <div class="panel-header">
+            <div>
+              <h2 class="panel-title">服务端巡检</h2>
+              <p class="panel-subtitle">录入代理节点并执行出口 IP、国家和连通性检查。</p>
+            </div>
+            <div class="panel-extra"><button class="primary-button" id="run-inspection" type="button">立即巡检</button><button class="secondary-button" id="refresh-inspection" type="button">刷新</button></div>
+          </div>
+          <textarea class="node-input" id="node-input" placeholder="每行一个代理，例如 http://203.0.113.10:8080；也支持 host:port,出口IP,port,protocol"></textarea>
+          <div class="help-text">不接受带用户名或密码的代理地址。代理凭据不写入插件 SQLite；URL、日志和错误信息会脱敏。</div>
+          <div id="node-message" class="message"></div>
+        </div>
+        <div class="data-panel">
+          <div class="data-header"><div><strong>节点状态</strong><div class="subline">当前插件 SQLite 中保存的巡检节点</div></div></div>
+          <div id="nodes-error" class="message error hidden"></div>
+          <div class="table-wrap" id="nodes-table"></div>
+        </div>
+        <div class="run-panel">
+          <div class="panel-header"><div><h2 class="panel-title">最近巡检</h2><p class="panel-subtitle">只统计本次实际完成检查的节点。</p></div><span class="muted" id="run-updated">尚未运行</span></div>
+          <div id="inspection-run"></div>
+        </div>
+      </section>
+    </section>
 
-  <section class="panel" data-panel="guard">
-    <div class="card"><div class="section-head"><h2>守护策略</h2><button class="button primary" id="save-settings">保存</button></div><div class="form-grid"><div class="field"><label for="inspection-interval">自动巡检间隔（秒，0=关闭）</label><input class="input" id="inspection-interval" type="number" min="0"></div><div class="field"><label for="first-payload-timeout">首个 payload 超时（秒）</label><input class="input" id="first-payload-timeout" type="number" min="1"></div><div class="field"><label for="progress-timeout">无进展超时（秒）</label><input class="input" id="progress-timeout" type="number" min="1"></div><div class="field"><label for="min-summary-chars">最小思考摘要字符数</label><input class="input" id="min-summary-chars" type="number" min="1"></div><div class="field"><label for="min-encrypted-bytes">最小加密思考字节数</label><input class="input" id="min-encrypted-bytes" type="number" min="1"></div><div class="field"><label for="encrypted-bytes-per-token">每个思考 token 的加密字节数</label><input class="input" id="encrypted-bytes-per-token" type="number" min="1"></div><div class="field"><label for="min-output-tokens">最小输出 token 数</label><input class="input" id="min-output-tokens" type="number" min="1"></div><div class="field"><label for="hard-tps">硬 TPS 阈值</label><input class="input" id="hard-tps" type="number" min="1"></div></div><div class="small">单请求重试上限由 CPA 核心统一控制，插件不重复限制。TTFB 仅采集，不作为降智拦截条件。</div><div id="settings-message" class="small"></div></div>
-    <div class="section"><div class="section-head"><h2>降智状态</h2><button class="button" id="refresh-guard">刷新</button></div><div class="small">清除仅删除插件本地降智记录，不修改 CPA 认证优先级或认证文件。</div><div id="guard-table" class="table-wrap"><div class="notice">加载中…</div></div></div>
-    <div class="section"><div class="section-head"><h2>插件日志</h2></div><div id="logs-table" class="table-wrap"><div class="notice">加载中…</div></div></div>
-  </section>
-</main>
-<script>
-(() => {
-  const apiEndpoint = '/v0/management/xai-guardian/api';
-  const state = {accounts: [], nodes: [], degradation: [], settings: {}};
-  const $ = (id) => document.getElementById(id);
-  const escapeHTML = (value) => String(value ?? '').replace(/[&<>"']/g, (char) => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[char]));
-  async function api(path, method = 'GET', body) {
-    const payload = {method, path};
-    if (body !== undefined) payload.body = body;
-    const response = await fetch(apiEndpoint, {method:'POST', headers:{'content-type':'application/json','X-CPA-XAI-GUARDIAN-UI':'1'}, body:JSON.stringify(payload)});
-    const data = await response.json();
-    if (!response.ok || data.ok === false) throw new Error(data?.error?.message || '请求失败');
-    return data.data;
-  }
-  function setMessage(id, text, isError = false) { const node = $(id); node.textContent = text || ''; node.className = isError ? 'error' : 'small'; }
-  function renderAccounts() {
-    const rows = state.accounts.map((item) => `<tr><td>${escapeHTML(item.authName)}</td><td>${escapeHTML(item.authIndex)}</td><td class="state ${item.status === 'available' ? 'available' : 'unavailable'}">${escapeHTML(item.status)}</td><td>${item.priority}</td><td>${item.nodeId || '未绑定'}</td><td>${item.success}</td><td>${item.failed}</td></tr>`).join('');
-    $('accounts-table').innerHTML = rows ? `<table><thead><tr><th>账号</th><th>Auth Index</th><th>状态</th><th>优先级</th><th>节点</th><th>成功</th><th>失败</th></tr></thead><tbody>${rows}</tbody></table>` : '<div class="notice">没有 xAI 账号。</div>';
-    const available = state.accounts.filter((item) => item.status === 'available').length;
-    const degraded = state.degradation.length;
-    $('account-metrics').innerHTML = [['账号总数', state.accounts.length], ['可用账号', available], ['异常账号', state.accounts.length - available], ['降智账号', degraded]].map(([label, value]) => `<div class="card"><div class="metric">${value}</div><div class="metric-label">${label}</div></div>`).join('');
-  }
-  function renderNodes() {
-    const rows = state.nodes.map((item) => `<tr><td>${item.id}</td><td>${escapeHTML(item.address)}</td><td class="state ${item.status}">${escapeHTML(item.status)}</td><td>${item.latencyMs || '—'} ms</td><td>${escapeHTML(item.exitIp || '—')}</td><td>${escapeHTML(item.country || '—')}</td><td>${item.lastChecked ? new Date(item.lastChecked).toLocaleString() : '—'}</td><td><button class="button danger" data-delete-node="${item.id}">删除</button></td></tr>`).join('');
-    $('nodes-table').innerHTML = rows ? `<table><thead><tr><th>ID</th><th>地址</th><th>状态</th><th>延迟</th><th>出口 IP</th><th>国家</th><th>最近检查</th><th>操作</th></tr></thead><tbody>${rows}</tbody></table>` : '<div class="notice">没有巡检节点。</div>';
-  }
-  function renderInspection(data) { const run = data?.run; $('inspection-run').innerHTML = run ? `<strong>Run #${run.id}</strong><br>状态：${escapeHTML(run.status)}　总数：${run.total}　健康：${run.healthy}　异常：${run.unhealthy}<br><span class="small">开始：${new Date(run.startedAt).toLocaleString()}</span>` : '尚未运行巡检。'; }
-  function renderGuard() {
-    const rows = state.degradation.map((item) => `<tr><td>${escapeHTML(item.authName)}</td><td>${escapeHTML(item.authIndex)}</td><td class="state degraded">${item.count}</td><td>${escapeHTML(item.lastReason)}</td><td>${item.lastSeen ? new Date(item.lastSeen).toLocaleString() : '—'}</td><td><button class="button" data-clear-auth="${escapeHTML(item.authIndex)}">清除</button></td></tr>`).join('');
-    $('guard-table').innerHTML = rows ? `<table><thead><tr><th>账号</th><th>Auth Index</th><th>次数</th><th>原因</th><th>最近发生</th><th>操作</th></tr></thead><tbody>${rows}</tbody></table>` : '<div class="notice">没有降智记录。</div>';
-  }
-  function renderLogs(items) { const rows = (items || []).map((item) => `<tr><td>${new Date(item.createdAt).toLocaleString()}</td><td>${escapeHTML(item.level)}</td><td>${escapeHTML(item.event)}</td><td>${escapeHTML(item.message)}</td></tr>`).join(''); $('logs-table').innerHTML = rows ? `<table><thead><tr><th>时间</th><th>级别</th><th>事件</th><th>消息</th></tr></thead><tbody>${rows}</tbody></table>` : '<div class="notice">没有日志。</div>'; }
-  async function refreshAccounts() { try { state.accounts = await api('/api/accounts'); renderAccounts(); } catch (error) { $('accounts-table').innerHTML = `<div class="error">${escapeHTML(error.message)}</div>`; } }
-  async function refreshInspection() { try { const [nodes, inspection] = await Promise.all([api('/api/nodes'), api('/api/inspection')]); state.nodes = nodes; renderNodes(); renderInspection(inspection); } catch (error) { $('nodes-table').innerHTML = `<div class="error">${escapeHTML(error.message)}</div>`; } }
-  async function refreshGuard() { try { const [degradation, settings, logs] = await Promise.all([api('/api/degradation'), api('/api/settings'), api('/api/logs')]); state.degradation = degradation; state.settings = settings; $('inspection-interval').value = settings.inspectionIntervalSeconds; $('first-payload-timeout').value = settings.firstPayloadTimeout; $('progress-timeout').value = settings.progressTimeout; $('min-summary-chars').value = settings.minSummaryChars; $('min-encrypted-bytes').value = settings.minEncryptedBytes; $('encrypted-bytes-per-token').value = settings.encryptedBytesPerToken; $('min-output-tokens').value = settings.minOutputTokens; $('hard-tps').value = settings.hardTPS; renderGuard(); renderLogs(logs); if (state.accounts.length) renderAccounts(); } catch (error) { $('guard-table').innerHTML = `<div class="error">${escapeHTML(error.message)}</div>`; } }
-  async function refreshAll() { await Promise.all([refreshAccounts(), refreshInspection(), refreshGuard()]); $('last-refresh').textContent = `最近刷新：${new Date().toLocaleString()}`; }
-  document.querySelectorAll('.tab').forEach((button) => button.addEventListener('click', () => { document.querySelectorAll('.tab').forEach((item) => item.classList.toggle('active', item === button)); document.querySelectorAll('.panel').forEach((item) => item.classList.toggle('active', item.dataset.panel === button.dataset.tab)); }));
-  $('refresh-accounts').addEventListener('click', async () => { try { await api('/api/accounts/refresh', 'POST', {}); await refreshAccounts(); } catch (error) { $('accounts-table').innerHTML = `<div class="error">${escapeHTML(error.message)}</div>`; } }); $('refresh-inspection').addEventListener('click', refreshInspection); $('refresh-guard').addEventListener('click', refreshGuard);
-  $('run-inspection').addEventListener('click', async () => { setMessage('node-message', '巡检中…'); try { const text = $('node-input').value.trim(); if (text) { await api('/api/nodes', 'POST', {text}); $('node-input').value = ''; } await api('/api/inspection', 'POST', {}); await refreshInspection(); setMessage('node-message', '巡检完成。'); } catch (error) { setMessage('node-message', error.message, true); } });
-  $('save-settings').addEventListener('click', async () => { try { await api('/api/settings', 'PUT', {inspectionIntervalSeconds:Number($('inspection-interval').value), firstPayloadTimeout:Number($('first-payload-timeout').value), progressTimeout:Number($('progress-timeout').value), minSummaryChars:Number($('min-summary-chars').value), minEncryptedBytes:Number($('min-encrypted-bytes').value), encryptedBytesPerToken:Number($('encrypted-bytes-per-token').value), minOutputTokens:Number($('min-output-tokens').value), hardTPS:Number($('hard-tps').value)}); setMessage('settings-message', '已保存。'); } catch (error) { setMessage('settings-message', error.message, true); } });
-  $('node-input').addEventListener('change', () => setMessage('node-message', ''));
-  document.addEventListener('click', async (event) => { const deleteButton = event.target.closest('[data-delete-node]'); if (deleteButton) { try { await api(`/api/nodes/${deleteButton.dataset.deleteNode}/delete`, 'POST', {}); await refreshInspection(); } catch (error) { setMessage('node-message', error.message, true); } } const clearButton = event.target.closest('[data-clear-auth]'); if (clearButton) { try { await api('/api/degradation/clear', 'POST', {authIndex:clearButton.dataset.clearAuth}); await refreshGuard(); await refreshAccounts(); } catch (error) { setMessage('settings-message', error.message, true); } } });
-  refreshAll();
-})();
-</script>
+    <section class="view" data-view="guard" role="tabpanel">
+      <section class="panel guard-panel">
+        <div class="guard-summary-grid" id="guard-summary"></div>
+        <div class="settings-panel">
+          <div class="panel-header">
+            <div><h2 class="panel-title">守护策略</h2><p class="panel-subtitle">实时守护由 CPA 核心执行；插件负责保存策略和返回 flush、retry、fail action。</p></div>
+            <div class="panel-extra"><button class="primary-button" id="save-settings" type="button">保存</button><button class="secondary-button" id="refresh-guard" type="button">刷新</button></div>
+          </div>
+          <div class="settings-grid">
+            <div class="settings-field"><label for="inspection-interval">自动巡检间隔（秒，0=关闭）</label><input class="settings-input" id="inspection-interval" type="number" min="0"></div>
+            <div class="settings-field"><label for="first-payload-timeout">首个 payload 超时（秒）</label><input class="settings-input" id="first-payload-timeout" type="number" min="1"></div>
+            <div class="settings-field"><label for="progress-timeout">无进展超时（秒）</label><input class="settings-input" id="progress-timeout" type="number" min="1"></div>
+            <div class="settings-field"><label for="min-summary-chars">最小思考摘要字符数</label><input class="settings-input" id="min-summary-chars" type="number" min="1"></div>
+            <div class="settings-field"><label for="min-encrypted-bytes">最小加密思考字节数</label><input class="settings-input" id="min-encrypted-bytes" type="number" min="1"></div>
+            <div class="settings-field"><label for="encrypted-bytes-per-token">每个思考 token 的加密字节数</label><input class="settings-input" id="encrypted-bytes-per-token" type="number" min="1"></div>
+            <div class="settings-field"><label for="min-output-tokens">最小输出 token 数</label><input class="settings-input" id="min-output-tokens" type="number" min="1"></div>
+            <div class="settings-field"><label for="hard-tps">硬 TPS 阈值</label><input class="settings-input" id="hard-tps" type="number" min="1"></div>
+          </div>
+          <div class="help-text">单请求重试上限由 CPA 核心统一控制，插件不重复限制。TTFB 仅采集，不作为降智拦截条件。</div>
+          <div id="settings-message" class="message"></div>
+        </div>
+        <div class="data-panel">
+          <div class="data-header"><div><strong>降智状态</strong><div class="subline">清除只删除插件本地降智记录，不修改 CPA 认证优先级或认证文件。</div></div></div>
+          <div id="guard-error" class="message error hidden"></div>
+          <div class="table-wrap" id="guard-table"></div>
+        </div>
+        <div class="logs-panel">
+          <div class="panel-header"><div><h2 class="panel-title">插件日志</h2><p class="panel-subtitle">日志内容经过脱敏处理。</p></div></div>
+          <div class="table-wrap" id="logs-table"></div>
+        </div>
+      </section>
+    </section>
+  </main>
+
+  <script>
+  (() => {
+    const apiEndpoint = '/v0/management/xai-guardian/api';
+    const state = {
+      accounts: [], nodes: [], degradation: [], logs: [], settings: null,
+      inspection: {run: null, results: []}, summary: null,
+      mode: 'accounts', filter: 'all', mask: 'full', page: 1, pageSize: 100,
+      keyword: '', expandedAccount: '', busy: false
+    };
+    const $ = (id) => document.getElementById(id);
+    const escapeHTML = (value) => String(value ?? '').replace(/[&<>"']/g, (char) => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[char]));
+    const numberValue = (value) => typeof value === 'number' && Number.isFinite(value) ? value : null;
+    const formatDate = (value) => {
+      const timestamp = numberValue(value);
+      if (!timestamp) return '—';
+      const date = new Date(timestamp);
+      return Number.isNaN(date.getTime()) ? '—' : date.toLocaleString('zh-CN', {month:'2-digit', day:'2-digit', hour:'2-digit', minute:'2-digit', hour12:false});
+    };
+    const formatFullDate = (value) => {
+      const timestamp = numberValue(value);
+      if (!timestamp) return '—';
+      const date = new Date(timestamp);
+      return Number.isNaN(date.getTime()) ? '—' : date.toLocaleString('zh-CN', {year:'numeric', month:'2-digit', day:'2-digit', hour:'2-digit', minute:'2-digit', second:'2-digit', hour12:false});
+    };
+    const maskAccount = (value) => String(value || '').replace(/(^.{2}).*(@.*$)/, '$1***$2');
+    const setMessage = (id, text, error) => {
+      const node = $(id);
+      node.textContent = text || '';
+      node.classList.toggle('error', Boolean(error));
+      node.classList.toggle('hidden', !text);
+    };
+    const statusKey = (item) => {
+      const status = String(item.status || '').toLowerCase();
+      const priority = numberValue(item.priority);
+      if (status.includes('quota') || priority === -1) return 'quota';
+      if (status.includes('disabled') || priority === -5) return 'disabled';
+      if (status === 'available' || status === 'enabled' || status === 'active' || status === 'healthy') return 'enabled';
+      return 'abnormal';
+    };
+    const statusLabel = (key) => ({enabled:'已启用', quota:'额度耗尽', disabled:'已停用', abnormal:'账号异常'}[key] || '账号异常');
+    const statusTone = (key) => ({enabled:'status-good', quota:'status-violet', disabled:'status-warn', abnormal:'status-bad'}[key] || 'status-bad');
+    const nodeTone = (status) => 'node-' + String(status || 'uninspected').toLowerCase();
+    const nodeLabel = (status) => ({healthy:'健康', unhealthy:'异常', inspecting:'检测中', disabled:'已停用', uninspected:'未检测'}[status] || status || '未检测');
+    const nodeForAccount = (item) => state.nodes.find((node) => Number(node.id) === Number(item.nodeId));
+    const accountName = (item) => item.authName || item.authIndex || '未命名账号';
+    const accountDisplayName = (item) => state.mask === 'masked' ? maskAccount(accountName(item)) : accountName(item);
+
+    async function api(path, method = 'GET', body) {
+      const payload = {method, path};
+      if (body !== undefined) payload.body = body;
+      const response = await fetch(apiEndpoint, {method:'POST', headers:{'content-type':'application/json','X-CPA-XAI-GUARDIAN-UI':'1'}, body:JSON.stringify(payload)});
+      const text = await response.text();
+      let envelope;
+      try { envelope = text ? JSON.parse(text) : {}; } catch (_error) { throw new Error('服务端返回了无效响应'); }
+      if (!response.ok || envelope.ok === false) {
+        const error = envelope.error && typeof envelope.error.message === 'string' ? envelope.error.message : '请求失败';
+        throw new Error(error);
+      }
+      return envelope.data;
+    }
+
+    function renderMode() {
+      const descriptions = {
+        accounts: ['账号状态', '查看 xAI 账号状态、节点绑定、优先级和最近巡检结果。'],
+        inspection: ['服务端巡检', '录入服务端代理节点，执行出口 IP、国家和连通性检查。'],
+        guard: ['降智守护', '查看降智记录、守护策略和插件日志。']
+      };
+      document.querySelectorAll('[data-mode]').forEach((button) => {
+        const active = button.dataset.mode === state.mode;
+        button.classList.toggle('active', active);
+        button.setAttribute('aria-selected', String(active));
+      });
+      document.querySelectorAll('[data-view]').forEach((view) => view.classList.toggle('active', view.dataset.view === state.mode));
+      $('mode-title').textContent = descriptions[state.mode][0];
+      $('mode-description').textContent = descriptions[state.mode][1];
+    }
+
+    function renderAccountSummary() {
+      const counts = {enabled:0, quota:0, disabled:0, abnormal:0};
+      state.accounts.forEach((item) => { counts[statusKey(item)] += 1; });
+      const cards = [['总账号', state.accounts.length, 'A', 'blue'], ['已启用', counts.enabled, 'E', 'green'], ['额度耗尽', counts.quota, 'Q', 'violet'], ['已停用', counts.disabled, 'D', 'amber'], ['账号异常', counts.abnormal, '!', 'red']];
+      $('account-summary').innerHTML = cards.map((card) => `<article class="summary-card tone-${card[3]}"><div class="summary-header"><span class="summary-icon">${card[2]}</span><span class="summary-label">${card[0]}</span></div><strong class="summary-value">${card[1]}</strong></article>`).join('');
+    }
+
+    function renderAccountTable() {
+      const keyword = state.keyword.trim().toLowerCase();
+      const filtered = state.accounts.filter((item) => {
+        const matchesKeyword = !keyword || accountName(item).toLowerCase().includes(keyword) || String(item.authIndex || '').toLowerCase().includes(keyword);
+        return matchesKeyword && (state.filter === 'all' || statusKey(item) === state.filter);
+      });
+      const totalPages = Math.max(1, Math.ceil(filtered.length / state.pageSize));
+      state.page = Math.min(state.page, totalPages);
+      const start = (state.page - 1) * state.pageSize;
+      const rows = filtered.slice(start, start + state.pageSize);
+      const body = rows.map((item) => {
+        const key = statusKey(item);
+        const node = nodeForAccount(item);
+        const expanded = state.expandedAccount === String(item.authIndex);
+        const displayName = escapeHTML(accountDisplayName(item));
+        const exitIp = node && node.exitIp ? node.exitIp : '—';
+        const proxyUrl = item.proxyUrl || (node && node.address) || '—';
+        return `<tr class="data-row" data-account="${escapeHTML(item.authIndex)}" aria-expanded="${expanded}">
+          <td><div class="account-cell"><strong title="${escapeHTML(accountName(item))}">${displayName}</strong><span class="subline">${escapeHTML(item.authIndex || '无 Auth Index')}</span></div></td>
+          <td class="mono">${escapeHTML(exitIp)}</td>
+          <td><span class="type-badge">XAI</span></td>
+          <td><div class="status-cell"><span class="status-badge ${statusTone(key)}">${statusLabel(key)}</span></div></td>
+          <td><span class="number-badge">${numberValue(item.priority) ?? '—'}</span></td>
+          <td><span class="number-badge">${item.nodeId ? '#' + escapeHTML(item.nodeId) : '—'}</span></td>
+          <td><div class="quota-cell"><span class="quota-empty">— 暂无额度 —</span></div></td>
+          <td><div class="cost-cell"><span class="usage-badge"><small>请求（成功/失败）</small><strong>${numberValue(item.success) ?? 0} / ${numberValue(item.failed) ?? 0}</strong><span class="subline">插件本地统计</span></span></div></td>
+          <td>${formatDate(item.lastChecked || item.updatedAt)}</td>
+        </tr>${expanded ? `<tr class="detail-row"><td colspan="9"><section class="detail-panel"><div class="detail-hero"><div><span class="detail-eyebrow">xAI Guardian Account</span><h3>${displayName}</h3></div><div class="detail-badges"><span class="status-badge ${statusTone(key)}">${statusLabel(key)}</span><span class="number-badge">优先级 ${numberValue(item.priority) ?? '—'}</span></div></div><div class="detail-grid"><div class="detail-section"><h4>基础信息</h4><dl class="detail-list"><div><dt>Auth Index</dt><dd class="mono">${escapeHTML(item.authIndex || '—')}</dd></div><div><dt>节点</dt><dd>${item.nodeId ? '#' + escapeHTML(item.nodeId) : '未绑定'}</dd></div><div><dt>出口 IP</dt><dd>${escapeHTML(exitIp)}</dd></div><div><dt>代理地址</dt><dd title="${escapeHTML(proxyUrl)}">${escapeHTML(proxyUrl)}</dd></div></dl></div><div class="detail-section"><h4>巡检与统计</h4><dl class="detail-list"><div><dt>状态</dt><dd>${escapeHTML(item.status || '—')}</dd></div><div><dt>最近巡检</dt><dd>${formatFullDate(item.lastChecked)}</dd></div><div><dt>成功次数</dt><dd>${numberValue(item.success) ?? 0}</dd></div><div><dt>失败次数</dt><dd>${numberValue(item.failed) ?? 0}</dd></div></dl></div></div></section></td></tr>` : ''}`;
+      }).join('');
+      $('accounts-table').innerHTML = `<table class="data-table account-table"><thead><tr><th>账号</th><th>出口IP</th><th>账号类型</th><th>状态</th><th>优先级</th><th>节点</th><th>额度窗口</th><th>请求统计</th><th>最后巡检</th></tr></thead><tbody>${body || '<tr><td class="empty-cell" colspan="9">没有可展示的 xAI 账号。</td></tr>'}</tbody></table>`;
+      $('accounts-page-info').textContent = `第 ${state.page} / ${totalPages} 页，显示 ${filtered.length ? start + 1 : 0} - ${Math.min(start + state.pageSize, filtered.length)} / ${filtered.length}`;
+      $('account-page-prev').disabled = state.page <= 1;
+      $('account-page-next').disabled = state.page >= totalPages;
+      renderAccountSummary();
+    }
+
+    function renderNodeSummary() {
+      const counts = {total:state.nodes.length, healthy:0, unhealthy:0, inspecting:0, uninspected:0};
+      state.nodes.forEach((node) => { if (counts[node.status] !== undefined) counts[node.status] += 1; else counts.uninspected += 1; });
+      const cards = [['节点总数', counts.total, 'N', 'blue'], ['健康', counts.healthy, '✓', 'green'], ['异常', counts.unhealthy, '!', 'red'], ['检测中/未检测', counts.inspecting + counts.uninspected, '…', 'violet']];
+      $('node-summary').innerHTML = cards.map((card) => `<article class="summary-card tone-${card[3]}"><div class="summary-header"><span class="summary-icon">${card[2]}</span><span class="summary-label">${card[0]}</span></div><strong class="summary-value">${card[1]}</strong></article>`).join('');
+    }
+
+    function renderNodes() {
+      const rows = state.nodes.map((node) => `<tr><td><span class="number-badge">#${node.id}</span></td><td><div class="node-cell"><strong class="mono">${escapeHTML(node.address || '—')}</strong>${node.lastError ? `<span class="subline">${escapeHTML(node.lastError)}</span>` : ''}</div></td><td><span class="node-status ${nodeTone(node.status)}">${nodeLabel(node.status)}</span></td><td>${node.latencyMs ? escapeHTML(node.latencyMs) + ' ms' : '—'}</td><td class="mono">${escapeHTML(node.exitIp || '—')}</td><td>${escapeHTML(node.country || '—')}</td><td>${formatDate(node.lastChecked)}</td><td><button class="danger-button" type="button" data-delete-node="${node.id}">删除</button></td></tr>`).join('');
+      $('nodes-table').innerHTML = `<table class="data-table node-table"><thead><tr><th>ID</th><th>节点地址</th><th>状态</th><th>延迟</th><th>出口 IP</th><th>国家</th><th>最近检查</th><th>操作</th></tr></thead><tbody>${rows || '<tr><td class="empty-cell" colspan="8">没有巡检节点。</td></tr>'}</tbody></table>`;
+      renderNodeSummary();
+    }
+
+    function renderInspection() {
+      const run = state.inspection.run;
+      if (!run) { $('inspection-run').innerHTML = '<div class="help-text">尚未运行巡检。</div>'; $('run-updated').textContent = '尚未运行'; return; }
+      $('run-updated').textContent = `完成于 ${formatDate(run.completedAt || run.startedAt)}`;
+      $('inspection-run').innerHTML = `<div class="run-summary"><div class="run-stat"><small>状态</small><strong>${escapeHTML(run.status)}</strong></div><div class="run-stat"><small>实际检查</small><strong>${run.total}</strong></div><div class="run-stat"><small>健康</small><strong>${run.healthy}</strong></div><div class="run-stat"><small>异常</small><strong>${run.unhealthy}</strong></div></div><div class="help-text">开始：${formatFullDate(run.startedAt)}　完成：${formatFullDate(run.completedAt)}</div>`;
+    }
+
+    function renderGuardSummary() {
+      const errors = state.logs.filter((item) => item.level === 'error').length;
+      const cards = [['降智账号', state.degradation.length, '!', 'red'], ['累计记录', state.degradation.reduce((sum, item) => sum + (numberValue(item.count) || 0), 0), 'D', 'violet'], ['错误日志', errors, 'L', 'amber']];
+      $('guard-summary').innerHTML = cards.map((card) => `<article class="summary-card tone-${card[3]}"><div class="summary-header"><span class="summary-icon">${card[2]}</span><span class="summary-label">${card[0]}</span></div><strong class="summary-value">${card[1]}</strong></article>`).join('');
+    }
+
+    function renderSettings() {
+      if (!state.settings) return;
+      const fields = {'inspection-interval':'inspectionIntervalSeconds','first-payload-timeout':'firstPayloadTimeout','progress-timeout':'progressTimeout','min-summary-chars':'minSummaryChars','min-encrypted-bytes':'minEncryptedBytes','encrypted-bytes-per-token':'encryptedBytesPerToken','min-output-tokens':'minOutputTokens','hard-tps':'hardTPS'};
+      Object.keys(fields).forEach((id) => { $(id).value = state.settings[fields[id]] ?? ''; });
+    }
+
+    function renderDegradation() {
+      const rows = state.degradation.map((item) => `<tr><td><div class="account-cell"><strong>${escapeHTML(state.mask === 'masked' ? maskAccount(item.authName) : item.authName)}</strong><span class="subline">${escapeHTML(item.authIndex)}</span></div></td><td class="mono">${escapeHTML(item.authIndex)}</td><td><span class="status-badge status-bad">${item.count}</span></td><td><div class="log-cell"><strong>${escapeHTML(item.lastReason || '—')}</strong><span class="subline">冷却至 ${item.coolingUntil === -1 ? '永久' : formatFullDate(item.coolingUntil)}</span></div></td><td>${formatDate(item.lastSeen)}</td><td><button class="secondary-button" type="button" data-clear-auth="${escapeHTML(item.authIndex)}">清除</button></td></tr>`).join('');
+      $('guard-table').innerHTML = `<table class="data-table guard-table"><thead><tr><th>账号</th><th>Auth Index</th><th>次数</th><th>最近原因</th><th>最近发生</th><th>操作</th></tr></thead><tbody>${rows || '<tr><td class="empty-cell" colspan="6">没有降智记录。</td></tr>'}</tbody></table>`;
+      renderGuardSummary();
+    }
+
+    function renderLogs() {
+      const rows = state.logs.map((item) => `<tr><td>${formatDate(item.createdAt)}</td><td><span class="level-badge level-${escapeHTML(item.level)}">${escapeHTML(item.level)}</span></td><td class="mono">${escapeHTML(item.event)}</td><td><div class="log-cell"><strong>${escapeHTML(item.message)}</strong>${item.detail ? `<span class="subline">${escapeHTML(item.detail)}</span>` : ''}</div></td></tr>`).join('');
+      $('logs-table').innerHTML = `<table class="data-table log-table"><thead><tr><th>时间</th><th>级别</th><th>事件</th><th>消息</th></tr></thead><tbody>${rows || '<tr><td class="empty-cell" colspan="4">没有日志。</td></tr>'}</tbody></table>`;
+    }
+
+    async function refreshAccounts() {
+      try { state.accounts = await api('/api/accounts'); state.nodes = await api('/api/nodes'); setMessage('accounts-error', ''); renderAccountTable(); }
+      catch (error) { setMessage('accounts-error', error.message, true); $('accounts-table').innerHTML = '<div class="help-text">账号状态请求失败。</div>'; }
+    }
+    async function refreshInspection() {
+      try { const result = await Promise.all([api('/api/nodes'), api('/api/inspection'), api('/api/summary')]); state.nodes = result[0]; state.inspection = result[1]; state.summary = result[2]; setMessage('nodes-error', ''); renderNodes(); renderInspection(); }
+      catch (error) { setMessage('nodes-error', error.message, true); }
+    }
+    async function refreshGuard() {
+      try { const result = await Promise.all([api('/api/degradation'), api('/api/settings'), api('/api/logs')]); state.degradation = result[0]; state.settings = result[1]; state.logs = result[2]; setMessage('guard-error', ''); renderSettings(); renderDegradation(); renderLogs(); }
+      catch (error) { setMessage('guard-error', error.message, true); }
+    }
+    async function refreshAll() { await Promise.all([refreshAccounts(), refreshInspection(), refreshGuard()]); }
+
+    function setBusy(value, message) {
+      state.busy = value;
+      document.querySelectorAll('button').forEach((button) => { if (button.id !== 'account-page-prev' && button.id !== 'account-page-next') button.disabled = value; });
+      if (value) {
+        const overlay = document.createElement('div');
+        overlay.className = 'overlay'; overlay.id = 'operation-overlay';
+        overlay.innerHTML = `<div class="operation-card" role="status"><span class="spinner" aria-hidden="true"></span><strong>${escapeHTML(message || '巡检中…')}</strong><small>正在写入最近一次插件记录，请稍候</small></div>`;
+        document.body.appendChild(overlay);
+      } else { $('operation-overlay')?.remove(); }
+    }
+
+    document.addEventListener('click', async (event) => {
+      const target = event.target.closest('button');
+      if (!target || state.busy) return;
+      if (target.dataset.mode) { state.mode = target.dataset.mode; renderMode(); return; }
+      if (target.dataset.filter) { state.filter = target.dataset.filter; state.page = 1; document.querySelectorAll('[data-filter]').forEach((item) => item.classList.toggle('active', item.dataset.filter === state.filter)); renderAccountTable(); return; }
+      if (target.dataset.mask) { state.mask = target.dataset.mask; document.querySelectorAll('[data-mask]').forEach((item) => item.classList.toggle('active', item.dataset.mask === state.mask)); renderAccountTable(); renderDegradation(); return; }
+      if (target.dataset.deleteNode) { if (!window.confirm('确认删除这个巡检节点？')) return; setBusy(true, '删除节点中…'); try { await api(`/api/nodes/${target.dataset.deleteNode}/delete`, 'POST', {}); await refreshInspection(); setMessage('node-message', '节点已删除。'); } catch (error) { setMessage('node-message', error.message, true); } finally { setBusy(false); } return; }
+      if (target.dataset.clearAuth) { setBusy(true, '清除降智记录中…'); try { await api('/api/degradation/clear', 'POST', {authIndex:target.dataset.clearAuth}); await refreshGuard(); await refreshAccounts(); setMessage('settings-message', '降智记录已清除。'); } catch (error) { setMessage('settings-message', error.message, true); } finally { setBusy(false); } return; }
+      if (target.id === 'refresh-accounts') { await refreshAccounts(); return; }
+      if (target.id === 'refresh-inspection') { await refreshInspection(); return; }
+      if (target.id === 'refresh-guard') { await refreshGuard(); return; }
+      if (target.id === 'run-inspection') { setBusy(true, '服务端巡检中…'); try { const text = $('node-input').value.trim(); if (text) { await api('/api/nodes', 'POST', {text}); $('node-input').value = ''; } await api('/api/inspection', 'POST', {}); await refreshInspection(); setMessage('node-message', '巡检完成。'); } catch (error) { setMessage('node-message', error.message, true); } finally { setBusy(false); } return; }
+      if (target.id === 'save-settings') { const body = {inspectionIntervalSeconds:Number($('inspection-interval').value), firstPayloadTimeout:Number($('first-payload-timeout').value), progressTimeout:Number($('progress-timeout').value), minSummaryChars:Number($('min-summary-chars').value), minEncryptedBytes:Number($('min-encrypted-bytes').value), encryptedBytesPerToken:Number($('encrypted-bytes-per-token').value), minOutputTokens:Number($('min-output-tokens').value), hardTPS:Number($('hard-tps').value)}; setBusy(true, '保存策略中…'); try { state.settings = await api('/api/settings', 'PUT', body); renderSettings(); setMessage('settings-message', '配置已保存。'); } catch (error) { setMessage('settings-message', error.message, true); } finally { setBusy(false); } }
+    });
+
+    $('account-search').addEventListener('input', (event) => { state.keyword = event.target.value; state.page = 1; renderAccountTable(); });
+    $('account-page-size').addEventListener('change', (event) => { state.pageSize = Number(event.target.value); state.page = 1; renderAccountTable(); });
+    $('account-page-prev').addEventListener('click', () => { if (state.page > 1) { state.page -= 1; renderAccountTable(); } });
+    $('account-page-next').addEventListener('click', () => { state.page += 1; renderAccountTable(); });
+    $('accounts-table').addEventListener('click', (event) => { const row = event.target.closest('tr[data-account]'); if (row && !event.target.closest('button')) { state.expandedAccount = state.expandedAccount === row.dataset.account ? '' : row.dataset.account; renderAccountTable(); } });
+    refreshAll();
+  })();
+  </script>
 </body>
 </html>
