@@ -436,7 +436,7 @@
         }
       };
       window.addEventListener('message', receiveResponse);
-      window.parent.postMessage({type:'cpa-plugin-api-request', requestId, endpoint:apiEndpoint, ...payload}, '*');
+      window.parent.postMessage({type:'cpa-plugin-api-request', requestId, endpoint:apiEndpoint, method:'POST', body:payload}, '*');
     });
     const state = {
       accounts: [], nodes: [], degradation: [], logs: [], settings: null,
