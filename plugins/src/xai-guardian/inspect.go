@@ -143,12 +143,15 @@ func runInspection(ctx context.Context, store *guardianStore) error {
 	if err := store.finishInspection(runID, healthy, unhealthy); err != nil {
 		return err
 	}
-	if entries, authErr := listXAIAuthEntries(); authErr == nil {
-		if bindingErr := syncAuthBindings(store, entries); bindingErr != nil {
-			_ = store.appendLog(logLevelWarn, "accounts.binding_failed", "账号绑定状态更新失败", bindingErr.Error())
+	inspectionAt := time.Now().UnixMilli()
+	if len(nodes) > 0 {
+		if entries, authErr := listXAIAuthEntries(); authErr == nil {
+			if bindingErr := syncAuthBindings(store, entries, runID, inspectionAt); bindingErr != nil {
+				_ = store.appendLog(logLevelWarn, "accounts.binding_failed", "账号绑定状态更新失败", bindingErr.Error())
+			}
+		} else {
+			_ = store.appendLog(logLevelWarn, "accounts.list_failed", "无法读取 CPA xAI 账号状态", authErr.Error())
 		}
-	} else {
-		_ = store.appendLog(logLevelWarn, "accounts.list_failed", "无法读取 CPA xAI 账号状态", authErr.Error())
 	}
 	return store.appendLog(logLevelInfo, "inspection.completed", "服务端巡检完成", fmt.Sprintf("总数 %d，健康 %d，异常 %d", len(nodes), healthy, unhealthy))
 }

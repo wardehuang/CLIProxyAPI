@@ -249,14 +249,14 @@ func (controller *runtimeController) updateSettings(store *guardianStore, body [
 }
 
 func (controller *runtimeController) accountsAPI(store *guardianStore) (int, []byte, error) {
-	entries, err := listXAIAuthEntries()
+	run, found, err := store.latestCompletedInspection()
 	if err != nil {
-		return http.StatusBadGateway, nil, err
-	}
-	if err := syncAuthBindings(store, entries); err != nil {
 		return http.StatusInternalServerError, nil, err
 	}
-	bindings, err := store.listAuthBindings()
+	if !found {
+		return jsonAPIResult([]map[string]any{}, nil)
+	}
+	bindings, err := store.listAuthBindings(run.ID)
 	return jsonAPIResult(publicAccounts(bindings), err)
 }
 
@@ -318,7 +318,16 @@ func publicNodes(nodes []proxyNode) []map[string]any {
 func publicAccounts(bindings []authBinding) []map[string]any {
 	items := make([]map[string]any, 0, len(bindings))
 	for _, binding := range bindings {
-		items = append(items, map[string]any{"authIndex": binding.AuthIndex, "authName": binding.AuthName, "nodeId": binding.NodeID, "proxyUrl": redactProxyURL(binding.ProxyURL), "status": binding.Status, "priority": binding.Priority, "success": binding.Success, "failed": binding.Failed, "updatedAt": binding.UpdatedAt, "lastChecked": binding.LastChecked})
+		items = append(items, map[string]any{
+			"authIndex":      binding.AuthIndex,
+			"authName":       binding.AuthName,
+			"exitIp":         binding.ExitIP,
+			"status":         binding.Status,
+			"priority":       binding.Priority,
+			"accountType":    binding.AccountType,
+			"scheduleGroup":  binding.ScheduleGroup,
+			"lastInspection": binding.LastInspection,
+		})
 	}
 	return items
 }

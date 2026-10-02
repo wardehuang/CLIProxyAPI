@@ -4,13 +4,13 @@
 
 `plugins/src/xai-guardian` 是独立的 CPA v8 动态插件，提供三个管理页签：
 
-- **账号状态**：读取 CPA Host Auth API 暴露的 xAI 账号元数据，保存账号与巡检节点的绑定关系。
+- **账号状态**：只读取最后一次已完成服务端巡检快照；没有完成巡检时返回空列表，不回退到当前 CPA Auth 清单。账号类型只接受巡检快照已经归一化的 `FREE`、`SUPER` 值；Host 运行时的 `oauth`、`api_key` 不冒充业务账号类型。调度组读取巡检时的 `schedule_group` 元数据。
 - **服务端巡检**：保存代理节点，使用节点执行出口连通性巡检，保存每轮巡检及结果。
 - **降智守护**：接收 xAI stream completion，依据思考或工具行动证据决定 `flush`、`retry`、`fail`，保存降智次数和日志。
 
-插件 SQLite 只保存配置、代理节点、账号绑定元数据、巡检记录、日志和降智状态。xAI token、Authorization header、密码和代理认证信息不写入 SQLite、不写入页面、不写入日志。
+插件 SQLite 只保存配置、代理节点、账号绑定元数据、巡检记录、日志和降智状态。账号状态绑定带有巡检 run ID，禁止未关联巡检的数据进入账号状态 API。xAI token、Authorization header、密码和代理认证信息不写入 SQLite、不写入页面、不写入日志。
 
-插件通过 `host.auth.list` 临时读取 CPA 管理的认证元数据；认证值仍由 CPA 认证链管理，插件不请求、不持久化认证值。
+插件通过 `host.auth.list` 临时读取 CPA 管理的认证元数据，并在巡检同步时通过 `host.auth.get` 只解析 `schedule_group`；认证值仍由 CPA 认证链管理，插件不向页面输出、不持久化认证值。
 
 旧插件中的第三方网关、健康保底、外部管理器通信和旧生命周期接口没有迁移。
 

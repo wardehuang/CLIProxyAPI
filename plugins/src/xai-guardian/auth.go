@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/url"
+	"strconv"
 
 	"strings"
 	"time"
@@ -56,10 +57,14 @@ func authEntryName(entry pluginapi.HostAuthFileEntry) string {
 	return strings.TrimSpace(entry.AuthIndex)
 }
 
-func syncAuthBindings(store *guardianStore, entries []pluginapi.HostAuthFileEntry) error {
+func syncAuthBindings(store *guardianStore, entries []pluginapi.HostAuthFileEntry, inspectionRunID, inspectionAt int64) error {
 	bindings := make([]authBinding, 0, len(entries))
 	for _, entry := range entries {
 		name := authEntryName(entry)
+		scheduleGroup, err := authEntryScheduleGroup(entry)
+		if err != nil {
+			return fmt.Errorf("read schedule group for auth index %s: %w", entry.AuthIndex, err)
+		}
 		lastChecked := int64(0)
 		checkedAt := entry.UpdatedAt
 		if checkedAt.IsZero() {
@@ -78,13 +83,97 @@ func syncAuthBindings(store *guardianStore, entries []pluginapi.HostAuthFileEntr
 		if !entry.NextRetryAfter.IsZero() && entry.NextRetryAfter.After(time.Now()) && !entry.Disabled && !entry.Unavailable {
 			status = "cooling"
 		}
-		binding := authBinding{AuthIndex: strings.TrimSpace(entry.AuthIndex), AuthName: name, Status: status, Priority: entry.Priority, Success: entry.Success, Failed: entry.Failed, UpdatedAt: time.Now().UnixMilli(), LastChecked: lastChecked}
+		binding := authBinding{
+			AuthIndex:       strings.TrimSpace(entry.AuthIndex),
+			AuthName:        name,
+			Status:          status,
+			Priority:        entry.Priority,
+			Success:         entry.Success,
+			Failed:          entry.Failed,
+			UpdatedAt:       time.Now().UnixMilli(),
+			LastChecked:     lastChecked,
+			InspectionRunID: inspectionRunID,
+			AccountType:     normalizedAccountType(entry.AccountType),
+			ScheduleGroup:   scheduleGroup,
+			LastInspection:  inspectionAt,
+		}
 		if entry.Disabled || entry.Unavailable {
 			binding.Status = "unavailable"
 		}
 		bindings = append(bindings, binding)
 	}
 	return store.upsertAuthBindings(bindings)
+}
+
+func normalizedAccountType(value string) string {
+	switch strings.ToUpper(strings.TrimSpace(value)) {
+	case "FREE", "SUPER":
+		return strings.ToUpper(strings.TrimSpace(value))
+	default:
+		return ""
+	}
+}
+
+func authEntryScheduleGroup(entry pluginapi.HostAuthFileEntry) (*int, error) {
+	if strings.TrimSpace(entry.Path) == "" {
+		return nil, nil
+	}
+	raw, err := callHost(pluginabi.MethodHostAuthGet, map[string]string{"auth_index": entry.AuthIndex})
+	if err != nil {
+		return nil, err
+	}
+	var response pluginapi.HostAuthGetResponse
+	if err := json.Unmarshal(raw, &response); err != nil {
+		return nil, fmt.Errorf("decode auth file response: %w", err)
+	}
+	if len(response.JSON) == 0 {
+		return nil, nil
+	}
+	var metadata map[string]any
+	if err := json.Unmarshal(response.JSON, &metadata); err != nil {
+		return nil, fmt.Errorf("decode auth file metadata: %w", err)
+	}
+	return readNestedScheduleGroup(metadata), nil
+}
+
+func readNestedScheduleGroup(values map[string]any) *int {
+	maps := []map[string]any{values}
+	for _, key := range []string{"attributes", "metadata"} {
+		nested, ok := values[key].(map[string]any)
+		if ok {
+			maps = append(maps, nested)
+		}
+	}
+	for _, current := range maps {
+		value, exists := current["schedule_group"]
+		if !exists {
+			continue
+		}
+		parsed, ok := readScheduleGroupValue(value)
+		if ok {
+			return &parsed
+		}
+	}
+	return nil
+}
+
+func readScheduleGroupValue(value any) (int, bool) {
+	switch typed := value.(type) {
+	case float64:
+		return int(typed), true
+	case int:
+		return typed, true
+	case int64:
+		return int(typed), true
+	case json.Number:
+		parsed, err := typed.Int64()
+		return int(parsed), err == nil
+	case string:
+		parsed, err := strconv.Atoi(strings.TrimSpace(typed))
+		return parsed, err == nil
+	default:
+		return 0, false
+	}
 }
 
 func redactProxyURL(value string) string {

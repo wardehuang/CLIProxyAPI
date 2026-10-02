@@ -183,8 +183,7 @@
     .account-table th:nth-child(5), .account-table td:nth-child(5) { width: 80px; }
     .account-table th:nth-child(6), .account-table td:nth-child(6) { width: 96px; }
     .account-table th:nth-child(7), .account-table td:nth-child(7) { width: 244px; }
-    .account-table th:nth-child(8), .account-table td:nth-child(8) { width: 220px; }
-    .account-table th:nth-child(9), .account-table td:nth-child(9) { width: 126px; }
+    .account-table th:nth-child(8), .account-table td:nth-child(8) { width: 126px; }
     .node-table th:nth-child(1), .node-table td:nth-child(1) { width: 70px; }
     .node-table th:nth-child(2), .node-table td:nth-child(2) { width: 330px; text-align: left; }
     .node-table th:nth-child(3), .node-table td:nth-child(3) { width: 128px; }
@@ -311,7 +310,7 @@
         </div>
         <div class="mode-switch-copy">
           <strong id="mode-title">账号状态</strong>
-          <p id="mode-description">查看 xAI 账号状态、节点绑定、优先级和最近巡检结果。</p>
+          <p id="mode-description">仅显示最后一次服务端巡检快照；未运行巡检时不显示当前 CPA 账号清单。</p>
         </div>
       </div>
     </section>
@@ -478,7 +477,6 @@
     const statusTone = (key) => ({enabled:'status-good', quota:'status-violet', disabled:'status-warn', abnormal:'status-bad'}[key] || 'status-bad');
     const nodeTone = (status) => 'node-' + String(status || 'uninspected').toLowerCase();
     const nodeLabel = (status) => ({healthy:'健康', unhealthy:'异常', inspecting:'检测中', disabled:'已停用', uninspected:'未检测'}[status] || status || '未检测');
-    const nodeForAccount = (item) => state.nodes.find((node) => Number(node.id) === Number(item.nodeId));
     const accountName = (item) => item.authName || item.authIndex || '未命名账号';
     const accountDisplayName = (item) => state.mask === 'masked' ? maskAccount(accountName(item)) : accountName(item);
 
@@ -501,7 +499,7 @@
 
     function renderMode() {
       const descriptions = {
-        accounts: ['账号状态', '查看 xAI 账号状态、节点绑定、优先级和最近巡检结果。'],
+        accounts: ['账号状态', '仅显示最后一次服务端巡检快照；未运行巡检时不显示当前 CPA 账号清单。'],
         inspection: ['服务端巡检', '录入服务端代理节点，执行出口 IP、国家和连通性检查。'],
         guard: ['降智守护', '查看降智记录、守护策略和插件日志。']
       };
@@ -534,24 +532,21 @@
       const rows = filtered.slice(start, start + state.pageSize);
       const body = rows.map((item) => {
         const key = statusKey(item);
-        const node = nodeForAccount(item);
         const expanded = state.expandedAccount === String(item.authIndex);
         const displayName = escapeHTML(accountDisplayName(item));
-        const exitIp = node && node.exitIp ? node.exitIp : '—';
-        const proxyUrl = item.proxyUrl || (node && node.address) || '—';
+        const accountType = String(item.accountType || '').trim().toUpperCase() || '—';
         return `<tr class="data-row" data-account="${escapeHTML(item.authIndex)}" aria-expanded="${expanded}">
           <td><div class="account-cell"><strong title="${escapeHTML(accountName(item))}">${displayName}</strong><span class="subline">${escapeHTML(item.authIndex || '无 Auth Index')}</span></div></td>
-          <td class="mono">${escapeHTML(exitIp)}</td>
-          <td><span class="type-badge">XAI</span></td>
+          <td class="mono">${escapeHTML(item.exitIp || '—')}</td>
+          <td><span class="type-badge">${escapeHTML(accountType)}</span></td>
           <td><div class="status-cell"><span class="status-badge ${statusTone(key)}">${statusLabel(key)}</span></div></td>
           <td><span class="number-badge">${numberValue(item.priority) ?? '—'}</span></td>
-          <td><span class="number-badge">${item.nodeId ? '#' + escapeHTML(item.nodeId) : '—'}</span></td>
+          <td><span class="number-badge">${numberValue(item.scheduleGroup) ?? '—'}</span></td>
           <td><div class="quota-cell"><span class="quota-empty">— 暂无额度 —</span></div></td>
-          <td><div class="cost-cell"><span class="usage-badge"><small>请求（成功/失败）</small><strong>${numberValue(item.success) ?? 0} / ${numberValue(item.failed) ?? 0}</strong><span class="subline">插件本地统计</span></span></div></td>
-          <td>${formatDate(item.lastChecked || item.updatedAt)}</td>
-        </tr>${expanded ? `<tr class="detail-row"><td colspan="9"><section class="detail-panel"><div class="detail-hero"><div><span class="detail-eyebrow">xAI Guardian Account</span><h3>${displayName}</h3></div><div class="detail-badges"><span class="status-badge ${statusTone(key)}">${statusLabel(key)}</span><span class="number-badge">优先级 ${numberValue(item.priority) ?? '—'}</span></div></div><div class="detail-grid"><div class="detail-section"><h4>基础信息</h4><dl class="detail-list"><div><dt>Auth Index</dt><dd class="mono">${escapeHTML(item.authIndex || '—')}</dd></div><div><dt>节点</dt><dd>${item.nodeId ? '#' + escapeHTML(item.nodeId) : '未绑定'}</dd></div><div><dt>出口 IP</dt><dd>${escapeHTML(exitIp)}</dd></div><div><dt>代理地址</dt><dd title="${escapeHTML(proxyUrl)}">${escapeHTML(proxyUrl)}</dd></div></dl></div><div class="detail-section"><h4>巡检与统计</h4><dl class="detail-list"><div><dt>状态</dt><dd>${escapeHTML(item.status || '—')}</dd></div><div><dt>最近巡检</dt><dd>${formatFullDate(item.lastChecked)}</dd></div><div><dt>成功次数</dt><dd>${numberValue(item.success) ?? 0}</dd></div><div><dt>失败次数</dt><dd>${numberValue(item.failed) ?? 0}</dd></div></dl></div></div></section></td></tr>` : ''}`;
+          <td>${formatDate(item.lastInspection)}</td>
+        </tr>${expanded ? `<tr class="detail-row"><td colspan="8"><section class="detail-panel"><div class="detail-hero"><div><span class="detail-eyebrow">xAI Guardian Account</span><h3>${displayName}</h3></div><div class="detail-badges"><span class="status-badge ${statusTone(key)}">${statusLabel(key)}</span><span class="type-badge">${escapeHTML(accountType)}</span></div></div><div class="detail-grid"><div class="detail-section"><h4>基础信息</h4><dl class="detail-list"><div><dt>Auth Index</dt><dd class="mono">${escapeHTML(item.authIndex || '—')}</dd></div><div><dt>账号类型</dt><dd>${escapeHTML(accountType)}</dd></div><div><dt>调度组</dt><dd>${numberValue(item.scheduleGroup) ?? '—'}</dd></div></dl></div><div class="detail-section"><h4>巡检状态</h4><dl class="detail-list"><div><dt>状态</dt><dd>${escapeHTML(item.status || '—')}</dd></div><div><dt>优先级</dt><dd>${numberValue(item.priority) ?? '—'}</dd></div><div><dt>最近巡检</dt><dd>${formatFullDate(item.lastInspection)}</dd></div></dl></div></div></section></td></tr>` : ''}`;
       }).join('');
-      $('accounts-table').innerHTML = `<table class="data-table account-table"><thead><tr><th>账号</th><th>出口IP</th><th>账号类型</th><th>状态</th><th>优先级</th><th>节点</th><th>额度窗口</th><th>请求统计</th><th>最后巡检</th></tr></thead><tbody>${body || '<tr><td class="empty-cell" colspan="9">没有可展示的 xAI 账号。</td></tr>'}</tbody></table>`;
+      $('accounts-table').innerHTML = `<table class="data-table account-table"><thead><tr><th>账号</th><th>出口IP</th><th>账号类型</th><th>状态</th><th>优先级</th><th>调度组</th><th>额度窗口</th><th>最后巡检</th></tr></thead><tbody>${body || '<tr><td class="empty-cell" colspan="8">没有可展示的最后一次服务端巡检数据。</td></tr>'}</tbody></table>`;
       $('accounts-page-info').textContent = `第 ${state.page} / ${totalPages} 页，显示 ${filtered.length ? start + 1 : 0} - ${Math.min(start + state.pageSize, filtered.length)} / ${filtered.length}`;
       $('account-page-prev').disabled = state.page <= 1;
       $('account-page-next').disabled = state.page >= totalPages;
@@ -602,7 +597,7 @@
     }
 
     async function refreshAccounts() {
-      try { state.accounts = await api('/api/accounts'); state.nodes = await api('/api/nodes'); setMessage('accounts-error', ''); renderAccountTable(); }
+      try { state.accounts = await api('/api/accounts'); setMessage('accounts-error', ''); renderAccountTable(); }
       catch (error) { setMessage('accounts-error', error.message, true); $('accounts-table').innerHTML = '<div class="help-text">账号状态请求失败。</div>'; }
     }
     async function refreshInspection() {

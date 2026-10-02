@@ -92,16 +92,21 @@ type inspectionResult struct {
 }
 
 type authBinding struct {
-	AuthIndex   string `json:"authIndex"`
-	AuthName    string `json:"authName"`
-	NodeID      int64  `json:"nodeId"`
-	ProxyURL    string `json:"proxyUrl"`
-	Status      string `json:"status"`
-	Priority    int    `json:"priority"`
-	Success     int64  `json:"success"`
-	Failed      int64  `json:"failed"`
-	UpdatedAt   int64  `json:"updatedAt"`
-	LastChecked int64  `json:"lastChecked"`
+	AuthIndex       string `json:"authIndex"`
+	AuthName        string `json:"authName"`
+	NodeID          int64  `json:"nodeId"`
+	ProxyURL        string `json:"proxyUrl"`
+	ExitIP          string `json:"exitIp"`
+	Status          string `json:"status"`
+	Priority        int    `json:"priority"`
+	Success         int64  `json:"success"`
+	Failed          int64  `json:"failed"`
+	UpdatedAt       int64  `json:"updatedAt"`
+	LastChecked     int64  `json:"lastChecked"`
+	InspectionRunID int64  `json:"-"`
+	AccountType     string `json:"accountType"`
+	ScheduleGroup   *int   `json:"scheduleGroup,omitempty"`
+	LastInspection  int64  `json:"lastInspection"`
 }
 
 type degradationState struct {
@@ -259,6 +264,49 @@ INSERT OR IGNORE INTO plugin_settings(setting_key, setting_value) VALUES
 `)
 	if err != nil {
 		return fmt.Errorf("initialize sqlite database: %w", err)
+	}
+	if err := store.ensureAuthBindingColumns(); err != nil {
+		return err
+	}
+	return nil
+}
+
+func (store *guardianStore) ensureAuthBindingColumns() error {
+	rows, err := store.database.Query(`PRAGMA table_info(auth_bindings)`)
+	if err != nil {
+		return fmt.Errorf("inspect auth binding schema: %w", err)
+	}
+	defer rows.Close()
+	existingColumns := make(map[string]struct{})
+	for rows.Next() {
+		var columnID int
+		var columnName, columnType string
+		var notNull, primaryKey int
+		var defaultValue any
+		if err := rows.Scan(&columnID, &columnName, &columnType, &notNull, &defaultValue, &primaryKey); err != nil {
+			return fmt.Errorf("scan auth binding schema: %w", err)
+		}
+		existingColumns[columnName] = struct{}{}
+	}
+	if err := rows.Err(); err != nil {
+		return fmt.Errorf("iterate auth binding schema: %w", err)
+	}
+	columns := []struct {
+		name       string
+		definition string
+	}{
+		{name: "inspection_run_id", definition: "integer not null default 0"},
+		{name: "account_type", definition: "text not null default ''"},
+		{name: "schedule_group", definition: "integer"},
+		{name: "last_inspection", definition: "integer not null default 0"},
+	}
+	for _, column := range columns {
+		if _, exists := existingColumns[column.name]; exists {
+			continue
+		}
+		if _, err := store.database.Exec(`ALTER TABLE auth_bindings ADD COLUMN ` + column.name + ` ` + column.definition); err != nil {
+			return fmt.Errorf("add auth binding column %s: %w", column.name, err)
+		}
 	}
 	return nil
 }
@@ -601,6 +649,18 @@ func (store *guardianStore) latestInspection() (inspectionRun, []inspectionResul
 	return run, results, rows.Err()
 }
 
+func (store *guardianStore) latestCompletedInspection() (inspectionRun, bool, error) {
+	var run inspectionRun
+	err := store.database.QueryRow(`SELECT id, started_at, completed_at, status, total, healthy, unhealthy FROM inspection_runs WHERE status = 'completed' ORDER BY id DESC LIMIT 1`).Scan(&run.ID, &run.StartedAt, &run.CompletedAt, &run.Status, &run.Total, &run.Healthy, &run.Unhealthy)
+	if err == sql.ErrNoRows {
+		return inspectionRun{}, false, nil
+	}
+	if err != nil {
+		return inspectionRun{}, false, fmt.Errorf("read latest completed inspection: %w", err)
+	}
+	return run, true, nil
+}
+
 func (store *guardianStore) upsertAuthBindings(bindings []authBinding) error {
 	tx, err := store.database.Begin()
 	if err != nil {
@@ -613,9 +673,9 @@ func (store *guardianStore) upsertAuthBindings(bindings []authBinding) error {
 		}
 	}
 	for _, binding := range bindings {
-		_, err := tx.Exec(`INSERT INTO auth_bindings(auth_index, auth_name, node_id, proxy_url, status, priority, success_count, failed_count, updated_at, last_checked)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-ON CONFLICT(auth_index) DO UPDATE SET auth_name=excluded.auth_name, node_id=CASE WHEN excluded.node_id <> 0 THEN excluded.node_id ELSE auth_bindings.node_id END, proxy_url=CASE WHEN excluded.proxy_url <> '' THEN excluded.proxy_url ELSE auth_bindings.proxy_url END, status=excluded.status, priority=excluded.priority, success_count=excluded.success_count, failed_count=excluded.failed_count, updated_at=excluded.updated_at, last_checked=excluded.last_checked`, binding.AuthIndex, binding.AuthName, binding.NodeID, binding.ProxyURL, binding.Status, binding.Priority, binding.Success, binding.Failed, binding.UpdatedAt, binding.LastChecked)
+		_, err := tx.Exec(`INSERT INTO auth_bindings(auth_index, auth_name, node_id, proxy_url, status, priority, success_count, failed_count, updated_at, last_checked, inspection_run_id, account_type, schedule_group, last_inspection)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+ON CONFLICT(auth_index) DO UPDATE SET auth_name=excluded.auth_name, node_id=CASE WHEN excluded.node_id <> 0 THEN excluded.node_id ELSE auth_bindings.node_id END, proxy_url=CASE WHEN excluded.proxy_url <> '' THEN excluded.proxy_url ELSE auth_bindings.proxy_url END, status=excluded.status, priority=excluded.priority, success_count=excluded.success_count, failed_count=excluded.failed_count, updated_at=excluded.updated_at, last_checked=excluded.last_checked, inspection_run_id=excluded.inspection_run_id, account_type=excluded.account_type, schedule_group=excluded.schedule_group, last_inspection=excluded.last_inspection`, binding.AuthIndex, binding.AuthName, binding.NodeID, binding.ProxyURL, binding.Status, binding.Priority, binding.Success, binding.Failed, binding.UpdatedAt, binding.LastChecked, binding.InspectionRunID, binding.AccountType, binding.ScheduleGroup, binding.LastInspection)
 		if err != nil {
 			return fmt.Errorf("save auth binding %s: %w", binding.AuthIndex, err)
 		}
@@ -652,8 +712,8 @@ ON CONFLICT(auth_index) DO UPDATE SET auth_name=CASE WHEN excluded.auth_name <> 
 	return nil
 }
 
-func (store *guardianStore) listAuthBindings() ([]authBinding, error) {
-	rows, err := store.database.Query(`SELECT auth_index, auth_name, node_id, proxy_url, status, priority, success_count, failed_count, updated_at, last_checked FROM auth_bindings ORDER BY priority DESC, auth_name ASC`)
+func (store *guardianStore) listAuthBindings(inspectionRunID int64) ([]authBinding, error) {
+	rows, err := store.database.Query(`SELECT auth_bindings.auth_index, auth_bindings.auth_name, auth_bindings.node_id, auth_bindings.proxy_url, COALESCE(nodes.exit_ip, ''), auth_bindings.status, auth_bindings.priority, auth_bindings.success_count, auth_bindings.failed_count, auth_bindings.updated_at, auth_bindings.last_checked, auth_bindings.inspection_run_id, auth_bindings.account_type, auth_bindings.schedule_group, auth_bindings.last_inspection FROM auth_bindings LEFT JOIN nodes ON nodes.id = auth_bindings.node_id WHERE auth_bindings.inspection_run_id = ? ORDER BY auth_bindings.priority DESC, auth_bindings.auth_name ASC`, inspectionRunID)
 	if err != nil {
 		return nil, fmt.Errorf("list auth bindings: %w", err)
 	}
@@ -661,8 +721,13 @@ func (store *guardianStore) listAuthBindings() ([]authBinding, error) {
 	items := make([]authBinding, 0)
 	for rows.Next() {
 		var item authBinding
-		if err := rows.Scan(&item.AuthIndex, &item.AuthName, &item.NodeID, &item.ProxyURL, &item.Status, &item.Priority, &item.Success, &item.Failed, &item.UpdatedAt, &item.LastChecked); err != nil {
+		var scheduleGroup sql.NullInt64
+		if err := rows.Scan(&item.AuthIndex, &item.AuthName, &item.NodeID, &item.ProxyURL, &item.ExitIP, &item.Status, &item.Priority, &item.Success, &item.Failed, &item.UpdatedAt, &item.LastChecked, &item.InspectionRunID, &item.AccountType, &scheduleGroup, &item.LastInspection); err != nil {
 			return nil, fmt.Errorf("scan auth binding: %w", err)
+		}
+		if scheduleGroup.Valid {
+			value := int(scheduleGroup.Int64)
+			item.ScheduleGroup = &value
 		}
 		items = append(items, item)
 	}
@@ -775,7 +840,7 @@ func (store *guardianStore) summary() (map[string]any, error) {
 		return nil, fmt.Errorf("iterate node summary: %w", err)
 	}
 	var accounts, degraded int64
-	if err := store.database.QueryRow(`SELECT COUNT(*) FROM auth_bindings`).Scan(&accounts); err != nil {
+	if err := store.database.QueryRow(`SELECT COUNT(*) FROM auth_bindings WHERE inspection_run_id = COALESCE((SELECT id FROM inspection_runs WHERE status = 'completed' ORDER BY id DESC LIMIT 1), 0)`).Scan(&accounts); err != nil {
 		return nil, fmt.Errorf("count auth bindings: %w", err)
 	}
 	if err := store.database.QueryRow(`SELECT COUNT(*) FROM degradation_states`).Scan(&degraded); err != nil {
