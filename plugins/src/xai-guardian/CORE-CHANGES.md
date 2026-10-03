@@ -2,13 +2,13 @@
 
 ## 插件职责
 
-`plugins/src/xai-guardian` 是独立的 CPA v8 动态插件，提供三个管理页签：
+`plugins/src/xai-guardian` 是独立的 CPA v8 动态插件，提供三个顶层管理页签：
 
 - **账号状态**：只读取最后一次已完成服务端巡检快照；没有完成巡检时返回空列表，不回退到当前 CPA Auth 清单。账号类型只接受巡检快照已经归一化的 `FREE`、`SUPER` 值；Host 运行时的 `oauth`、`api_key` 不冒充业务账号类型。调度组读取巡检时的 `schedule_group` 元数据。
-- **服务端巡检**：保存代理节点，使用节点执行出口连通性巡检，保存每轮巡检及结果。
-- **降智守护**：接收 xAI stream completion，依据思考或工具行动证据决定 `flush`、`retry`、`fail`，保存降智次数和日志。
+- **服务端巡检**：维护服务端巡检节点，保存每轮巡检及结果；巡检运行批次只在本页签展示。
+- **降智守护**：接收 xAI stream completion，依据思考或工具行动证据决定 `flush`、`retry`、`fail`，保存降智次数和日志；页面包含 **IP列表**、**批次查看**、**日志**、**配置** 四个独立子页签。**批次查看**只展示通过【增加IP】创建的 IP 批次及其节点结果，配置不再使用弹窗。
 
-插件 SQLite 只保存配置、代理节点、账号绑定元数据、巡检记录、日志和降智状态。账号状态绑定带有巡检 run ID，禁止未关联巡检的数据进入账号状态 API。xAI token、Authorization header、密码和代理认证信息不写入 SQLite、不写入页面、不写入日志。
+插件 SQLite 只保存配置、代理节点、增加 IP 批次及其节点关联、账号绑定元数据、巡检记录、日志和降智状态；服务端巡检节点与增加 IP 节点按 scope 分离。账号状态绑定带有巡检 run ID，禁止未关联巡检的数据进入账号状态 API。xAI token、Authorization header、密码和代理认证信息不写入 SQLite、不写入页面、不写入日志。
 
 插件通过 `host.auth.list` 临时读取 CPA 管理的认证元数据，并在巡检同步时通过 `host.auth.get` 只解析 `schedule_group`；认证值仍由 CPA 认证链管理，插件不向页面输出、不持久化认证值。
 
@@ -81,7 +81,7 @@
 
 ## 构建与核验状态
 
-- 已完成插件入口、SQLite schema、账号状态 API、服务端巡检 API、降智守护 API、三页签 HTML 和 v8 RPC 适配。
+- 已完成插件入口、SQLite schema、账号状态 API、服务端巡检 API、增加 IP 批次 API、降智守护 API、四个降智守护子页签 HTML 和 v8 RPC 适配。
 - 已执行 `gofmt`。
 - 核心定向构建已通过：`go build ./internal/... ./sdk/...`。
 - 插件 c-shared 构建尚未通过：当前 Windows 环境缺少 cgo 所需的 `gcc`，启用 cgo 时返回 `cgo: C compiler "gcc" not found`。

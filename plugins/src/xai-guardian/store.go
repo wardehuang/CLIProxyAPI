@@ -29,6 +29,7 @@ const (
 	degradationFirstCooling          = 24 * time.Hour
 	degradationSecondCooling         = 48 * time.Hour
 	degradationPermanentCoolingUntil = int64(-1)
+	maxIPBatches                     = 5
 
 	statusUninspected = "uninspected"
 	statusInspecting  = "inspecting"
@@ -89,6 +90,18 @@ type inspectionResult struct {
 	Country   string `json:"country"`
 	Error     string `json:"error"`
 	CheckedAt int64  `json:"checkedAt"`
+}
+
+type ipBatch struct {
+	ID                     string
+	SequenceNumber         int64
+	CreatedAt              int64
+	TotalCount             int64
+	DuplicateCount         int64
+	InputErrorCount        int64
+	CompletedCount         int64
+	InitialConnectedCount  int64
+	RealtimeConnectedCount int64
 }
 
 type authBinding struct {
@@ -185,6 +198,7 @@ CREATE TABLE IF NOT EXISTS plugin_settings (
 CREATE TABLE IF NOT EXISTS nodes (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     address TEXT NOT NULL UNIQUE,
+    scope TEXT NOT NULL DEFAULT 'inspection',
     protocol TEXT NOT NULL,
     host TEXT NOT NULL,
     port INTEGER NOT NULL,
@@ -197,6 +211,23 @@ CREATE TABLE IF NOT EXISTS nodes (
     created_at INTEGER NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_nodes_status ON nodes(status, id);
+CREATE TABLE IF NOT EXISTS ip_batches (
+    batch_id TEXT PRIMARY KEY,
+    sequence_number INTEGER NOT NULL DEFAULT 0,
+    created_at INTEGER NOT NULL,
+    total_count INTEGER NOT NULL DEFAULT 0,
+    duplicate_count INTEGER NOT NULL DEFAULT 0,
+    input_error_count INTEGER NOT NULL DEFAULT 0
+);
+CREATE INDEX IF NOT EXISTS idx_ip_batches_created_at ON ip_batches(created_at DESC);
+CREATE TABLE IF NOT EXISTS ip_batch_nodes (
+    batch_id TEXT NOT NULL,
+    node_id INTEGER NOT NULL,
+    PRIMARY KEY(batch_id, node_id),
+    FOREIGN KEY(batch_id) REFERENCES ip_batches(batch_id) ON DELETE CASCADE,
+    FOREIGN KEY(node_id) REFERENCES nodes(id) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS idx_ip_batch_nodes_node_id ON ip_batch_nodes(node_id);
 CREATE TABLE IF NOT EXISTS inspection_runs (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     started_at INTEGER NOT NULL,
@@ -267,6 +298,35 @@ INSERT OR IGNORE INTO plugin_settings(setting_key, setting_value) VALUES
 	}
 	if err := store.ensureAuthBindingColumns(); err != nil {
 		return err
+	}
+	if err := store.ensureNodeScopeColumn(); err != nil {
+		return err
+	}
+	return nil
+}
+
+func (store *guardianStore) ensureNodeScopeColumn() error {
+	rows, err := store.database.Query(`PRAGMA table_info(nodes)`)
+	if err != nil {
+		return fmt.Errorf("inspect node scope schema: %w", err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var columnID, notNull, primaryKey int
+		var columnName, columnType string
+		var defaultValue any
+		if err := rows.Scan(&columnID, &columnName, &columnType, &notNull, &defaultValue, &primaryKey); err != nil {
+			return fmt.Errorf("scan node scope schema: %w", err)
+		}
+		if columnName == "scope" {
+			return nil
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return fmt.Errorf("iterate node scope schema: %w", err)
+	}
+	if _, err := store.database.Exec(`ALTER TABLE nodes ADD COLUMN scope TEXT NOT NULL DEFAULT 'inspection'`); err != nil {
+		return fmt.Errorf("add node scope column: %w", err)
 	}
 	return nil
 }
@@ -515,7 +575,7 @@ func (store *guardianStore) insertNodes(nodes []proxyNode) (int, int, error) {
 	defer tx.Rollback()
 	added, duplicates := 0, 0
 	for _, node := range nodes {
-		result, err := tx.Exec(`INSERT OR IGNORE INTO nodes(address, protocol, host, port, status, created_at) VALUES (?, ?, ?, ?, ?, ?)`, node.Address, node.Protocol, node.Host, node.Port, statusUninspected, time.Now().UnixMilli())
+		result, err := tx.Exec(`INSERT OR IGNORE INTO nodes(address, scope, protocol, host, port, status, created_at) VALUES (?, 'inspection', ?, ?, ?, ?, ?)`, node.Address, node.Protocol, node.Host, node.Port, statusUninspected, time.Now().UnixMilli())
 		if err != nil {
 			return 0, 0, fmt.Errorf("insert node: %w", err)
 		}
@@ -535,8 +595,138 @@ func (store *guardianStore) insertNodes(nodes []proxyNode) (int, int, error) {
 	return added, duplicates, nil
 }
 
+func newIPBatchID() string {
+	return fmt.Sprintf("B%d", time.Now().UnixNano())
+}
+
+func (store *guardianStore) insertIPBatch(nodes []proxyNode, inputErrorCount int) (string, int, int, error) {
+	if len(nodes) == 0 {
+		return "", 0, 0, nil
+	}
+	batchID := newIPBatchID()
+	tx, err := store.database.Begin()
+	if err != nil {
+		return batchID, 0, 0, fmt.Errorf("begin IP batch insert: %w", err)
+	}
+	defer tx.Rollback()
+	createdAt := time.Now().UnixMilli()
+	var sequenceNumber int64
+	if err := tx.QueryRow(`SELECT COALESCE(MAX(sequence_number), 0) + 1 FROM ip_batches`).Scan(&sequenceNumber); err != nil {
+		return batchID, 0, 0, fmt.Errorf("read IP batch sequence: %w", err)
+	}
+	if _, err := tx.Exec(`INSERT INTO ip_batches(batch_id, sequence_number, created_at, input_error_count) VALUES (?, ?, ?, ?)`, batchID, sequenceNumber, createdAt, inputErrorCount); err != nil {
+		return batchID, 0, 0, fmt.Errorf("create IP batch: %w", err)
+	}
+	statement, err := tx.Prepare(`INSERT OR IGNORE INTO nodes(address, scope, protocol, host, port, status, created_at) VALUES (?, 'guard', ?, ?, ?, ?, ?)`)
+	if err != nil {
+		return batchID, 0, 0, fmt.Errorf("prepare IP batch node insert: %w", err)
+	}
+	defer statement.Close()
+	added, duplicates := 0, 0
+	for _, node := range nodes {
+		result, execErr := statement.Exec(node.Address, node.Protocol, node.Host, node.Port, statusUninspected, createdAt)
+		if execErr != nil {
+			return batchID, 0, 0, fmt.Errorf("insert IP batch node: %w", execErr)
+		}
+		rowsAffected, rowsErr := result.RowsAffected()
+		if rowsErr != nil {
+			return batchID, 0, 0, fmt.Errorf("read IP batch insert result: %w", rowsErr)
+		}
+		if rowsAffected == 0 {
+			duplicates++
+			continue
+		}
+		nodeID, idErr := result.LastInsertId()
+		if idErr != nil {
+			return batchID, 0, 0, fmt.Errorf("read IP batch node ID: %w", idErr)
+		}
+		if _, err := tx.Exec(`INSERT INTO ip_batch_nodes(batch_id, node_id) VALUES (?, ?)`, batchID, nodeID); err != nil {
+			return batchID, 0, 0, fmt.Errorf("link IP batch node: %w", err)
+		}
+		added++
+	}
+	if _, err := tx.Exec(`UPDATE ip_batches SET total_count = ?, duplicate_count = ? WHERE batch_id = ?`, added, duplicates, batchID); err != nil {
+		return batchID, 0, 0, fmt.Errorf("update IP batch: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return batchID, 0, 0, fmt.Errorf("commit IP batch insert: %w", err)
+	}
+	return batchID, added, duplicates, nil
+}
+
+func (store *guardianStore) listIPNodes() ([]proxyNode, error) {
+	rows, err := store.database.Query(`
+SELECT DISTINCT nodes.id, nodes.address, nodes.protocol, nodes.host, nodes.port, nodes.status, nodes.latency_ms, nodes.exit_ip, nodes.country, nodes.last_checked, nodes.last_error, nodes.created_at
+FROM nodes
+INNER JOIN ip_batch_nodes ON ip_batch_nodes.node_id = nodes.id
+WHERE nodes.scope = 'guard'
+ORDER BY nodes.id DESC`)
+	if err != nil {
+		return nil, fmt.Errorf("list IP nodes: %w", err)
+	}
+	defer rows.Close()
+	items := make([]proxyNode, 0)
+	for rows.Next() {
+		var item proxyNode
+		if err := rows.Scan(&item.ID, &item.Address, &item.Protocol, &item.Host, &item.Port, &item.Status, &item.LatencyMS, &item.ExitIP, &item.Country, &item.LastChecked, &item.LastError, &item.CreatedAt); err != nil {
+			return nil, fmt.Errorf("scan IP node: %w", err)
+		}
+		items = append(items, item)
+	}
+	return items, rows.Err()
+}
+
+func (store *guardianStore) listIPBatches() ([]ipBatch, error) {
+	rows, err := store.database.Query(`
+SELECT batches.batch_id, batches.sequence_number, batches.created_at, batches.total_count, batches.duplicate_count, batches.input_error_count,
+       COALESCE(SUM(CASE WHEN nodes.status <> ? THEN 1 ELSE 0 END), 0),
+       COALESCE(SUM(CASE WHEN nodes.status = ? THEN 1 ELSE 0 END), 0)
+FROM ip_batches AS batches
+LEFT JOIN ip_batch_nodes AS batch_nodes ON batch_nodes.batch_id = batches.batch_id
+LEFT JOIN nodes ON nodes.id = batch_nodes.node_id AND nodes.scope = 'guard'
+GROUP BY batches.batch_id, batches.sequence_number, batches.created_at, batches.total_count, batches.duplicate_count, batches.input_error_count
+ORDER BY batches.sequence_number DESC, batches.created_at DESC, batches.batch_id DESC
+LIMIT ?`, statusUninspected, statusHealthy, maxIPBatches)
+	if err != nil {
+		return nil, fmt.Errorf("list IP batches: %w", err)
+	}
+	defer rows.Close()
+	items := make([]ipBatch, 0)
+	for rows.Next() {
+		var item ipBatch
+		if err := rows.Scan(&item.ID, &item.SequenceNumber, &item.CreatedAt, &item.TotalCount, &item.DuplicateCount, &item.InputErrorCount, &item.CompletedCount, &item.InitialConnectedCount); err != nil {
+			return nil, fmt.Errorf("scan IP batch: %w", err)
+		}
+		item.RealtimeConnectedCount = item.InitialConnectedCount
+		items = append(items, item)
+	}
+	return items, rows.Err()
+}
+
+func (store *guardianStore) listIPBatchNodes(batchID string) ([]proxyNode, error) {
+	rows, err := store.database.Query(`
+SELECT nodes.id, nodes.address, nodes.protocol, nodes.host, nodes.port, nodes.status, nodes.latency_ms, nodes.exit_ip, nodes.country, nodes.last_checked, nodes.last_error, nodes.created_at
+FROM nodes
+INNER JOIN ip_batch_nodes ON ip_batch_nodes.node_id = nodes.id
+WHERE ip_batch_nodes.batch_id = ? AND nodes.scope = 'guard'
+ORDER BY nodes.id DESC`, batchID)
+	if err != nil {
+		return nil, fmt.Errorf("list IP batch nodes: %w", err)
+	}
+	defer rows.Close()
+	items := make([]proxyNode, 0)
+	for rows.Next() {
+		var item proxyNode
+		if err := rows.Scan(&item.ID, &item.Address, &item.Protocol, &item.Host, &item.Port, &item.Status, &item.LatencyMS, &item.ExitIP, &item.Country, &item.LastChecked, &item.LastError, &item.CreatedAt); err != nil {
+			return nil, fmt.Errorf("scan IP batch node: %w", err)
+		}
+		items = append(items, item)
+	}
+	return items, rows.Err()
+}
+
 func (store *guardianStore) listNodes() ([]proxyNode, error) {
-	rows, err := store.database.Query(`SELECT id, address, protocol, host, port, status, latency_ms, exit_ip, country, last_checked, last_error, created_at FROM nodes ORDER BY id DESC`)
+	rows, err := store.database.Query(`SELECT id, address, protocol, host, port, status, latency_ms, exit_ip, country, last_checked, last_error, created_at FROM nodes WHERE scope = 'inspection' ORDER BY id DESC`)
 	if err != nil {
 		return nil, fmt.Errorf("list nodes: %w", err)
 	}
@@ -559,7 +749,7 @@ func (store *guardianStore) markInspectionFailed(runID, healthy, unhealthy int64
 
 func (store *guardianStore) getNode(id int64) (proxyNode, bool, error) {
 	var item proxyNode
-	err := store.database.QueryRow(`SELECT id, address, protocol, host, port, status, latency_ms, exit_ip, country, last_checked, last_error, created_at FROM nodes WHERE id = ?`, id).Scan(&item.ID, &item.Address, &item.Protocol, &item.Host, &item.Port, &item.Status, &item.LatencyMS, &item.ExitIP, &item.Country, &item.LastChecked, &item.LastError, &item.CreatedAt)
+	err := store.database.QueryRow(`SELECT id, address, protocol, host, port, status, latency_ms, exit_ip, country, last_checked, last_error, created_at FROM nodes WHERE id = ? AND scope = 'inspection'`, id).Scan(&item.ID, &item.Address, &item.Protocol, &item.Host, &item.Port, &item.Status, &item.LatencyMS, &item.ExitIP, &item.Country, &item.LastChecked, &item.LastError, &item.CreatedAt)
 	if err == sql.ErrNoRows {
 		return proxyNode{}, false, nil
 	}
@@ -578,7 +768,7 @@ func (store *guardianStore) deleteNode(id int64) error {
 	if _, err := tx.Exec(`UPDATE auth_bindings SET node_id = 0, proxy_url = '' WHERE node_id = ?`, id); err != nil {
 		return fmt.Errorf("clear node bindings: %w", err)
 	}
-	result, err := tx.Exec(`DELETE FROM nodes WHERE id = ?`, id)
+	result, err := tx.Exec(`DELETE FROM nodes WHERE id = ? AND scope = 'inspection'`, id)
 	if err != nil {
 		return fmt.Errorf("delete node: %w", err)
 	}
@@ -597,7 +787,7 @@ func (store *guardianStore) deleteNode(id int64) error {
 
 func (store *guardianStore) updateNodeResult(result inspectionResult) error {
 	result.Error = sanitizeLogText(result.Error)
-	_, err := store.database.Exec(`UPDATE nodes SET status = ?, latency_ms = ?, exit_ip = ?, country = ?, last_checked = ?, last_error = ? WHERE id = ?`, result.Status, result.LatencyMS, result.ExitIP, result.Country, result.CheckedAt, result.Error, result.NodeID)
+	_, err := store.database.Exec(`UPDATE nodes SET status = ?, latency_ms = ?, exit_ip = ?, country = ?, last_checked = ?, last_error = ? WHERE id = ? AND scope = 'inspection'`, result.Status, result.LatencyMS, result.ExitIP, result.Country, result.CheckedAt, result.Error, result.NodeID)
 	if err != nil {
 		return fmt.Errorf("update node result: %w", err)
 	}
@@ -700,7 +890,7 @@ func (store *guardianStore) observeAuthAttempt(authIndex, authName, proxyURL str
 	redactedProxy := redactProxyURL(proxyURL)
 	nodeID := int64(0)
 	if redactedProxy != "" {
-		_ = store.database.QueryRow(`SELECT id FROM nodes WHERE address = ?`, redactedProxy).Scan(&nodeID)
+		_ = store.database.QueryRow(`SELECT id FROM nodes WHERE address = ? AND scope = 'inspection'`, redactedProxy).Scan(&nodeID)
 	}
 	now := time.Now().UnixMilli()
 	_, err := store.database.Exec(`INSERT INTO auth_bindings(auth_index, auth_name, node_id, proxy_url, status, updated_at, last_checked)
@@ -713,7 +903,7 @@ ON CONFLICT(auth_index) DO UPDATE SET auth_name=CASE WHEN excluded.auth_name <> 
 }
 
 func (store *guardianStore) listAuthBindings(inspectionRunID int64) ([]authBinding, error) {
-	rows, err := store.database.Query(`SELECT auth_bindings.auth_index, auth_bindings.auth_name, auth_bindings.node_id, auth_bindings.proxy_url, COALESCE(nodes.exit_ip, ''), auth_bindings.status, auth_bindings.priority, auth_bindings.success_count, auth_bindings.failed_count, auth_bindings.updated_at, auth_bindings.last_checked, auth_bindings.inspection_run_id, auth_bindings.account_type, auth_bindings.schedule_group, auth_bindings.last_inspection FROM auth_bindings LEFT JOIN nodes ON nodes.id = auth_bindings.node_id WHERE auth_bindings.inspection_run_id = ? ORDER BY auth_bindings.priority DESC, auth_bindings.auth_name ASC`, inspectionRunID)
+	rows, err := store.database.Query(`SELECT auth_bindings.auth_index, auth_bindings.auth_name, auth_bindings.node_id, auth_bindings.proxy_url, COALESCE(nodes.exit_ip, ''), auth_bindings.status, auth_bindings.priority, auth_bindings.success_count, auth_bindings.failed_count, auth_bindings.updated_at, auth_bindings.last_checked, auth_bindings.inspection_run_id, auth_bindings.account_type, auth_bindings.schedule_group, auth_bindings.last_inspection FROM auth_bindings LEFT JOIN nodes ON nodes.id = auth_bindings.node_id AND nodes.scope = 'inspection' WHERE auth_bindings.inspection_run_id = ? ORDER BY auth_bindings.priority DESC, auth_bindings.auth_name ASC`, inspectionRunID)
 	if err != nil {
 		return nil, fmt.Errorf("list auth bindings: %w", err)
 	}
@@ -822,7 +1012,7 @@ func (store *guardianStore) listDegradations() ([]degradationState, error) {
 }
 
 func (store *guardianStore) summary() (map[string]any, error) {
-	rows, err := store.database.Query(`SELECT status, COUNT(*) FROM nodes GROUP BY status`)
+	rows, err := store.database.Query(`SELECT status, COUNT(*) FROM nodes WHERE scope = 'inspection' GROUP BY status`)
 	if err != nil {
 		return nil, fmt.Errorf("read node summary: %w", err)
 	}

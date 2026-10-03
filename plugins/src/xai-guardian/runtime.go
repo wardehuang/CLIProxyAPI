@@ -169,6 +169,29 @@ func (controller *runtimeController) api(method, path string, query url.Values, 
 	if method == http.MethodPost && path == "/api/nodes" {
 		return controller.addNodes(store, body)
 	}
+	if method == http.MethodGet && path == "/api/batch-nodes" {
+		nodes, err := store.listIPNodes()
+		return jsonAPIResult(publicNodes(nodes), err)
+	}
+	if method == http.MethodGet && path == "/api/batches" {
+		batches, err := store.listIPBatches()
+		if err != nil {
+			return http.StatusInternalServerError, nil, err
+		}
+		return jsonAPIResult(map[string]any{"items": publicIPBatches(batches), "total": len(batches), "max": maxIPBatches}, nil)
+	}
+	if method == http.MethodPost && path == "/api/batches" {
+		return controller.addIPBatch(store, body)
+	}
+	parts := strings.Split(strings.Trim(path, "/"), "/")
+	if method == http.MethodGet && len(parts) == 4 && parts[0] == "api" && parts[1] == "batches" && parts[3] == "nodes" {
+		batchID := strings.TrimSpace(parts[2])
+		if batchID == "" {
+			return http.StatusBadRequest, nil, fmt.Errorf("batch ID is required")
+		}
+		nodes, err := store.listIPBatchNodes(batchID)
+		return jsonAPIResult(map[string]any{"batchId": batchID, "items": publicNodes(nodes), "total": len(nodes)}, err)
+	}
 	if method == http.MethodGet && path == "/api/inspection" {
 		return controller.inspectionAPI(store)
 	}
@@ -295,6 +318,33 @@ func (controller *runtimeController) addNodes(store *guardianStore, body []byte)
 	return jsonAPIResult(map[string]any{"added": added, "duplicates": duplicates, "errors": errors}, nil)
 }
 
+func (controller *runtimeController) addIPBatch(store *guardianStore, body []byte) (int, []byte, error) {
+	var payload struct {
+		Text string `json:"text"`
+		IPs  string `json:"ips"`
+	}
+	if err := json.Unmarshal(body, &payload); err != nil {
+		return http.StatusBadRequest, nil, err
+	}
+	text := strings.TrimSpace(payload.Text)
+	if text == "" {
+		text = strings.TrimSpace(payload.IPs)
+	}
+	if text == "" {
+		return http.StatusBadRequest, nil, fmt.Errorf("at least one IP is required")
+	}
+	nodes, inputErrors := parseProxyLines(text)
+	if len(nodes) == 0 {
+		return http.StatusBadRequest, nil, fmt.Errorf("no valid proxy nodes")
+	}
+	batchID, added, duplicates, err := store.insertIPBatch(nodes, len(inputErrors))
+	if err != nil {
+		return http.StatusInternalServerError, nil, err
+	}
+	_ = store.appendLog(logLevelInfo, "ip_batch.created", "降智守护 IP 批次已创建", fmt.Sprintf("批次 %s，新增 %d，重复 %d，格式错误 %d", batchID, added, duplicates, len(inputErrors)))
+	return jsonAPIResult(map[string]any{"batchId": batchID, "added": added, "duplicates": duplicates, "errors": inputErrors}, nil)
+}
+
 func jsonAPIResult(value any, err error) (int, []byte, error) {
 	if err != nil {
 		return http.StatusInternalServerError, nil, err
@@ -311,6 +361,25 @@ func publicNodes(nodes []proxyNode) []map[string]any {
 	items := make([]map[string]any, 0, len(nodes))
 	for _, node := range nodes {
 		items = append(items, map[string]any{"id": node.ID, "address": redactProxyURL(node.Address), "protocol": node.Protocol, "host": node.Host, "port": node.Port, "status": node.Status, "latencyMs": node.LatencyMS, "exitIp": node.ExitIP, "country": node.Country, "lastChecked": node.LastChecked, "lastError": sanitizeLogText(node.LastError), "createdAt": node.CreatedAt})
+	}
+	return items
+}
+
+func publicIPBatches(batches []ipBatch) []map[string]any {
+	items := make([]map[string]any, 0, len(batches))
+	for _, batch := range batches {
+		items = append(items, map[string]any{
+			"batchId":                batch.ID,
+			"sequenceNumber":         batch.SequenceNumber,
+			"createdAt":              batch.CreatedAt,
+			"totalCount":             batch.TotalCount,
+			"duplicateCount":         batch.DuplicateCount,
+			"inputErrorCount":        batch.InputErrorCount,
+			"completedCount":         batch.CompletedCount,
+			"pendingCount":           batch.TotalCount - batch.CompletedCount,
+			"initialConnectedCount":  batch.InitialConnectedCount,
+			"realtimeConnectedCount": batch.RealtimeConnectedCount,
+		})
 	}
 	return items
 }

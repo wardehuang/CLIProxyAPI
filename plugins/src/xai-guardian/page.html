@@ -246,8 +246,12 @@
     .panel-title { margin: 0; font-size: 19px; font-weight: 700; letter-spacing: -.02em; }
     .panel-subtitle { margin: 6px 0 0; color: var(--text-secondary); font-size: 13px; line-height: 1.6; }
     .panel-extra { display: flex; flex-wrap: wrap; align-items: center; justify-content: flex-end; gap: 8px; }
-    .server-summary-grid, .guard-summary-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px; }
-    .guard-summary-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+    .guard-tabs { display: flex; flex-wrap: wrap; align-items: center; gap: 4px; width: max-content; max-width: 100%; padding: 4px; border: 1px solid var(--border-color); border-radius: 14px; background: var(--bg-tertiary); }
+    .guard-tab { min-height: 40px; padding: 0 24px; border: 1px solid transparent; border-radius: 12px; color: var(--text-secondary); background: transparent; font-weight: 700; cursor: pointer; white-space: nowrap; }
+    .guard-tab:hover, .guard-tab.active { border-color: color-mix(in srgb, var(--primary-color) 32%, var(--border-color)); color: var(--primary-color); background: color-mix(in srgb, var(--primary-color) 13%, var(--bg-primary)); }
+    .guard-subview { display: none; min-width: 0; }
+    .guard-subview.active { display: grid; gap: 14px; }
+    .server-summary-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px; }
     .server-input-panel, .settings-panel, .run-panel, .logs-panel { display: grid; gap: 12px; padding: 18px; border: 1px solid var(--border-color); border-radius: 18px; background: var(--bg-primary); }
     .node-input { width: 100%; min-height: 112px; resize: vertical; padding: 12px 14px; border: 1px solid var(--border-color); border-radius: 12px; outline: none; background: var(--bg-tertiary); color: var(--text-primary); line-height: 1.6; }
     .help-text { color: var(--text-tertiary); font-size: 12px; }
@@ -270,6 +274,15 @@
     .level-warn { color: var(--warning-color); }
     .level-error { color: var(--danger-color); }
 
+    .modal-layer { position: fixed; inset: 0; z-index: 12; display: grid; place-items: center; padding: 20px; background: rgba(2, 6, 23, .68); backdrop-filter: blur(4px); }
+    .modal { display: grid; width: min(620px, 100%); gap: 16px; padding: 22px; border: 1px solid var(--border-primary); border-radius: 20px; background: var(--bg-primary); box-shadow: var(--shadow-lg); }
+    .modal-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; }
+    .modal-head h2 { margin: 0; font-size: 19px; }
+    .modal-head p { margin: 6px 0 0; color: var(--text-secondary); font-size: 13px; }
+    .modal-body { display: grid; gap: 12px; }
+    .modal-input { width: 100%; min-height: 180px; resize: vertical; padding: 12px 14px; border: 1px solid var(--border-color); border-radius: 12px; outline: none; background: var(--bg-tertiary); color: var(--text-primary); line-height: 1.6; }
+    .modal-input:focus { border-color: var(--primary-color); box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--primary-color) 24%, transparent); }
+    .modal-actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 8px; }
     .overlay { position: fixed; inset: 0; z-index: 10; display: grid; place-items: center; padding: 20px; background: rgba(2, 6, 23, .68); backdrop-filter: blur(4px); }
     .operation-card { display: grid; width: min(460px, 100%); gap: 8px; padding: 22px; border: 1px solid var(--border-primary); border-radius: 18px; background: var(--bg-primary); box-shadow: var(--shadow-lg); text-align: center; }
     .operation-card strong { font-size: 15px; }
@@ -289,7 +302,9 @@
       .segmented-tabs { width: 100%; }
       .segmented-tab { flex: 1 1 0; padding-inline: 10px; }
       .mode-switch-copy { margin: 10px 2px 2px; }
-      .summary-grid, .server-summary-grid, .guard-summary-grid, .settings-grid, .detail-grid, .run-summary { grid-template-columns: 1fr; }
+      .summary-grid, .server-summary-grid, .settings-grid, .detail-grid, .run-summary { grid-template-columns: 1fr; }
+      .guard-tabs { width: 100%; }
+      .guard-tab { flex: 1 1 0; padding-inline: 10px; }
       .account-panel, .server-panel, .guard-panel { padding: 12px; border-radius: 18px; }
       .data-header { align-items: stretch; }
       .data-actions { justify-content: flex-start; }
@@ -357,7 +372,7 @@
           <div class="panel-header">
             <div>
               <h2 class="panel-title">服务端巡检</h2>
-              <p class="panel-subtitle">录入代理节点并执行出口 IP、国家和连通性检查。</p>
+              <p class="panel-subtitle">维护服务端巡检节点，执行出口 IP、国家和连通性检查。</p>
             </div>
             <div class="panel-extra"><button class="primary-button" id="run-inspection" type="button">立即巡检</button><button class="secondary-button" id="refresh-inspection" type="button">刷新</button></div>
           </div>
@@ -366,7 +381,7 @@
           <div id="node-message" class="message"></div>
         </div>
         <div class="data-panel">
-          <div class="data-header"><div><strong>节点状态</strong><div class="subline">当前插件 SQLite 中保存的巡检节点</div></div></div>
+          <div class="data-header"><div><strong>节点状态</strong><div class="subline">当前插件 SQLite 中保存的服务端巡检节点</div></div></div>
           <div id="nodes-error" class="message error hidden"></div>
           <div class="table-wrap" id="nodes-table"></div>
         </div>
@@ -379,37 +394,93 @@
 
     <section class="view" data-view="guard" role="tabpanel">
       <section class="panel guard-panel">
-        <div class="guard-summary-grid" id="guard-summary"></div>
-        <div class="settings-panel">
-          <div class="panel-header">
-            <div><h2 class="panel-title">守护策略</h2><p class="panel-subtitle">实时守护由 CPA 核心执行；插件负责保存策略和返回 flush、retry、fail action。</p></div>
-            <div class="panel-extra"><button class="primary-button" id="save-settings" type="button">保存</button><button class="secondary-button" id="refresh-guard" type="button">刷新</button></div>
+        <nav class="guard-tabs" role="tablist" aria-label="降智守护子页签">
+          <button class="guard-tab active" type="button" role="tab" aria-selected="true" data-guard-tab="ips">IP列表</button>
+          <button class="guard-tab" type="button" role="tab" aria-selected="false" data-guard-tab="batches">批次查看</button>
+          <button class="guard-tab" type="button" role="tab" aria-selected="false" data-guard-tab="logs">日志</button>
+          <button class="guard-tab" type="button" role="tab" aria-selected="false" data-guard-tab="settings">配置</button>
+        </nav>
+
+        <section class="guard-subview active" data-guard-view="ips" role="tabpanel">
+          <div class="data-panel">
+            <div class="data-header">
+              <div><strong>IP列表</strong><div class="subline">显示通过【增加IP】录入的降智守护 IP；服务端巡检在独立页签执行。</div></div>
+              <div class="data-actions"><button class="primary-button" id="add-ip" type="button">增加IP</button><button class="secondary-button" id="refresh-guard-ips" type="button">刷新</button></div>
+            </div>
+            <div id="guard-ip-error" class="message error hidden"></div>
+            <div class="table-wrap" id="guard-nodes-table"></div>
           </div>
-          <div class="settings-grid">
-            <div class="settings-field"><label for="inspection-interval">自动巡检间隔（秒，0=关闭）</label><input class="settings-input" id="inspection-interval" type="number" min="0"></div>
-            <div class="settings-field"><label for="first-payload-timeout">首个 payload 超时（秒）</label><input class="settings-input" id="first-payload-timeout" type="number" min="1"></div>
-            <div class="settings-field"><label for="progress-timeout">无进展超时（秒）</label><input class="settings-input" id="progress-timeout" type="number" min="1"></div>
-            <div class="settings-field"><label for="min-summary-chars">最小思考摘要字符数</label><input class="settings-input" id="min-summary-chars" type="number" min="1"></div>
-            <div class="settings-field"><label for="min-encrypted-bytes">最小加密思考字节数</label><input class="settings-input" id="min-encrypted-bytes" type="number" min="1"></div>
-            <div class="settings-field"><label for="encrypted-bytes-per-token">每个思考 token 的加密字节数</label><input class="settings-input" id="encrypted-bytes-per-token" type="number" min="1"></div>
-            <div class="settings-field"><label for="min-output-tokens">最小输出 token 数</label><input class="settings-input" id="min-output-tokens" type="number" min="1"></div>
-            <div class="settings-field"><label for="hard-tps">硬 TPS 阈值</label><input class="settings-input" id="hard-tps" type="number" min="1"></div>
+        </section>
+
+        <section class="guard-subview" data-guard-view="batches" role="tabpanel" hidden>
+          <div class="data-panel">
+            <div class="data-header">
+              <div><strong>批次查看</strong><div class="subline">查看以前通过【增加IP】创建的批次及其节点结果，不显示服务端巡检批次。</div></div>
+              <div class="data-actions"><button class="secondary-button" id="refresh-batches" type="button">刷新</button><button class="secondary-button" id="batch-back" type="button" hidden>返回批次列表</button></div>
+            </div>
+            <div id="batch-message" class="message error hidden"></div>
+            <div class="table-wrap" id="batches-table"></div>
           </div>
-          <div class="help-text">单请求重试上限由 CPA 核心统一控制，插件不重复限制。TTFB 仅采集，不作为降智拦截条件。</div>
-          <div id="settings-message" class="message"></div>
-        </div>
-        <div class="data-panel">
-          <div class="data-header"><div><strong>降智状态</strong><div class="subline">清除只删除插件本地降智记录，不修改 CPA 认证优先级或认证文件。</div></div></div>
-          <div id="guard-error" class="message error hidden"></div>
-          <div class="table-wrap" id="guard-table"></div>
-        </div>
-        <div class="logs-panel">
-          <div class="panel-header"><div><h2 class="panel-title">插件日志</h2><p class="panel-subtitle">日志内容经过脱敏处理。</p></div></div>
-          <div class="table-wrap" id="logs-table"></div>
-        </div>
+        </section>
+
+        <section class="guard-subview" data-guard-view="logs" role="tabpanel" hidden>
+          <div class="data-panel">
+            <div class="data-header"><div><strong>降智记录</strong><div class="subline">清除只删除插件本地降智记录，不修改 CPA 认证优先级或认证文件。</div></div></div>
+            <div id="guard-error" class="message error hidden"></div>
+            <div class="table-wrap" id="guard-table"></div>
+          </div>
+          <div class="logs-panel">
+            <div class="panel-header"><div><h2 class="panel-title">日志</h2><p class="panel-subtitle">日志内容经过脱敏处理。</p></div></div>
+            <div class="table-wrap" id="logs-table"></div>
+          </div>
+        </section>
+
+        <section class="guard-subview" data-guard-view="settings" role="tabpanel" hidden>
+          <div class="settings-panel">
+            <div class="panel-header">
+              <div><h2 class="panel-title">配置</h2><p class="panel-subtitle">实时守护由 CPA 核心执行；插件负责保存策略和返回 flush、retry、fail action。</p></div>
+              <div class="panel-extra"><button class="primary-button" id="save-settings" type="button">保存</button><button class="secondary-button" id="refresh-guard" type="button">刷新</button></div>
+            </div>
+            <div class="settings-grid">
+              <div class="settings-field"><label for="inspection-interval">自动巡检间隔（秒，0=关闭）</label><input class="settings-input" id="inspection-interval" type="number" min="0"></div>
+              <div class="settings-field"><label for="first-payload-timeout">首个 payload 超时（秒）</label><input class="settings-input" id="first-payload-timeout" type="number" min="1"></div>
+              <div class="settings-field"><label for="progress-timeout">无进展超时（秒）</label><input class="settings-input" id="progress-timeout" type="number" min="1"></div>
+              <div class="settings-field"><label for="min-summary-chars">最小思考摘要字符数</label><input class="settings-input" id="min-summary-chars" type="number" min="1"></div>
+              <div class="settings-field"><label for="min-encrypted-bytes">最小加密思考字节数</label><input class="settings-input" id="min-encrypted-bytes" type="number" min="1"></div>
+              <div class="settings-field"><label for="encrypted-bytes-per-token">每个思考 token 的加密字节数</label><input class="settings-input" id="encrypted-bytes-per-token" type="number" min="1"></div>
+              <div class="settings-field"><label for="min-output-tokens">最小输出 token 数</label><input class="settings-input" id="min-output-tokens" type="number" min="1"></div>
+              <div class="settings-field"><label for="hard-tps">硬 TPS 阈值</label><input class="settings-input" id="hard-tps" type="number" min="1"></div>
+            </div>
+            <div class="help-text">单请求重试上限由 CPA 核心统一控制，插件不重复限制。TTFB 仅采集，不作为降智拦截条件。</div>
+            <div id="settings-message" class="message"></div>
+          </div>
+        </section>
       </section>
     </section>
   </main>
+
+  <div class="modal-layer" id="add-ip-modal" hidden>
+    <section class="modal" role="dialog" aria-modal="true" aria-labelledby="add-ip-modal-title">
+      <div class="modal-head">
+        <div>
+          <h2 id="add-ip-modal-title">增加IP</h2>
+          <p>每一行录入一个代理 IP；提交后生成独立批次。代理凭据不接受、不保存。</p>
+        </div>
+        <button class="secondary-button" type="button" data-close-modal="add-ip-modal" aria-label="关闭">关闭</button>
+      </div>
+      <div class="modal-body">
+        <textarea class="modal-input" id="ip-input" placeholder="http://203.0.113.10:8080
+socks5://203.0.113.11:1080
+203.0.113.12:8080,203.0.113.12,8080,http"></textarea>
+        <div class="help-text">支持 http、https、socks5、socks5h URL；也支持 host:port,出口IP,port,protocol。格式错误行不会写入数据库。</div>
+        <div id="add-ip-message" class="message"></div>
+        <div class="modal-actions">
+          <button class="secondary-button" type="button" data-close-modal="add-ip-modal">取消</button>
+          <button class="primary-button" id="submit-add-ip" type="button">录入</button>
+        </div>
+      </div>
+    </section>
+  </div>
 
   <script>
   (() => {
@@ -438,9 +509,9 @@
       window.parent.postMessage({type:'cpa-plugin-api-request', requestId, endpoint:apiEndpoint, method:'POST', body:payload}, '*');
     });
     const state = {
-      accounts: [], nodes: [], degradation: [], logs: [], settings: null,
+      accounts: [], nodes: [], guardNodes: [], batches: [], batchNodes: [], degradation: [], logs: [], settings: null,
       inspection: {run: null, results: []}, summary: null,
-      mode: 'accounts', filter: 'all', mask: 'full', page: 1, pageSize: 100,
+      mode: 'accounts', guardTab: 'ips', selectedBatchID: '', filter: 'all', mask: 'full', page: 1, pageSize: 100,
       keyword: '', expandedAccount: '', busy: false
     };
     const $ = (id) => document.getElementById(id);
@@ -500,7 +571,7 @@
     function renderMode() {
       const descriptions = {
         accounts: ['账号状态', '仅显示最后一次服务端巡检快照；未运行巡检时不显示当前 CPA 账号清单。'],
-        inspection: ['服务端巡检', '录入服务端代理节点，执行出口 IP、国家和连通性检查。'],
+        inspection: ['服务端巡检', '维护服务端巡检节点，执行出口 IP、国家和连通性检查。'],
         guard: ['降智守护', '查看降智记录、守护策略和插件日志。']
       };
       document.querySelectorAll('[data-mode]').forEach((button) => {
@@ -511,6 +582,19 @@
       document.querySelectorAll('[data-view]').forEach((view) => view.classList.toggle('active', view.dataset.view === state.mode));
       $('mode-title').textContent = descriptions[state.mode][0];
       $('mode-description').textContent = descriptions[state.mode][1];
+    }
+
+    function renderGuardTab() {
+      document.querySelectorAll('[data-guard-tab]').forEach((button) => {
+        const active = button.dataset.guardTab === state.guardTab;
+        button.classList.toggle('active', active);
+        button.setAttribute('aria-selected', String(active));
+      });
+      document.querySelectorAll('[data-guard-view]').forEach((view) => {
+        const active = view.dataset.guardView === state.guardTab;
+        view.classList.toggle('active', active);
+        view.hidden = !active;
+      });
     }
 
     function renderAccountSummary() {
@@ -570,13 +654,30 @@
       const run = state.inspection.run;
       if (!run) { $('inspection-run').innerHTML = '<div class="help-text">尚未运行巡检。</div>'; $('run-updated').textContent = '尚未运行'; return; }
       $('run-updated').textContent = `完成于 ${formatDate(run.completedAt || run.startedAt)}`;
-      $('inspection-run').innerHTML = `<div class="run-summary"><div class="run-stat"><small>状态</small><strong>${escapeHTML(run.status)}</strong></div><div class="run-stat"><small>实际检查</small><strong>${run.total}</strong></div><div class="run-stat"><small>健康</small><strong>${run.healthy}</strong></div><div class="run-stat"><small>异常</small><strong>${run.unhealthy}</strong></div></div><div class="help-text">开始：${formatFullDate(run.startedAt)}　完成：${formatFullDate(run.completedAt)}</div>`;
+      const results = state.inspection.results || [];
+      const rows = results.map((item) => `<tr><td><span class="number-badge">#${item.nodeId}</span></td><td><span class="node-status ${nodeTone(item.status)}">${nodeLabel(item.status)}</span></td><td>${item.latencyMs ? escapeHTML(item.latencyMs) + ' ms' : '—'}</td><td class="mono">${escapeHTML(item.exitIp || '—')}</td><td>${escapeHTML(item.country || '—')}</td><td>${item.error ? escapeHTML(item.error) : '—'}</td><td>${formatDate(item.checkedAt)}</td></tr>`).join('');
+      $('inspection-run').innerHTML = `<div class="run-summary"><div class="run-stat"><small>批次 ID</small><strong>${run.id}</strong></div><div class="run-stat"><small>状态</small><strong>${escapeHTML(run.status)}</strong></div><div class="run-stat"><small>实际检查</small><strong>${run.total}</strong></div><div class="run-stat"><small>健康 / 异常</small><strong>${run.healthy} / ${run.unhealthy}</strong></div></div><div class="help-text">开始：${formatFullDate(run.startedAt)}　完成：${formatFullDate(run.completedAt)}</div><div class="table-wrap"><table class="data-table node-table"><thead><tr><th>节点 ID</th><th>状态</th><th>延迟</th><th>出口 IP</th><th>国家</th><th>错误</th><th>检查时间</th></tr></thead><tbody>${rows || '<tr><td class="empty-cell" colspan="7">本批次没有完成的节点检查。</td></tr>'}</tbody></table></div>`;
     }
 
-    function renderGuardSummary() {
-      const errors = state.logs.filter((item) => item.level === 'error').length;
-      const cards = [['降智账号', state.degradation.length, '!', 'red'], ['累计记录', state.degradation.reduce((sum, item) => sum + (numberValue(item.count) || 0), 0), 'D', 'violet'], ['错误日志', errors, 'L', 'amber']];
-      $('guard-summary').innerHTML = cards.map((card) => `<article class="summary-card tone-${card[3]}"><div class="summary-header"><span class="summary-icon">${card[2]}</span><span class="summary-label">${card[0]}</span></div><strong class="summary-value">${card[1]}</strong></article>`).join('');
+    function renderGuardNodes() {
+      const rows = state.guardNodes.map((node) => `<tr><td><span class="number-badge">#${node.id}</span></td><td><div class="node-cell"><strong class="mono">${escapeHTML(node.address || '—')}</strong>${node.lastError ? `<span class="subline">${escapeHTML(node.lastError)}</span>` : ''}</div></td><td><span class="node-status ${nodeTone(node.status)}">${nodeLabel(node.status)}</span></td><td>${node.latencyMs ? escapeHTML(node.latencyMs) + ' ms' : '—'}</td><td class="mono">${escapeHTML(node.exitIp || '—')}</td><td>${escapeHTML(node.country || '—')}</td><td>${formatDate(node.createdAt)}</td></tr>`).join('');
+      $('guard-nodes-table').innerHTML = `<table class="data-table node-table"><thead><tr><th>ID</th><th>节点地址</th><th>状态</th><th>延迟</th><th>出口 IP</th><th>国家</th><th>录入时间</th></tr></thead><tbody>${rows || '<tr><td class="empty-cell" colspan="7">暂无通过【增加IP】录入的 IP。</td></tr>'}</tbody></table>`;
+    }
+
+    function renderBatches() {
+      const batch = state.batches.find((item) => item.batchId === state.selectedBatchID);
+      $('batch-back').hidden = !batch;
+      if (batch) {
+        const rows = state.batchNodes.map((node) => `<tr><td><span class="number-badge">#${node.id}</span></td><td class="mono">${escapeHTML(node.address || '—')}</td><td><span class="node-status ${nodeTone(node.status)}">${nodeLabel(node.status)}</span></td><td>${node.latencyMs ? escapeHTML(node.latencyMs) + ' ms' : '—'}</td><td class="mono">${escapeHTML(node.exitIp || '—')}</td><td>${escapeHTML(node.country || '—')}</td><td>${formatDate(node.lastChecked)}</td></tr>`).join('');
+        $('batches-table').innerHTML = `<div class="help-text">批次 ${escapeHTML(batch.batchId)}：新增 ${batch.totalCount} 个，重复 ${batch.duplicateCount} 个，格式错误 ${batch.inputErrorCount} 行；已完成 ${batch.completedCount} 个，当前健康 ${batch.realtimeConnectedCount} 个。</div><table class="data-table node-table"><thead><tr><th>ID</th><th>节点地址</th><th>状态</th><th>延迟</th><th>出口 IP</th><th>国家</th><th>最近检查</th></tr></thead><tbody>${rows || '<tr><td class="empty-cell" colspan="7">该批次没有新增节点。</td></tr>'}</tbody></table>`;
+        return;
+      }
+      if (!state.batches.length) {
+        $('batches-table').innerHTML = '<div class="help-text">暂无通过【增加IP】创建的批次。</div>';
+        return;
+      }
+      const rows = state.batches.map((item) => `<tr><td class="mono">${escapeHTML(item.batchId)}</td><td>${formatDate(item.createdAt)}</td><td class="mono">${item.totalCount}</td><td class="mono">${item.duplicateCount}</td><td class="mono">${item.inputErrorCount}</td><td class="mono">${item.completedCount}</td><td class="mono">${item.realtimeConnectedCount}</td><td><button class="secondary-button" type="button" data-batch-id="${escapeHTML(item.batchId)}">查看节点</button></td></tr>`).join('');
+      $('batches-table').innerHTML = `<div class="help-text">共 ${state.batches.length} 个批次，最多保留 ${state.batches.length ? state.batches.length : 0} 个已记录批次。</div><table class="data-table node-table"><thead><tr><th>批次 ID</th><th>录入时间</th><th>新增</th><th>重复</th><th>格式错误</th><th>已完成</th><th>当前健康</th><th>操作</th></tr></thead><tbody>${rows}</tbody></table>`;
     }
 
     function renderSettings() {
@@ -588,7 +689,6 @@
     function renderDegradation() {
       const rows = state.degradation.map((item) => `<tr><td><div class="account-cell"><strong>${escapeHTML(state.mask === 'masked' ? maskAccount(item.authName) : item.authName)}</strong><span class="subline">${escapeHTML(item.authIndex)}</span></div></td><td class="mono">${escapeHTML(item.authIndex)}</td><td><span class="status-badge status-bad">${item.count}</span></td><td><div class="log-cell"><strong>${escapeHTML(item.lastReason || '—')}</strong><span class="subline">冷却至 ${item.coolingUntil === -1 ? '永久' : formatFullDate(item.coolingUntil)}</span></div></td><td>${formatDate(item.lastSeen)}</td><td><button class="secondary-button" type="button" data-clear-auth="${escapeHTML(item.authIndex)}">清除</button></td></tr>`).join('');
       $('guard-table').innerHTML = `<table class="data-table guard-table"><thead><tr><th>账号</th><th>Auth Index</th><th>次数</th><th>最近原因</th><th>最近发生</th><th>操作</th></tr></thead><tbody>${rows || '<tr><td class="empty-cell" colspan="6">没有降智记录。</td></tr>'}</tbody></table>`;
-      renderGuardSummary();
     }
 
     function renderLogs() {
@@ -605,8 +705,27 @@
       catch (error) { setMessage('nodes-error', error.message, true); }
     }
     async function refreshGuard() {
-      try { const result = await Promise.all([api('/api/degradation'), api('/api/settings'), api('/api/logs')]); state.degradation = result[0]; state.settings = result[1]; state.logs = result[2]; setMessage('guard-error', ''); renderSettings(); renderDegradation(); renderLogs(); }
-      catch (error) { setMessage('guard-error', error.message, true); }
+      try {
+        const result = await Promise.all([api('/api/batch-nodes'), api('/api/batches'), api('/api/degradation'), api('/api/settings'), api('/api/logs')]);
+        state.guardNodes = result[0];
+        state.batches = result[1].items;
+        state.degradation = result[2];
+        state.settings = result[3];
+        state.logs = result[4];
+        state.batchNodes = state.selectedBatchID ? (await api(`/api/batches/${encodeURIComponent(state.selectedBatchID)}/nodes`)).items : [];
+        setMessage('guard-ip-error', '');
+        setMessage('batch-message', '');
+        setMessage('guard-error', '');
+        renderGuardNodes();
+        renderBatches();
+        renderSettings();
+        renderDegradation();
+        renderLogs();
+      } catch (error) {
+        setMessage('guard-ip-error', error.message, true);
+        setMessage('batch-message', error.message, true);
+        setMessage('guard-error', error.message, true);
+      }
     }
     async function refreshAll() { await Promise.all([refreshAccounts(), refreshInspection(), refreshGuard()]); }
 
@@ -624,13 +743,20 @@
     document.addEventListener('click', async (event) => {
       const target = event.target.closest('button');
       if (!target || state.busy) return;
-      if (target.dataset.mode) { state.mode = target.dataset.mode; renderMode(); return; }
+      if (target.dataset.closeModal) { $(target.dataset.closeModal).hidden = true; return; }
+      if (target.dataset.guardTab) { state.guardTab = target.dataset.guardTab; renderGuardTab(); return; }
+      if (target.dataset.mode) { state.mode = target.dataset.mode; renderMode(); renderGuardTab(); return; }
+      if (target.dataset.batchId) { state.selectedBatchID = target.dataset.batchId; state.batchNodes = (await api(`/api/batches/${encodeURIComponent(state.selectedBatchID)}/nodes`)).items; renderBatches(); return; }
       if (target.dataset.filter) { state.filter = target.dataset.filter; state.page = 1; document.querySelectorAll('[data-filter]').forEach((item) => item.classList.toggle('active', item.dataset.filter === state.filter)); renderAccountTable(); return; }
       if (target.dataset.mask) { state.mask = target.dataset.mask; document.querySelectorAll('[data-mask]').forEach((item) => item.classList.toggle('active', item.dataset.mask === state.mask)); renderAccountTable(); renderDegradation(); return; }
       if (target.dataset.deleteNode) { if (!window.confirm('确认删除这个巡检节点？')) return; setBusy(true, '删除节点中…'); try { await api(`/api/nodes/${target.dataset.deleteNode}/delete`, 'POST', {}); await refreshInspection(); setMessage('node-message', '节点已删除。'); } catch (error) { setMessage('node-message', error.message, true); } finally { setBusy(false); } return; }
       if (target.dataset.clearAuth) { setBusy(true, '清除降智记录中…'); try { await api('/api/degradation/clear', 'POST', {authIndex:target.dataset.clearAuth}); await refreshGuard(); await refreshAccounts(); setMessage('settings-message', '降智记录已清除。'); } catch (error) { setMessage('settings-message', error.message, true); } finally { setBusy(false); } return; }
+      if (target.id === 'add-ip') { $('add-ip-message').textContent = ''; $('add-ip-message').classList.add('hidden'); $('add-ip-modal').hidden = false; $('ip-input').focus(); return; }
+      if (target.id === 'submit-add-ip') { const text = $('ip-input').value.trim(); if (!text) { setMessage('add-ip-message', '请输入至少一行 IP。', true); return; } setBusy(true, '增加 IP 中…'); try { const result = await api('/api/batches', 'POST', {text}); const errorCount = Array.isArray(result.errors) ? result.errors.length : 0; $('ip-input').value = ''; $('add-ip-modal').hidden = true; await refreshInspection(); await refreshGuard(); setMessage('guard-ip-error', `已录入 ${result.added} 个 IP，重复 ${result.duplicates} 个${errorCount ? `，${errorCount} 行格式错误` : ''}。`, errorCount > 0); } catch (error) { setMessage('add-ip-message', error.message, true); } finally { setBusy(false); } return; }
+      if (target.id === 'batch-back') { state.selectedBatchID = ''; state.batchNodes = []; renderBatches(); return; }
       if (target.id === 'refresh-accounts') { await refreshAccounts(); return; }
       if (target.id === 'refresh-inspection') { await refreshInspection(); return; }
+      if (target.id === 'refresh-guard-ips' || target.id === 'refresh-batches') { await refreshGuard(); return; }
       if (target.id === 'refresh-guard') { await refreshGuard(); return; }
       if (target.id === 'run-inspection') { setBusy(true, '服务端巡检中…'); try { const text = $('node-input').value.trim(); if (text) { await api('/api/nodes', 'POST', {text}); $('node-input').value = ''; } await api('/api/inspection', 'POST', {}); await refreshInspection(); setMessage('node-message', '巡检完成。'); } catch (error) { setMessage('node-message', error.message, true); } finally { setBusy(false); } return; }
       if (target.id === 'save-settings') { const body = {inspectionIntervalSeconds:Number($('inspection-interval').value), firstPayloadTimeout:Number($('first-payload-timeout').value), progressTimeout:Number($('progress-timeout').value), minSummaryChars:Number($('min-summary-chars').value), minEncryptedBytes:Number($('min-encrypted-bytes').value), encryptedBytesPerToken:Number($('encrypted-bytes-per-token').value), minOutputTokens:Number($('min-output-tokens').value), hardTPS:Number($('hard-tps').value)}; setBusy(true, '保存策略中…'); try { state.settings = await api('/api/settings', 'PUT', body); renderSettings(); setMessage('settings-message', '配置已保存。'); } catch (error) { setMessage('settings-message', error.message, true); } finally { setBusy(false); } }
@@ -641,6 +767,8 @@
     $('account-page-prev').addEventListener('click', () => { if (state.page > 1) { state.page -= 1; renderAccountTable(); } });
     $('account-page-next').addEventListener('click', () => { state.page += 1; renderAccountTable(); });
     $('accounts-table').addEventListener('click', (event) => { const row = event.target.closest('tr[data-account]'); if (row && !event.target.closest('button')) { state.expandedAccount = state.expandedAccount === row.dataset.account ? '' : row.dataset.account; renderAccountTable(); } });
+    renderMode();
+    renderGuardTab();
     refreshAll();
   })();
   </script>
