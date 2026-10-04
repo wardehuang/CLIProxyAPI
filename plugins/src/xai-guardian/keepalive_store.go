@@ -17,8 +17,8 @@ func (store *guardianStore) ensureNodeScopeUniqueIndex() error {
 	legacyUniqueAddress := false
 	hasScopedUniqueIndex := false
 	for rows.Next() {
-		var sequence, isUnique, origin, partial int
-		var indexName string
+		var sequence, isUnique, partial int
+		var origin, indexName string
 		if err := rows.Scan(&sequence, &indexName, &isUnique, &origin, &partial); err != nil {
 			return fmt.Errorf("scan node index: %w", err)
 		}
