@@ -8,9 +8,11 @@
 - **服务端巡检**：维护服务端巡检节点，保存每轮巡检及结果；巡检运行批次只在本页签展示。
 - **降智守护**：接收 xAI stream completion，依据思考或工具行动证据决定 `flush`、`retry`、`fail`，保存降智次数和日志；页面包含 **IP列表**、**批次查看**、**日志**、**配置** 四个独立子页签。**批次查看**只展示通过【增加IP】创建的 IP 批次及其节点结果，配置不再使用弹窗。
 
-插件 SQLite 只保存配置、代理节点、增加 IP 批次及其节点关联、账号绑定元数据、巡检记录、日志和降智状态；服务端巡检节点与增加 IP 节点按 scope 分离。账号状态绑定带有巡检 run ID，禁止未关联巡检的数据进入账号状态 API。xAI token、Authorization header、密码和代理认证信息不写入 SQLite、不写入页面、不写入日志。
+插件 SQLite 只保存配置、代理节点、增加 IP 批次及其节点关联、账号绑定元数据、服务端巡检记录、keepalive 探测轮次及结果状态、日志和降智状态；服务端巡检节点与增加 IP 节点按 scope 分离。账号状态绑定带有巡检 run ID，禁止未关联巡检的数据进入账号状态 API。xAI token、Authorization header、密码和代理认证信息不写入 SQLite、不写入页面、不写入日志。
 
 插件通过 `host.auth.list` 临时读取 CPA 管理的认证元数据，并在巡检同步时通过 `host.auth.get` 只解析 `schedule_group`；认证值仍由 CPA 认证链管理，插件不向页面输出、不持久化认证值。
+
+IP 批次按 `created_at` 计算生命周期。`ip_batch_retention_days` 默认 `6`，可在【降智守护】→【配置】修改；API 会返回每个批次的 `expiresAt`。过期批次及其不再属于保留批次的 guard 节点，只在独立 keepalive worker 的保活探测轮次中删除，并写入脱敏日志；页面查询不会触发删除。服务端巡检 `runInspection` 不读取 guard scope、不创建 keepalive 轮次、不负责批次清理。keepalive worker 使用独立停止信号、调度状态、SQLite 轮次、节点 claim/结果写回和探测重试。
 
 旧插件中的第三方网关、健康保底、外部管理器通信和旧生命周期接口没有迁移。
 

@@ -25,17 +25,25 @@ const (
 	defaultEncryptedBytesPerToken    = 4
 	defaultMinOutputTokens           = 8
 	defaultHardTPS                   = 1000
+	defaultKeepaliveWorkerCount      = 8
+	defaultKeepaliveIntervalSeconds  = 1800
+	defaultKeepaliveProbeRetryCount  = 3
+	defaultIPBatchRetentionDays      = 6
 	maxInspectionIntervalSeconds     = 86400
+	maxKeepaliveIntervalSeconds      = 86400
+	maxKeepaliveWorkerCount          = 64
+	maxKeepaliveProbeRetryCount      = 10
 	degradationFirstCooling          = 24 * time.Hour
 	degradationSecondCooling         = 48 * time.Hour
 	degradationPermanentCoolingUntil = int64(-1)
 	maxIPBatches                     = 5
 
-	statusUninspected = "uninspected"
-	statusInspecting  = "inspecting"
-	statusHealthy     = "healthy"
-	statusUnhealthy   = "unhealthy"
-	statusDisabled    = "disabled"
+	statusUninspected      = "uninspected"
+	statusInspecting       = "inspecting"
+	statusKeepaliveProbing = "keepalive_probing"
+	statusHealthy          = "healthy"
+	statusUnhealthy        = "unhealthy"
+	statusDisabled         = "disabled"
 
 	logLevelInfo  = "info"
 	logLevelWarn  = "warn"
@@ -46,6 +54,9 @@ var logURLPattern = regexp.MustCompile(`(?i)\bhttps?://[^\s"'<>]+`)
 
 type pluginSettings struct {
 	InspectionIntervalSeconds int
+	KeepaliveWorkerCount      int
+	KeepaliveIntervalSeconds  int
+	KeepaliveProbeRetryCount  int
 	FirstPayloadTimeout       int
 	ProgressTimeout           int
 	MinSummaryChars           int
@@ -53,6 +64,7 @@ type pluginSettings struct {
 	EncryptedBytesPerToken    int
 	MinOutputTokens           int
 	HardTPS                   int
+	IPBatchRetentionDays      int
 }
 
 type proxyNode struct {
@@ -80,6 +92,32 @@ type inspectionRun struct {
 	Unhealthy   int64  `json:"unhealthy"`
 }
 
+type keepaliveRound struct {
+	ID             int64  `json:"id"`
+	StartedAt      int64  `json:"startedAt"`
+	CompletedAt    int64  `json:"completedAt"`
+	Status         string `json:"status"`
+	CandidateCount int64  `json:"candidateCount"`
+	SuccessCount   int64  `json:"successCount"`
+	FailureCount   int64  `json:"failureCount"`
+	DeletedBatches int64  `json:"deletedBatches"`
+	DeletedNodes   int64  `json:"deletedNodes"`
+}
+
+type nodeProbeResult struct {
+	Status    string
+	LatencyMS int64
+	ExitIP    string
+	Country   string
+	Error     string
+	CheckedAt int64
+}
+
+type keepaliveNodeClaim struct {
+	Node           proxyNode
+	PreviousStatus string
+}
+
 type inspectionResult struct {
 	ID        int64  `json:"id"`
 	RunID     int64  `json:"runId"`
@@ -93,15 +131,16 @@ type inspectionResult struct {
 }
 
 type ipBatch struct {
-	ID                     string
-	SequenceNumber         int64
-	CreatedAt              int64
-	TotalCount             int64
-	DuplicateCount         int64
-	InputErrorCount        int64
-	CompletedCount         int64
-	InitialConnectedCount  int64
-	RealtimeConnectedCount int64
+	ID                     string `json:"id"`
+	SequenceNumber         int64  `json:"sequenceNumber"`
+	CreatedAt              int64  `json:"createdAt"`
+	ExpiresAt              int64  `json:"expiresAt"`
+	TotalCount             int64  `json:"totalCount"`
+	DuplicateCount         int64  `json:"duplicateCount"`
+	InputErrorCount        int64  `json:"inputErrorCount"`
+	CompletedCount         int64  `json:"completedCount"`
+	InitialConnectedCount  int64  `json:"initialConnectedCount"`
+	RealtimeConnectedCount int64  `json:"realtimeConnectedCount"`
 }
 
 type authBinding struct {
@@ -197,7 +236,7 @@ CREATE TABLE IF NOT EXISTS plugin_settings (
 );
 CREATE TABLE IF NOT EXISTS nodes (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
-    address TEXT NOT NULL UNIQUE,
+    address TEXT NOT NULL,
     scope TEXT NOT NULL DEFAULT 'inspection',
     protocol TEXT NOT NULL,
     host TEXT NOT NULL,
@@ -211,6 +250,7 @@ CREATE TABLE IF NOT EXISTS nodes (
     created_at INTEGER NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_nodes_status ON nodes(status, id);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_nodes_scope_address ON nodes(scope, address);
 CREATE TABLE IF NOT EXISTS ip_batches (
     batch_id TEXT PRIMARY KEY,
     sequence_number INTEGER NOT NULL DEFAULT 0,
@@ -251,6 +291,26 @@ CREATE TABLE IF NOT EXISTS inspection_results (
     FOREIGN KEY(node_id) REFERENCES nodes(id) ON DELETE CASCADE
 );
 CREATE INDEX IF NOT EXISTS idx_inspection_results_run ON inspection_results(run_id, id);
+CREATE TABLE IF NOT EXISTS keepalive_rounds (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    started_at INTEGER NOT NULL,
+    completed_at INTEGER NOT NULL DEFAULT 0,
+    status TEXT NOT NULL,
+    candidate_count INTEGER NOT NULL DEFAULT 0,
+    success_count INTEGER NOT NULL DEFAULT 0,
+    failure_count INTEGER NOT NULL DEFAULT 0,
+    deleted_batches INTEGER NOT NULL DEFAULT 0,
+    deleted_nodes INTEGER NOT NULL DEFAULT 0
+);
+CREATE TABLE IF NOT EXISTS keepalive_round_nodes (
+    round_id INTEGER NOT NULL,
+    node_id INTEGER NOT NULL,
+    previous_status TEXT NOT NULL DEFAULT '',
+    PRIMARY KEY(round_id, node_id),
+    FOREIGN KEY(round_id) REFERENCES keepalive_rounds(id) ON DELETE CASCADE,
+    FOREIGN KEY(node_id) REFERENCES nodes(id) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS idx_keepalive_round_nodes_node ON keepalive_round_nodes(node_id);
 CREATE TABLE IF NOT EXISTS auth_bindings (
     auth_index TEXT PRIMARY KEY,
     auth_name TEXT NOT NULL,
@@ -284,6 +344,9 @@ CREATE TABLE IF NOT EXISTS plugin_logs (
 CREATE INDEX IF NOT EXISTS idx_plugin_logs_created ON plugin_logs(created_at DESC, id DESC);
 INSERT OR IGNORE INTO plugin_settings(setting_key, setting_value) VALUES
     ('inspection_interval_seconds', '0'),
+    ('keepalive_worker_count', '8'),
+    ('keepalive_interval_seconds', '1800'),
+    ('keepalive_probe_retry_count', '3'),
 
     ('first_payload_timeout_seconds', '120'),
     ('progress_timeout_seconds', '500'),
@@ -291,7 +354,8 @@ INSERT OR IGNORE INTO plugin_settings(setting_key, setting_value) VALUES
     ('min_encrypted_bytes', '64'),
     ('encrypted_bytes_per_reasoning_token', '4'),
     ('min_output_tokens', '8'),
-    ('hard_tps', '1000');
+    ('hard_tps', '1000'),
+    ('ip_batch_retention_days', '6');
 `)
 	if err != nil {
 		return fmt.Errorf("initialize sqlite database: %w", err)
@@ -300,6 +364,12 @@ INSERT OR IGNORE INTO plugin_settings(setting_key, setting_value) VALUES
 		return err
 	}
 	if err := store.ensureNodeScopeColumn(); err != nil {
+		return err
+	}
+	if err := store.ensureNodeScopeUniqueIndex(); err != nil {
+		return err
+	}
+	if err := store.recoverKeepaliveState(); err != nil {
 		return err
 	}
 	return nil
@@ -381,6 +451,9 @@ func (store *guardianStore) close() error {
 func (store *guardianStore) settings() (pluginSettings, error) {
 	settings := pluginSettings{
 		InspectionIntervalSeconds: defaultInspectionIntervalSeconds,
+		KeepaliveWorkerCount:      defaultKeepaliveWorkerCount,
+		KeepaliveIntervalSeconds:  defaultKeepaliveIntervalSeconds,
+		KeepaliveProbeRetryCount:  defaultKeepaliveProbeRetryCount,
 
 		FirstPayloadTimeout:    defaultFirstPayloadTimeout,
 		ProgressTimeout:        defaultProgressTimeout,
@@ -389,6 +462,7 @@ func (store *guardianStore) settings() (pluginSettings, error) {
 		EncryptedBytesPerToken: defaultEncryptedBytesPerToken,
 		MinOutputTokens:        defaultMinOutputTokens,
 		HardTPS:                defaultHardTPS,
+		IPBatchRetentionDays:   defaultIPBatchRetentionDays,
 	}
 	rows, err := store.database.Query(`SELECT setting_key, setting_value FROM plugin_settings`)
 	if err != nil {
@@ -407,6 +481,12 @@ func (store *guardianStore) settings() (pluginSettings, error) {
 		switch key {
 		case "inspection_interval_seconds":
 			settings.InspectionIntervalSeconds = parsed
+		case "keepalive_worker_count":
+			settings.KeepaliveWorkerCount = parsed
+		case "keepalive_interval_seconds":
+			settings.KeepaliveIntervalSeconds = parsed
+		case "keepalive_probe_retry_count":
+			settings.KeepaliveProbeRetryCount = parsed
 
 		case "first_payload_timeout_seconds":
 			settings.FirstPayloadTimeout = parsed
@@ -422,6 +502,8 @@ func (store *guardianStore) settings() (pluginSettings, error) {
 			settings.MinOutputTokens = parsed
 		case "hard_tps":
 			settings.HardTPS = parsed
+		case "ip_batch_retention_days":
+			settings.IPBatchRetentionDays = parsed
 		}
 	}
 	if err := rows.Err(); err != nil {
@@ -439,6 +521,9 @@ func (store *guardianStore) setSettings(settings pluginSettings) error {
 	}
 	values := map[string]string{
 		"inspection_interval_seconds": strconv.Itoa(settings.InspectionIntervalSeconds),
+		"keepalive_worker_count":      strconv.Itoa(settings.KeepaliveWorkerCount),
+		"keepalive_interval_seconds":  strconv.Itoa(settings.KeepaliveIntervalSeconds),
+		"keepalive_probe_retry_count": strconv.Itoa(settings.KeepaliveProbeRetryCount),
 
 		"first_payload_timeout_seconds":       strconv.Itoa(settings.FirstPayloadTimeout),
 		"progress_timeout_seconds":            strconv.Itoa(settings.ProgressTimeout),
@@ -447,6 +532,7 @@ func (store *guardianStore) setSettings(settings pluginSettings) error {
 		"encrypted_bytes_per_reasoning_token": strconv.Itoa(settings.EncryptedBytesPerToken),
 		"min_output_tokens":                   strconv.Itoa(settings.MinOutputTokens),
 		"hard_tps":                            strconv.Itoa(settings.HardTPS),
+		"ip_batch_retention_days":             strconv.Itoa(settings.IPBatchRetentionDays),
 	}
 	tx, err := store.database.Begin()
 	if err != nil {
@@ -469,12 +555,24 @@ func validateSettings(settings pluginSettings) error {
 	if settings.InspectionIntervalSeconds < 0 || settings.InspectionIntervalSeconds > maxInspectionIntervalSeconds {
 		return fmt.Errorf("inspection interval is out of range")
 	}
+	if settings.KeepaliveWorkerCount < 1 || settings.KeepaliveWorkerCount > maxKeepaliveWorkerCount {
+		return fmt.Errorf("keepalive worker count is out of range")
+	}
+	if settings.KeepaliveIntervalSeconds < 1 || settings.KeepaliveIntervalSeconds > maxKeepaliveIntervalSeconds {
+		return fmt.Errorf("keepalive interval is out of range")
+	}
+	if settings.KeepaliveProbeRetryCount < 1 || settings.KeepaliveProbeRetryCount > maxKeepaliveProbeRetryCount {
+		return fmt.Errorf("keepalive probe retry count is out of range")
+	}
 
 	if settings.FirstPayloadTimeout < 1 || settings.ProgressTimeout < 1 {
 		return fmt.Errorf("stream timeouts must be positive")
 	}
 	if settings.MinSummaryChars < 1 || settings.MinEncryptedBytes < 1 || settings.EncryptedBytesPerToken < 1 || settings.MinOutputTokens < 1 || settings.HardTPS < 1 {
 		return fmt.Errorf("xAI evidence thresholds must be positive")
+	}
+	if settings.IPBatchRetentionDays < 1 {
+		return fmt.Errorf("IP batch retention days must be positive")
 	}
 	return nil
 }
@@ -654,6 +752,52 @@ func (store *guardianStore) insertIPBatch(nodes []proxyNode, inputErrorCount int
 	return batchID, added, duplicates, nil
 }
 
+func (store *guardianStore) deleteExpiredIPBatches(now time.Time, retentionDays int) (int64, int64, error) {
+	cutoff := now.AddDate(0, 0, -retentionDays).UnixMilli()
+	tx, err := store.database.Begin()
+	if err != nil {
+		return 0, 0, fmt.Errorf("begin expired IP batch cleanup: %w", err)
+	}
+	defer tx.Rollback()
+
+	nodeResult, err := tx.Exec(`
+DELETE FROM nodes
+WHERE scope = 'guard'
+  AND id IN (
+    SELECT expired_links.node_id
+    FROM ip_batch_nodes AS expired_links
+    INNER JOIN ip_batches AS expired_batches ON expired_batches.batch_id = expired_links.batch_id
+    WHERE expired_batches.created_at <= ?
+      AND NOT EXISTS (
+        SELECT 1
+        FROM ip_batch_nodes AS retained_links
+        INNER JOIN ip_batches AS retained_batches ON retained_batches.batch_id = retained_links.batch_id
+        WHERE retained_links.node_id = expired_links.node_id
+          AND retained_batches.created_at > ?
+      )
+  )`, cutoff, cutoff)
+	if err != nil {
+		return 0, 0, fmt.Errorf("delete expired IP batch nodes: %w", err)
+	}
+	deletedNodes, err := nodeResult.RowsAffected()
+	if err != nil {
+		return 0, 0, fmt.Errorf("read expired IP batch node delete result: %w", err)
+	}
+
+	batchResult, err := tx.Exec(`DELETE FROM ip_batches WHERE created_at < ?`, cutoff)
+	if err != nil {
+		return 0, 0, fmt.Errorf("delete expired IP batches: %w", err)
+	}
+	deletedBatches, err := batchResult.RowsAffected()
+	if err != nil {
+		return 0, 0, fmt.Errorf("read expired IP batch delete result: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return 0, 0, fmt.Errorf("commit expired IP batch cleanup: %w", err)
+	}
+	return deletedBatches, deletedNodes, nil
+}
+
 func (store *guardianStore) listIPNodes() ([]proxyNode, error) {
 	rows, err := store.database.Query(`
 SELECT DISTINCT nodes.id, nodes.address, nodes.protocol, nodes.host, nodes.port, nodes.status, nodes.latency_ms, nodes.exit_ip, nodes.country, nodes.last_checked, nodes.last_error, nodes.created_at
@@ -679,14 +823,14 @@ ORDER BY nodes.id DESC`)
 func (store *guardianStore) listIPBatches() ([]ipBatch, error) {
 	rows, err := store.database.Query(`
 SELECT batches.batch_id, batches.sequence_number, batches.created_at, batches.total_count, batches.duplicate_count, batches.input_error_count,
-       COALESCE(SUM(CASE WHEN nodes.status <> ? THEN 1 ELSE 0 END), 0),
+       COALESCE(SUM(CASE WHEN nodes.status IN (?, ?, ?) THEN 1 ELSE 0 END), 0),
        COALESCE(SUM(CASE WHEN nodes.status = ? THEN 1 ELSE 0 END), 0)
 FROM ip_batches AS batches
 LEFT JOIN ip_batch_nodes AS batch_nodes ON batch_nodes.batch_id = batches.batch_id
 LEFT JOIN nodes ON nodes.id = batch_nodes.node_id AND nodes.scope = 'guard'
 GROUP BY batches.batch_id, batches.sequence_number, batches.created_at, batches.total_count, batches.duplicate_count, batches.input_error_count
 ORDER BY batches.sequence_number DESC, batches.created_at DESC, batches.batch_id DESC
-LIMIT ?`, statusUninspected, statusHealthy, maxIPBatches)
+LIMIT ?`, statusHealthy, statusUnhealthy, statusDisabled, statusHealthy, maxIPBatches)
 	if err != nil {
 		return nil, fmt.Errorf("list IP batches: %w", err)
 	}
@@ -697,6 +841,7 @@ LIMIT ?`, statusUninspected, statusHealthy, maxIPBatches)
 		if err := rows.Scan(&item.ID, &item.SequenceNumber, &item.CreatedAt, &item.TotalCount, &item.DuplicateCount, &item.InputErrorCount, &item.CompletedCount, &item.InitialConnectedCount); err != nil {
 			return nil, fmt.Errorf("scan IP batch: %w", err)
 		}
+		item.ExpiresAt = time.UnixMilli(item.CreatedAt).AddDate(0, 0, defaultIPBatchRetentionDays).UnixMilli()
 		item.RealtimeConnectedCount = item.InitialConnectedCount
 		items = append(items, item)
 	}

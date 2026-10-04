@@ -207,6 +207,7 @@
     .status-badge::before, .node-status::before { width: 8px; height: 8px; flex: 0 0 8px; border-radius: 50%; background: currentColor; content: ""; }
     .status-good, .node-healthy { border-color: color-mix(in srgb, var(--success-color) 35%, var(--border-color)); color: var(--success-color); background: color-mix(in srgb, var(--success-color) 10%, var(--bg-tertiary)); }
     .status-warn, .node-inspecting { border-color: color-mix(in srgb, var(--warning-color) 35%, var(--border-color)); color: var(--warning-color); background: color-mix(in srgb, var(--warning-color) 10%, var(--bg-tertiary)); }
+    .node-keepalive_probing { border-color: color-mix(in srgb, #a47cf0 38%, var(--border-color)); color: #b495ff; background: color-mix(in srgb, #a47cf0 12%, var(--bg-tertiary)); }
     .status-bad, .node-unhealthy { border-color: color-mix(in srgb, var(--danger-color) 35%, var(--border-color)); color: var(--danger-color); background: color-mix(in srgb, var(--danger-color) 10%, var(--bg-tertiary)); }
     .status-violet { border-color: color-mix(in srgb, #a47cf0 38%, var(--border-color)); color: #b495ff; background: color-mix(in srgb, #a47cf0 12%, var(--bg-tertiary)); }
     .node-uninspected { color: var(--text-tertiary); }
@@ -442,8 +443,17 @@
               <div><h2 class="panel-title">配置</h2><p class="panel-subtitle">实时守护由 CPA 核心执行；插件负责保存策略和返回 flush、retry、fail action。</p></div>
               <div class="panel-extra"><button class="primary-button" id="save-settings" type="button">保存</button><button class="secondary-button" id="refresh-guard" type="button">刷新</button></div>
             </div>
+            <div class="run-panel">
+              <div class="panel-header"><div><h2 class="panel-title">保活探测</h2><p class="panel-subtitle">独立于服务端巡检。按批次探测降智守护 IP，并在探测轮次中清理过期批次。</p></div><div class="panel-extra"><button class="primary-button" id="run-keepalive" type="button">立即保活探测</button><button class="secondary-button" id="refresh-keepalive" type="button">刷新状态</button></div></div>
+              <div id="keepalive-status"></div>
+              <div id="keepalive-message" class="message"></div>
+            </div>
             <div class="settings-grid">
               <div class="settings-field"><label for="inspection-interval">自动巡检间隔（秒，0=关闭）</label><input class="settings-input" id="inspection-interval" type="number" min="0"></div>
+              <div class="settings-field"><label for="keepalive-worker-count">保活 worker 数（线程）</label><input class="settings-input" id="keepalive-worker-count" type="number" min="1" max="64"></div>
+              <div class="settings-field"><label for="keepalive-interval">保活探测间隔（秒）</label><input class="settings-input" id="keepalive-interval" type="number" min="1" max="86400"></div>
+              <div class="settings-field"><label for="keepalive-retry-count">单节点探测重试次数</label><input class="settings-input" id="keepalive-retry-count" type="number" min="1" max="10"></div>
+              <div class="settings-field"><label for="ip-batch-retention-days">IP 批次保留时间（天）</label><input class="settings-input" id="ip-batch-retention-days" type="number" min="1"></div>
               <div class="settings-field"><label for="first-payload-timeout">首个 payload 超时（秒）</label><input class="settings-input" id="first-payload-timeout" type="number" min="1"></div>
               <div class="settings-field"><label for="progress-timeout">无进展超时（秒）</label><input class="settings-input" id="progress-timeout" type="number" min="1"></div>
               <div class="settings-field"><label for="min-summary-chars">最小思考摘要字符数</label><input class="settings-input" id="min-summary-chars" type="number" min="1"></div>
@@ -452,7 +462,7 @@
               <div class="settings-field"><label for="min-output-tokens">最小输出 token 数</label><input class="settings-input" id="min-output-tokens" type="number" min="1"></div>
               <div class="settings-field"><label for="hard-tps">硬 TPS 阈值</label><input class="settings-input" id="hard-tps" type="number" min="1"></div>
             </div>
-            <div class="help-text">单请求重试上限由 CPA 核心统一控制，插件不重复限制。TTFB 仅采集，不作为降智拦截条件。</div>
+            <div class="help-text">服务端巡检与保活探测使用独立 worker、轮次、节点 scope 和结果链路。批次查询不触发删除；过期批次只在保活探测轮次中清理。单请求重试上限由 CPA 核心统一控制。</div>
             <div id="settings-message" class="message"></div>
           </div>
         </section>
@@ -510,7 +520,7 @@ socks5://203.0.113.11:1080
       window.parent.postMessage({type:'cpa-plugin-api-request', requestId, endpoint:apiEndpoint, method:'POST', body:payload}, '*');
     });
     const state = {
-      accounts: [], nodes: [], guardNodes: [], batches: [], batchNodes: [], degradation: [], logs: [], settings: null,
+      accounts: [], nodes: [], guardNodes: [], batches: [], batchNodes: [], degradation: [], logs: [], settings: null, keepalive: null,
       inspection: {run: null, results: []}, summary: null,
       mode: 'accounts', guardTab: 'ips', selectedBatchID: '', filter: 'all', mask: 'full', page: 1, pageSize: 100,
       keyword: '', expandedAccount: '', busy: false
@@ -548,7 +558,7 @@ socks5://203.0.113.11:1080
     const statusLabel = (key) => ({enabled:'已启用', quota:'额度耗尽', disabled:'已停用', abnormal:'账号异常'}[key] || '账号异常');
     const statusTone = (key) => ({enabled:'status-good', quota:'status-violet', disabled:'status-warn', abnormal:'status-bad'}[key] || 'status-bad');
     const nodeTone = (status) => 'node-' + String(status || 'uninspected').toLowerCase();
-    const nodeLabel = (status) => ({healthy:'健康', unhealthy:'异常', inspecting:'检测中', disabled:'已停用', uninspected:'未检测'}[status] || status || '未检测');
+    const nodeLabel = (status) => ({healthy:'健康', unhealthy:'异常', inspecting:'检测中', keepalive_probing:'保活探测中', disabled:'已停用', uninspected:'未检测'}[status] || status || '未检测');
     const accountName = (item) => item.authName || item.authIndex || '未命名账号';
     const accountDisplayName = (item) => state.mask === 'masked' ? maskAccount(accountName(item)) : accountName(item);
 
@@ -670,21 +680,30 @@ socks5://203.0.113.11:1080
       $('batch-back').hidden = !batch;
       if (batch) {
         const rows = state.batchNodes.map((node) => `<tr><td><span class="number-badge">#${node.id}</span></td><td class="mono">${escapeHTML(node.address || '—')}</td><td><span class="node-status ${nodeTone(node.status)}">${nodeLabel(node.status)}</span></td><td>${node.latencyMs ? escapeHTML(node.latencyMs) + ' ms' : '—'}</td><td class="mono">${escapeHTML(node.exitIp || '—')}</td><td>${escapeHTML(node.country || '—')}</td><td>${formatDate(node.lastChecked)}</td></tr>`).join('');
-        $('batches-table').innerHTML = `<div class="help-text">批次 ${escapeHTML(batch.batchId)}：新增 ${batch.totalCount} 个，重复 ${batch.duplicateCount} 个，格式错误 ${batch.inputErrorCount} 行；已完成 ${batch.completedCount} 个，当前健康 ${batch.realtimeConnectedCount} 个。</div><table class="data-table node-table"><thead><tr><th>ID</th><th>节点地址</th><th>状态</th><th>延迟</th><th>出口 IP</th><th>国家</th><th>最近检查</th></tr></thead><tbody>${rows || '<tr><td class="empty-cell" colspan="7">该批次没有新增节点。</td></tr>'}</tbody></table>`;
+        $('batches-table').innerHTML = `<div class="help-text">批次 ${escapeHTML(batch.batchId)}：录入 ${formatFullDate(batch.createdAt)}，过期 ${formatFullDate(batch.expiresAt)}；新增 ${batch.totalCount} 个，重复 ${batch.duplicateCount} 个，格式错误 ${batch.inputErrorCount} 行；已完成 ${batch.completedCount} 个，当前健康 ${batch.realtimeConnectedCount} 个。</div><table class="data-table node-table"><thead><tr><th>ID</th><th>节点地址</th><th>状态</th><th>延迟</th><th>出口 IP</th><th>国家</th><th>最近检查</th></tr></thead><tbody>${rows || '<tr><td class="empty-cell" colspan="7">该批次没有新增节点。</td></tr>'}</tbody></table>`;
         return;
       }
       if (!state.batches.length) {
         $('batches-table').innerHTML = '<div class="help-text">暂无通过【增加IP】创建的批次。</div>';
         return;
       }
-      const rows = state.batches.map((item) => `<tr><td class="mono">${escapeHTML(item.batchId)}</td><td>${formatDate(item.createdAt)}</td><td class="mono">${item.totalCount}</td><td class="mono">${item.duplicateCount}</td><td class="mono">${item.inputErrorCount}</td><td class="mono">${item.completedCount}</td><td class="mono">${item.realtimeConnectedCount}</td><td><button class="secondary-button" type="button" data-batch-id="${escapeHTML(item.batchId)}">查看节点</button></td></tr>`).join('');
-      $('batches-table').innerHTML = `<div class="help-text">共 ${state.batches.length} 个批次，最多保留 ${state.batches.length ? state.batches.length : 0} 个已记录批次。</div><table class="data-table node-table"><thead><tr><th>批次 ID</th><th>录入时间</th><th>新增</th><th>重复</th><th>格式错误</th><th>已完成</th><th>当前健康</th><th>操作</th></tr></thead><tbody>${rows}</tbody></table>`;
+      const rows = state.batches.map((item) => `<tr><td class="mono">${escapeHTML(item.batchId)}</td><td>${formatDate(item.createdAt)}</td><td>${formatDate(item.expiresAt)}</td><td class="mono">${item.totalCount}</td><td class="mono">${item.duplicateCount}</td><td class="mono">${item.inputErrorCount}</td><td class="mono">${item.completedCount}</td><td class="mono">${item.realtimeConnectedCount}</td><td><button class="secondary-button" type="button" data-batch-id="${escapeHTML(item.batchId)}">查看节点</button></td></tr>`).join('');
+      $('batches-table').innerHTML = `<div class="help-text">IP 批次按创建时间保留 ${state.settings.ipBatchRetentionDays} 天；过期后在保活探测过程中删除。当前 ${state.batches.length} 个批次。</div><table class="data-table node-table"><thead><tr><th>批次 ID</th><th>录入时间</th><th>过期时间</th><th>新增</th><th>重复</th><th>格式错误</th><th>已完成</th><th>当前健康</th><th>操作</th></tr></thead><tbody>${rows}</tbody></table>`;
     }
 
     function renderSettings() {
       if (!state.settings) return;
-      const fields = {'inspection-interval':'inspectionIntervalSeconds','first-payload-timeout':'firstPayloadTimeout','progress-timeout':'progressTimeout','min-summary-chars':'minSummaryChars','min-encrypted-bytes':'minEncryptedBytes','encrypted-bytes-per-token':'encryptedBytesPerToken','min-output-tokens':'minOutputTokens','hard-tps':'hardTPS'};
+      const fields = {'inspection-interval':'inspectionIntervalSeconds','keepalive-worker-count':'keepaliveWorkerCount','keepalive-interval':'keepaliveIntervalSeconds','keepalive-retry-count':'keepaliveProbeRetryCount','ip-batch-retention-days':'ipBatchRetentionDays','first-payload-timeout':'firstPayloadTimeout','progress-timeout':'progressTimeout','min-summary-chars':'minSummaryChars','min-encrypted-bytes':'minEncryptedBytes','encrypted-bytes-per-token':'encryptedBytesPerToken','min-output-tokens':'minOutputTokens','hard-tps':'hardTPS'};
       Object.keys(fields).forEach((id) => { $(id).value = state.settings[fields[id]] ?? ''; });
+    }
+
+    function renderKeepalive() {
+      if (!state.keepalive) return;
+      const schedule = state.keepalive.schedule;
+      const round = state.keepalive.round;
+      const scheduleLabel = schedule.running ? '运行中' : schedule.pending ? '等待立即执行' : '等待下一轮';
+      const roundLabel = round ? String(round.status || '未知') : '尚未运行';
+      $('keepalive-status').innerHTML = `<div class="run-summary"><div class="run-stat"><small>worker 状态</small><strong>${scheduleLabel}</strong></div><div class="run-stat"><small>最近轮次</small><strong>${escapeHTML(roundLabel)}</strong></div><div class="run-stat"><small>健康 / 异常</small><strong>${round ? `${round.successCount} / ${round.failureCount}` : '—'}</strong></div><div class="run-stat"><small>清理批次 / 节点</small><strong>${round ? `${round.deletedBatches} / ${round.deletedNodes}` : '—'}</strong></div></div><div class="help-text">${round ? `轮次 ${round.id}：开始 ${formatFullDate(round.startedAt)}，完成 ${formatFullDate(round.completedAt)}；候选节点 ${round.candidateCount}。` : '插件启动后保活 worker 会独立执行首轮探测。'}</div>`;
     }
 
     function renderDegradation() {
@@ -707,12 +726,13 @@ socks5://203.0.113.11:1080
     }
     async function refreshGuard() {
       try {
-        const result = await Promise.all([api('/api/batch-nodes'), api('/api/batches'), api('/api/degradation'), api('/api/settings'), api('/api/logs')]);
+        const result = await Promise.all([api('/api/batch-nodes'), api('/api/batches'), api('/api/degradation'), api('/api/settings'), api('/api/logs'), api('/api/keepalive')]);
         state.guardNodes = result[0];
         state.batches = result[1].items;
         state.degradation = result[2];
         state.settings = result[3];
         state.logs = result[4];
+        state.keepalive = result[5];
         state.batchNodes = state.selectedBatchID ? (await api(`/api/batches/${encodeURIComponent(state.selectedBatchID)}/nodes`)).items : [];
         setMessage('guard-ip-error', '');
         setMessage('batch-message', '');
@@ -720,6 +740,7 @@ socks5://203.0.113.11:1080
         renderGuardNodes();
         renderBatches();
         renderSettings();
+        renderKeepalive();
         renderDegradation();
         renderLogs();
       } catch (error) {
@@ -758,9 +779,11 @@ socks5://203.0.113.11:1080
       if (target.id === 'refresh-accounts') { await refreshAccounts(); return; }
       if (target.id === 'refresh-inspection') { await refreshInspection(); return; }
       if (target.id === 'refresh-guard-ips' || target.id === 'refresh-batches') { await refreshGuard(); return; }
+      if (target.id === 'refresh-keepalive') { await refreshGuard(); return; }
       if (target.id === 'refresh-guard') { await refreshGuard(); return; }
+      if (target.id === 'run-keepalive') { setBusy(true, '保活探测排队中…'); try { await api('/api/keepalive/run', 'POST', {}); await refreshGuard(); setMessage('keepalive-message', '独立保活探测已排队。'); } catch (error) { setMessage('keepalive-message', error.message, true); } finally { setBusy(false); } return; }
       if (target.id === 'run-inspection') { setBusy(true, '服务端巡检中…'); try { const text = $('node-input').value.trim(); if (text) { await api('/api/nodes', 'POST', {text}); $('node-input').value = ''; } await api('/api/inspection', 'POST', {}); await refreshInspection(); setMessage('node-message', '巡检完成。'); } catch (error) { setMessage('node-message', error.message, true); } finally { setBusy(false); } return; }
-      if (target.id === 'save-settings') { const body = {inspectionIntervalSeconds:Number($('inspection-interval').value), firstPayloadTimeout:Number($('first-payload-timeout').value), progressTimeout:Number($('progress-timeout').value), minSummaryChars:Number($('min-summary-chars').value), minEncryptedBytes:Number($('min-encrypted-bytes').value), encryptedBytesPerToken:Number($('encrypted-bytes-per-token').value), minOutputTokens:Number($('min-output-tokens').value), hardTPS:Number($('hard-tps').value)}; setBusy(true, '保存策略中…'); try { state.settings = await api('/api/settings', 'PUT', body); renderSettings(); setMessage('settings-message', '配置已保存。'); } catch (error) { setMessage('settings-message', error.message, true); } finally { setBusy(false); } }
+      if (target.id === 'save-settings') { const body = {inspectionIntervalSeconds:Number($('inspection-interval').value), keepaliveWorkerCount:Number($('keepalive-worker-count').value), keepaliveIntervalSeconds:Number($('keepalive-interval').value), keepaliveProbeRetryCount:Number($('keepalive-retry-count').value), ipBatchRetentionDays:Number($('ip-batch-retention-days').value), firstPayloadTimeout:Number($('first-payload-timeout').value), progressTimeout:Number($('progress-timeout').value), minSummaryChars:Number($('min-summary-chars').value), minEncryptedBytes:Number($('min-encrypted-bytes').value), encryptedBytesPerToken:Number($('encrypted-bytes-per-token').value), minOutputTokens:Number($('min-output-tokens').value), hardTPS:Number($('hard-tps').value)}; setBusy(true, '保存策略中…'); try { state.settings = await api('/api/settings', 'PUT', body); renderSettings(); await refreshGuard(); setMessage('settings-message', '配置已保存。'); } catch (error) { setMessage('settings-message', error.message, true); } finally { setBusy(false); } }
     });
 
     $('account-search').addEventListener('input', (event) => { state.keyword = event.target.value; state.page = 1; renderAccountTable(); });

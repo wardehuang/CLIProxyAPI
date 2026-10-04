@@ -17,11 +17,14 @@ import (
 var guardianRuntime = &runtimeController{}
 
 type runtimeController struct {
-	mutex        sync.RWMutex
-	store        *guardianStore
-	workerCancel context.CancelFunc
-	workerGroup  sync.WaitGroup
-	config       pluginConfig
+	mutex            sync.RWMutex
+	store            *guardianStore
+	inspectionCancel context.CancelFunc
+	inspectionGroup  sync.WaitGroup
+	keepaliveCancel  context.CancelFunc
+	keepaliveGroup   sync.WaitGroup
+	keepaliveState   *keepaliveScheduleState
+	config           pluginConfig
 }
 
 func (controller *runtimeController) configure(config pluginConfig) error {
@@ -53,10 +56,11 @@ func (controller *runtimeController) configure(config pluginConfig) error {
 		return err
 	}
 	controller.config = config
-	controller.stopWorkerLocked()
+	controller.stopWorkersLocked()
 	if settings.InspectionIntervalSeconds > 0 {
-		controller.startWorkerLocked(settings.InspectionIntervalSeconds)
+		controller.startInspectionWorkerLocked(settings.InspectionIntervalSeconds)
 	}
+	controller.startKeepaliveWorkerLocked(settings)
 	return controller.store.appendLog(logLevelInfo, "plugin.configured", "xAI Guardian 已初始化", fmt.Sprintf("数据库 %s", controller.store.path))
 }
 
@@ -78,8 +82,9 @@ func (controller *runtimeController) ensure() error {
 		return err
 	}
 	if settings.InspectionIntervalSeconds > 0 {
-		controller.startWorkerLocked(settings.InspectionIntervalSeconds)
+		controller.startInspectionWorkerLocked(settings.InspectionIntervalSeconds)
 	}
+	controller.startKeepaliveWorkerLocked(settings)
 	return nil
 }
 
@@ -89,22 +94,27 @@ func (controller *runtimeController) currentStore() *guardianStore {
 	return controller.store
 }
 
-func (controller *runtimeController) stopWorkerLocked() {
-	if controller.workerCancel == nil {
-		return
+func (controller *runtimeController) stopWorkersLocked() {
+	if controller.inspectionCancel != nil {
+		controller.inspectionCancel()
+		controller.inspectionGroup.Wait()
+		controller.inspectionCancel = nil
 	}
-	controller.workerCancel()
-	controller.workerGroup.Wait()
-	controller.workerCancel = nil
+	if controller.keepaliveCancel != nil {
+		controller.keepaliveCancel()
+		controller.keepaliveGroup.Wait()
+		controller.keepaliveCancel = nil
+	}
+	controller.keepaliveState = nil
 }
 
-func (controller *runtimeController) startWorkerLocked(intervalSeconds int) {
+func (controller *runtimeController) startInspectionWorkerLocked(intervalSeconds int) {
 	workerContext, cancel := context.WithCancel(context.Background())
-	controller.workerCancel = cancel
+	controller.inspectionCancel = cancel
 	store := controller.store
-	controller.workerGroup.Add(1)
+	controller.inspectionGroup.Add(1)
 	go func() {
-		defer controller.workerGroup.Done()
+		defer controller.inspectionGroup.Done()
 		ticker := time.NewTicker(time.Duration(intervalSeconds) * time.Second)
 		defer ticker.Stop()
 		for {
@@ -120,10 +130,23 @@ func (controller *runtimeController) startWorkerLocked(intervalSeconds int) {
 	}()
 }
 
+func (controller *runtimeController) startKeepaliveWorkerLocked(settings pluginSettings) {
+	workerContext, cancel := context.WithCancel(context.Background())
+	controller.keepaliveCancel = cancel
+	controller.keepaliveState = newKeepaliveScheduleState()
+	store := controller.store
+	state := controller.keepaliveState
+	controller.keepaliveGroup.Add(1)
+	go func() {
+		defer controller.keepaliveGroup.Done()
+		runKeepaliveScheduler(workerContext, store, state, settings)
+	}()
+}
+
 func (controller *runtimeController) shutdown() {
 	controller.mutex.Lock()
 	defer controller.mutex.Unlock()
-	controller.stopWorkerLocked()
+	controller.stopWorkersLocked()
 	if controller.store != nil {
 		_ = controller.store.appendLog(logLevelInfo, "plugin.shutdown", "xAI Guardian 正在停止", "")
 		_ = controller.store.close()
@@ -178,7 +201,11 @@ func (controller *runtimeController) api(method, path string, query url.Values, 
 		if err != nil {
 			return http.StatusInternalServerError, nil, err
 		}
-		return jsonAPIResult(map[string]any{"items": publicIPBatches(batches), "total": len(batches), "max": maxIPBatches}, nil)
+		settings, err := store.settings()
+		if err != nil {
+			return http.StatusInternalServerError, nil, err
+		}
+		return jsonAPIResult(map[string]any{"items": publicIPBatches(batches, settings.IPBatchRetentionDays), "total": len(batches), "max": maxIPBatches, "retentionDays": settings.IPBatchRetentionDays}, nil)
 	}
 	if method == http.MethodPost && path == "/api/batches" {
 		return controller.addIPBatch(store, body)
@@ -200,6 +227,12 @@ func (controller *runtimeController) api(method, path string, query url.Values, 
 			return http.StatusBadGateway, nil, err
 		}
 		return controller.inspectionAPI(store)
+	}
+	if method == http.MethodGet && path == "/api/keepalive" {
+		return controller.keepaliveAPI(store)
+	}
+	if method == http.MethodPost && path == "/api/keepalive/run" {
+		return controller.runKeepaliveNow()
 	}
 	if method == http.MethodGet && path == "/api/degradation" {
 		states, err := store.listDegradations()
@@ -246,6 +279,9 @@ func (controller *runtimeController) api(method, path string, query url.Values, 
 func (controller *runtimeController) updateSettings(store *guardianStore, body []byte) (int, []byte, error) {
 	var payload struct {
 		InspectionIntervalSeconds int `json:"inspectionIntervalSeconds"`
+		KeepaliveWorkerCount      int `json:"keepaliveWorkerCount"`
+		KeepaliveIntervalSeconds  int `json:"keepaliveIntervalSeconds"`
+		KeepaliveProbeRetryCount  int `json:"keepaliveProbeRetryCount"`
 		FirstPayloadTimeout       int `json:"firstPayloadTimeout"`
 		ProgressTimeout           int `json:"progressTimeout"`
 		MinSummaryChars           int `json:"minSummaryChars"`
@@ -253,22 +289,82 @@ func (controller *runtimeController) updateSettings(store *guardianStore, body [
 		EncryptedBytesPerToken    int `json:"encryptedBytesPerToken"`
 		MinOutputTokens           int `json:"minOutputTokens"`
 		HardTPS                   int `json:"hardTPS"`
+		IPBatchRetentionDays      int `json:"ipBatchRetentionDays"`
 	}
 	if err := json.Unmarshal(body, &payload); err != nil {
 		return http.StatusBadRequest, nil, err
 	}
-	settings := pluginSettings{InspectionIntervalSeconds: payload.InspectionIntervalSeconds, FirstPayloadTimeout: payload.FirstPayloadTimeout, ProgressTimeout: payload.ProgressTimeout, MinSummaryChars: payload.MinSummaryChars, MinEncryptedBytes: payload.MinEncryptedBytes, EncryptedBytesPerToken: payload.EncryptedBytesPerToken, MinOutputTokens: payload.MinOutputTokens, HardTPS: payload.HardTPS}
+	settings := pluginSettings{
+		InspectionIntervalSeconds: payload.InspectionIntervalSeconds,
+		KeepaliveWorkerCount:      payload.KeepaliveWorkerCount,
+		KeepaliveIntervalSeconds:  payload.KeepaliveIntervalSeconds,
+		KeepaliveProbeRetryCount:  payload.KeepaliveProbeRetryCount,
+		FirstPayloadTimeout:       payload.FirstPayloadTimeout,
+		ProgressTimeout:           payload.ProgressTimeout,
+		MinSummaryChars:           payload.MinSummaryChars,
+		MinEncryptedBytes:         payload.MinEncryptedBytes,
+		EncryptedBytesPerToken:    payload.EncryptedBytesPerToken,
+		MinOutputTokens:           payload.MinOutputTokens,
+		HardTPS:                   payload.HardTPS,
+		IPBatchRetentionDays:      payload.IPBatchRetentionDays,
+	}
 	if err := store.setSettings(settings); err != nil {
 		return http.StatusBadRequest, nil, err
 	}
 	controller.mutex.Lock()
-	controller.stopWorkerLocked()
+	controller.stopWorkersLocked()
 	if settings.InspectionIntervalSeconds > 0 {
-		controller.startWorkerLocked(settings.InspectionIntervalSeconds)
+		controller.startInspectionWorkerLocked(settings.InspectionIntervalSeconds)
 	}
+	controller.startKeepaliveWorkerLocked(settings)
 	controller.mutex.Unlock()
 	_ = store.appendLog(logLevelInfo, "settings.updated", "插件配置已保存", "")
 	return jsonAPIResult(publicSettings(settings), nil)
+}
+
+func (controller *runtimeController) keepaliveAPI(store *guardianStore) (int, []byte, error) {
+	settings, err := store.settings()
+	if err != nil {
+		return http.StatusInternalServerError, nil, err
+	}
+	round, found, err := store.latestKeepaliveRound()
+	if err != nil {
+		return http.StatusInternalServerError, nil, err
+	}
+	controller.mutex.RLock()
+	state := controller.keepaliveState
+	controller.mutex.RUnlock()
+	return jsonAPIResult(map[string]any{
+		"settings": publicSettings(settings),
+		"schedule": state.snapshot(settings.KeepaliveIntervalSeconds),
+		"round":    mapKeepaliveRound(round, found),
+	}, nil)
+}
+
+func (controller *runtimeController) runKeepaliveNow() (int, []byte, error) {
+	controller.mutex.RLock()
+	state := controller.keepaliveState
+	controller.mutex.RUnlock()
+	accepted, running := state.requestNow()
+	if running {
+		_, body, err := jsonAPIResult(map[string]any{"accepted": false, "running": true}, nil)
+		return http.StatusConflict, body, err
+	}
+	return jsonAPIResult(map[string]any{"accepted": accepted, "running": false}, nil)
+}
+
+func (controller *runtimeController) queueKeepaliveAfterBatch() {
+	controller.mutex.RLock()
+	state := controller.keepaliveState
+	controller.mutex.RUnlock()
+	state.queueNow()
+}
+
+func mapKeepaliveRound(round keepaliveRound, found bool) any {
+	if !found {
+		return nil
+	}
+	return round
 }
 
 func (controller *runtimeController) accountsAPI(store *guardianStore) (int, []byte, error) {
@@ -342,6 +438,9 @@ func (controller *runtimeController) addIPBatch(store *guardianStore, body []byt
 		return http.StatusInternalServerError, nil, err
 	}
 	_ = store.appendLog(logLevelInfo, "ip_batch.created", "降智守护 IP 批次已创建", fmt.Sprintf("批次 %s，新增 %d，重复 %d，格式错误 %d", batchID, added, duplicates, len(inputErrors)))
+	if added > 0 {
+		controller.queueKeepaliveAfterBatch()
+	}
 	return jsonAPIResult(map[string]any{"batchId": batchID, "added": added, "duplicates": duplicates, "errors": inputErrors}, nil)
 }
 
@@ -354,7 +453,7 @@ func jsonAPIResult(value any, err error) (int, []byte, error) {
 }
 
 func publicSettings(settings pluginSettings) map[string]any {
-	return map[string]any{"inspectionIntervalSeconds": settings.InspectionIntervalSeconds, "firstPayloadTimeout": settings.FirstPayloadTimeout, "progressTimeout": settings.ProgressTimeout, "minSummaryChars": settings.MinSummaryChars, "minEncryptedBytes": settings.MinEncryptedBytes, "encryptedBytesPerToken": settings.EncryptedBytesPerToken, "minOutputTokens": settings.MinOutputTokens, "hardTPS": settings.HardTPS}
+	return map[string]any{"inspectionIntervalSeconds": settings.InspectionIntervalSeconds, "keepaliveWorkerCount": settings.KeepaliveWorkerCount, "keepaliveIntervalSeconds": settings.KeepaliveIntervalSeconds, "keepaliveProbeRetryCount": settings.KeepaliveProbeRetryCount, "firstPayloadTimeout": settings.FirstPayloadTimeout, "progressTimeout": settings.ProgressTimeout, "minSummaryChars": settings.MinSummaryChars, "minEncryptedBytes": settings.MinEncryptedBytes, "encryptedBytesPerToken": settings.EncryptedBytesPerToken, "minOutputTokens": settings.MinOutputTokens, "hardTPS": settings.HardTPS, "ipBatchRetentionDays": settings.IPBatchRetentionDays}
 }
 
 func publicNodes(nodes []proxyNode) []map[string]any {
@@ -365,13 +464,14 @@ func publicNodes(nodes []proxyNode) []map[string]any {
 	return items
 }
 
-func publicIPBatches(batches []ipBatch) []map[string]any {
+func publicIPBatches(batches []ipBatch, retentionDays int) []map[string]any {
 	items := make([]map[string]any, 0, len(batches))
 	for _, batch := range batches {
 		items = append(items, map[string]any{
 			"batchId":                batch.ID,
 			"sequenceNumber":         batch.SequenceNumber,
 			"createdAt":              batch.CreatedAt,
+			"expiresAt":              time.UnixMilli(batch.CreatedAt).AddDate(0, 0, retentionDays).UnixMilli(),
 			"totalCount":             batch.TotalCount,
 			"duplicateCount":         batch.DuplicateCount,
 			"inputErrorCount":        batch.InputErrorCount,

@@ -392,7 +392,7 @@ func isAllowedUIPath(method, path string) bool {
 	switch method {
 	case http.MethodGet:
 		switch path {
-		case "/api/summary", "/api/settings", "/api/accounts", "/api/nodes", "/api/batch-nodes", "/api/batches", "/api/inspection", "/api/degradation", "/api/logs":
+		case "/api/summary", "/api/settings", "/api/accounts", "/api/nodes", "/api/batch-nodes", "/api/batches", "/api/inspection", "/api/keepalive", "/api/degradation", "/api/logs":
 			return true
 		default:
 			return strings.HasPrefix(path, "/api/batches/") && strings.HasSuffix(path, "/nodes")
@@ -400,7 +400,7 @@ func isAllowedUIPath(method, path string) bool {
 	case http.MethodPut:
 		return path == "/api/settings"
 	case http.MethodPost:
-		if path == "/api/accounts/refresh" || path == "/api/nodes" || path == "/api/batches" || path == "/api/inspection" || path == "/api/degradation/clear" {
+		if path == "/api/accounts/refresh" || path == "/api/nodes" || path == "/api/batches" || path == "/api/inspection" || path == "/api/keepalive/run" || path == "/api/degradation/clear" {
 			return true
 		}
 		return strings.HasPrefix(path, "/api/nodes/") && strings.HasSuffix(path, "/delete")
