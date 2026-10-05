@@ -56,8 +56,8 @@ func prepareXAIStream(_ context.Context, request pluginapi.XAIStreamPrepareReque
 		}
 	}
 	return pluginapi.XAIStreamPrepareResponse{
-		FirstPayloadTimeoutSeconds: settings.FirstPayloadTimeout,
-		ProgressTimeoutSeconds:     settings.ProgressTimeout,
+		FirstPayloadTimeoutSeconds: settings.RealtimeGuardTimeoutSeconds,
+		ProgressTimeoutSeconds:     settings.RealtimeGuardIdleTimeoutSeconds,
 		MaxRetries:                 0,
 		Metadata: map[string]any{
 			"prepared_at": time.Now().UnixMilli(),
@@ -169,8 +169,11 @@ func classifyStream(evidence streamEvidence, mutation completedMutationEvidence,
 	if evidence.BurstDump {
 		return "burst_dump_disabled", false
 	}
-	if hardTPSExceeded(evidence, completion, settings.HardTPS) {
+	if hardTPSExceeded(evidence, completion, settings.QualityHardTPS) {
 		return "hard_tps", true
+	}
+	if isBurstDump(evidence, completion, settings) {
+		return "burst_dump_disabled", false
 	}
 	if evidence.CompletedFunctionCalls > 0 && !evidence.RefusalDetected {
 		return "completed_tool_call_evidence", false
@@ -188,11 +191,11 @@ func isRealThinking(evidence streamEvidence, completion pluginapi.XAIStreamCompl
 	if evidence.RefusalDetected {
 		return false
 	}
-	if evidence.OutputTokens < settings.MinOutputTokens {
+	if evidence.OutputTokens < settings.RealtimeGuardMinOutputTokens {
 		return true
 	}
-	encryptedFloor := settings.MinEncryptedBytes
-	calculatedFloor := evidence.ReasoningTokens * settings.EncryptedBytesPerToken
+	encryptedFloor := settings.RealtimeGuardMinEncryptedBytes
+	calculatedFloor := evidence.ReasoningTokens * settings.RealtimeGuardEncryptedBytesPerReasoningToken
 	if calculatedFloor > encryptedFloor {
 		encryptedFloor = calculatedFloor
 	}
@@ -200,20 +203,27 @@ func isRealThinking(evidence streamEvidence, completion pluginapi.XAIStreamCompl
 	if visibleTokens < 0 {
 		visibleTokens = 0
 	}
-	visibleFlushMS := int64(-1)
-	if !completion.FirstVisibleAt.IsZero() && !completion.FinishedAt.IsZero() {
-		visibleFlushMS = completion.FinishedAt.Sub(completion.FirstVisibleAt).Milliseconds()
-	}
-	evidence.BurstDump = evidence.BurstDump || (evidence.ReasoningTokens >= burstMinReasoningTokens && visibleTokens > 0 && visibleTokens < burstMaxVisibleTokens && visibleFlushMS >= 0 && visibleFlushMS < burstMaxWindowMS)
-	if evidence.BurstDump {
+	if isBurstDump(evidence, completion, settings) {
 		return true
 	}
-	hasSummaryEvidence := !evidence.ReasoningMetadataError && evidence.SummaryChars >= settings.MinSummaryChars && !isPlaceholderSummary(evidence.SummaryText)
+	hasSummaryEvidence := !evidence.ReasoningMetadataError && evidence.SummaryChars >= settings.RealtimeGuardMinSummaryChars && !isPlaceholderSummary(evidence.SummaryText)
 	hasEncryptedEvidence := !evidence.ReasoningMetadataError && evidence.ReasoningItemCompleted && evidence.EncryptedBytes >= encryptedFloor
 	return hasSummaryEvidence || hasEncryptedEvidence
 }
 
-func hardTPSExceeded(evidence streamEvidence, completion pluginapi.XAIStreamCompletionRequest, threshold int) bool {
+func isBurstDump(evidence streamEvidence, completion pluginapi.XAIStreamCompletionRequest, settings pluginSettings) bool {
+	visibleTokens := evidence.OutputTokens - evidence.ReasoningTokens
+	if visibleTokens <= 0 {
+		return false
+	}
+	visibleFlushMS := int64(-1)
+	if !completion.FirstVisibleAt.IsZero() && !completion.FinishedAt.IsZero() {
+		visibleFlushMS = completion.FinishedAt.Sub(completion.FirstVisibleAt).Milliseconds()
+	}
+	return evidence.ReasoningTokens >= settings.RealtimeGuardBurstMinReasoningTokens && visibleTokens < settings.RealtimeGuardBurstMaxVisibleTokens && visibleFlushMS >= 0 && visibleFlushMS < int64(settings.RealtimeGuardBurstMaxWindowMS)
+}
+
+func hardTPSExceeded(evidence streamEvidence, completion pluginapi.XAIStreamCompletionRequest, threshold float64) bool {
 	if threshold <= 0 || evidence.OutputTokens+evidence.ReasoningTokens <= 0 || completion.FirstPayloadAt.IsZero() || completion.FinishedAt.IsZero() {
 		return false
 	}
@@ -222,7 +232,7 @@ func hardTPSExceeded(evidence streamEvidence, completion pluginapi.XAIStreamComp
 		return false
 	}
 	tps := float64(evidence.OutputTokens+evidence.ReasoningTokens) / duration.Seconds()
-	return tps >= float64(threshold)
+	return tps >= threshold
 }
 
 func parseStreamEvidence(body []byte) streamEvidence {

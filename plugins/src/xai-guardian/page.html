@@ -208,6 +208,8 @@
     .status-good, .node-healthy { border-color: color-mix(in srgb, var(--success-color) 35%, var(--border-color)); color: var(--success-color); background: color-mix(in srgb, var(--success-color) 10%, var(--bg-tertiary)); }
     .status-warn, .node-inspecting { border-color: color-mix(in srgb, var(--warning-color) 35%, var(--border-color)); color: var(--warning-color); background: color-mix(in srgb, var(--warning-color) 10%, var(--bg-tertiary)); }
     .node-keepalive_probing { border-color: color-mix(in srgb, #a47cf0 38%, var(--border-color)); color: #b495ff; background: color-mix(in srgb, #a47cf0 12%, var(--bg-tertiary)); }
+    .node-probing, .node-revive_probing { border-color: color-mix(in srgb, #7c83ff 38%, var(--border-color)); color: #9aa0ff; background: color-mix(in srgb, #7c83ff 12%, var(--bg-tertiary)); }
+    .node-healthy_candidate, .node-healthy_fallback { border-color: color-mix(in srgb, var(--primary-color) 38%, var(--border-color)); color: var(--primary-color); background: color-mix(in srgb, var(--primary-color) 10%, var(--bg-tertiary)); }
     .status-bad, .node-unhealthy { border-color: color-mix(in srgb, var(--danger-color) 35%, var(--border-color)); color: var(--danger-color); background: color-mix(in srgb, var(--danger-color) 10%, var(--bg-tertiary)); }
     .status-violet { border-color: color-mix(in srgb, #a47cf0 38%, var(--border-color)); color: #b495ff; background: color-mix(in srgb, #a47cf0 12%, var(--bg-tertiary)); }
     .node-uninspected { color: var(--text-tertiary); }
@@ -254,6 +256,8 @@
     .guard-subview.active { display: grid; gap: 14px; }
     .server-summary-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px; }
     .server-input-panel, .settings-panel, .run-panel, .logs-panel { display: grid; gap: 12px; padding: 18px; border: 1px solid var(--border-color); border-radius: 18px; background: var(--bg-primary); }
+    .settings-section { display: grid; gap: 12px; padding: 16px; border: 1px solid var(--border-color); border-radius: 16px; background: color-mix(in srgb, var(--bg-primary) 82%, var(--bg-tertiary)); }
+    .settings-section .panel-title { font-size: 16px; }
     .node-input { width: 100%; min-height: 112px; resize: vertical; padding: 12px 14px; border: 1px solid var(--border-color); border-radius: 12px; outline: none; background: var(--bg-tertiary); color: var(--text-primary); line-height: 1.6; }
     .help-text { color: var(--text-tertiary); font-size: 12px; }
     .message { min-height: 20px; color: var(--success-color); font-size: 12px; }
@@ -440,29 +444,67 @@
         <section class="guard-subview" data-guard-view="settings" role="tabpanel" hidden>
           <div class="settings-panel">
             <div class="panel-header">
-              <div><h2 class="panel-title">配置</h2><p class="panel-subtitle">实时守护由 CPA 核心执行；插件负责保存策略和返回 flush、retry、fail action。</p></div>
+              <div><h2 class="panel-title">配置</h2><p class="panel-subtitle">四个守护运行区与服务端巡检分开保存。调度线程和间隔保存后重启对应 worker；实时守护阈值对新请求生效。</p></div>
               <div class="panel-extra"><button class="primary-button" id="save-settings" type="button">保存</button><button class="secondary-button" id="refresh-guard" type="button">刷新</button></div>
             </div>
-            <div class="run-panel">
-              <div class="panel-header"><div><h2 class="panel-title">保活探测</h2><p class="panel-subtitle">独立于服务端巡检。按批次探测降智守护 IP，并在探测轮次中清理过期批次。</p></div><div class="panel-extra"><button class="primary-button" id="run-keepalive" type="button">立即保活探测</button><button class="secondary-button" id="refresh-keepalive" type="button">刷新状态</button></div></div>
+            <div class="run-panel" id="guard-runtime-status"></div>
+            <section class="settings-section">
+              <div class="panel-header"><div><h3 class="panel-title">服务端巡检</h3><p class="panel-subtitle">独立于下面四个保活探测区；只控制 inspection scope 的自动巡检。</p></div></div>
+              <div class="settings-grid">
+                <div class="settings-field"><label for="inspection-interval">自动巡检间隔（秒，0=关闭）</label><input class="settings-input" id="inspection-interval" type="number" min="0" max="86400"></div>
+              </div>
+            </section>
+            <section class="settings-section">
+              <div class="panel-header"><div><h3 class="panel-title">1. 探测与页面</h3><p class="panel-subtitle">新录入 IP 进入独立 probe round；页面只读取 guard scope 的结果。</p></div></div>
+              <div class="settings-grid">
+                <div class="settings-field"><label for="worker-count">初次探测 worker 数（线程）</label><input class="settings-input" id="worker-count" type="number" min="1" max="64"></div>
+                <div class="settings-field"><label for="refresh-interval">初次探测间隔（秒，0=关闭自动轮询）</label><input class="settings-input" id="refresh-interval" type="number" min="0" max="3600"></div>
+                <div class="settings-field"><label for="probe-retry-count">单节点探测重试次数</label><input class="settings-input" id="probe-retry-count" type="number" min="1" max="10"></div>
+                <div class="settings-field"><label for="ip-batch-retention-days">IP 批次保留时间（天）</label><input class="settings-input" id="ip-batch-retention-days" type="number" min="1"></div>
+              </div>
+            </section>
+            <section class="settings-section">
+              <div class="panel-header"><div><h3 class="panel-title">2. 保活与复活</h3><p class="panel-subtitle">保活重新检查已纳入批次的节点；复活只领取 unhealthy 节点。两者都不调用服务端巡检。</p></div><div class="panel-extra"><button class="primary-button" id="run-keepalive" type="button">立即保活探测</button><button class="secondary-button" id="refresh-keepalive" type="button">刷新状态</button></div></div>
               <div id="keepalive-status"></div>
               <div id="keepalive-message" class="message"></div>
-            </div>
-            <div class="settings-grid">
-              <div class="settings-field"><label for="inspection-interval">自动巡检间隔（秒，0=关闭）</label><input class="settings-input" id="inspection-interval" type="number" min="0"></div>
-              <div class="settings-field"><label for="keepalive-worker-count">保活 worker 数（线程）</label><input class="settings-input" id="keepalive-worker-count" type="number" min="1" max="64"></div>
-              <div class="settings-field"><label for="keepalive-interval">保活探测间隔（秒）</label><input class="settings-input" id="keepalive-interval" type="number" min="1" max="86400"></div>
-              <div class="settings-field"><label for="keepalive-retry-count">单节点探测重试次数</label><input class="settings-input" id="keepalive-retry-count" type="number" min="1" max="10"></div>
-              <div class="settings-field"><label for="ip-batch-retention-days">IP 批次保留时间（天）</label><input class="settings-input" id="ip-batch-retention-days" type="number" min="1"></div>
-              <div class="settings-field"><label for="first-payload-timeout">首个 payload 超时（秒）</label><input class="settings-input" id="first-payload-timeout" type="number" min="1"></div>
-              <div class="settings-field"><label for="progress-timeout">无进展超时（秒）</label><input class="settings-input" id="progress-timeout" type="number" min="1"></div>
-              <div class="settings-field"><label for="min-summary-chars">最小思考摘要字符数</label><input class="settings-input" id="min-summary-chars" type="number" min="1"></div>
-              <div class="settings-field"><label for="min-encrypted-bytes">最小加密思考字节数</label><input class="settings-input" id="min-encrypted-bytes" type="number" min="1"></div>
-              <div class="settings-field"><label for="encrypted-bytes-per-token">每个思考 token 的加密字节数</label><input class="settings-input" id="encrypted-bytes-per-token" type="number" min="1"></div>
-              <div class="settings-field"><label for="min-output-tokens">最小输出 token 数</label><input class="settings-input" id="min-output-tokens" type="number" min="1"></div>
-              <div class="settings-field"><label for="hard-tps">硬 TPS 阈值</label><input class="settings-input" id="hard-tps" type="number" min="1"></div>
-            </div>
-            <div class="help-text">服务端巡检与保活探测使用独立 worker、轮次、节点 scope 和结果链路。批次查询不触发删除；过期批次只在保活探测轮次中清理。单请求重试上限由 CPA 核心统一控制。</div>
+              <div class="settings-grid">
+                <div class="settings-field"><label for="keepalive-worker-count">保活 worker 数（线程）</label><input class="settings-input" id="keepalive-worker-count" type="number" min="1" max="64"></div>
+                <div class="settings-field"><label for="keepalive-interval">保活探测间隔（秒）</label><input class="settings-input" id="keepalive-interval" type="number" min="1" max="86400"></div>
+                <div class="settings-field"><label for="revive-interval">复活探测间隔（秒）</label><input class="settings-input" id="revive-interval" type="number" min="1" max="86400"></div>
+              </div>
+            </section>
+            <section class="settings-section">
+              <div class="panel-header"><div><h3 class="panel-title">3. 健康槽位</h3><p class="panel-subtitle">健康节点按最近检查时间分配 primary 与 candidate 槽位；过期节点不进入槽位。</p></div></div>
+              <div class="settings-grid">
+                <div class="settings-field"><label for="healthy-slot-count">健康主槽位数</label><input class="settings-input" id="healthy-slot-count" type="number" min="1" max="1000"></div>
+                <div class="settings-field"><label for="healthy-candidate-slot-count">健康候选槽位数</label><input class="settings-input" id="healthy-candidate-slot-count" type="number" min="0" max="1000"></div>
+                <div class="settings-field"><label for="healthy-slot-max-age-minutes">槽位最大健康年龄（分钟）</label><input class="settings-input" id="healthy-slot-max-age-minutes" type="number" min="1" max="10080"></div>
+                <div class="settings-field"><label for="quality-worker-count">质量探测 worker 数（线程）</label><input class="settings-input" id="quality-worker-count" type="number" min="1" max="64"></div>
+                <div class="settings-field"><label for="quality-probe-timeout-seconds">质量探测超时（秒）</label><input class="settings-input" id="quality-probe-timeout-seconds" type="number" min="1" max="600"></div>
+                <div class="settings-field"><label for="quality-probe-model">质量探测模型</label><input class="settings-input" id="quality-probe-model" type="text" maxlength="128"></div>
+                <div class="settings-field"><label for="quality-soft-tps">质量软 TPS 阈值</label><input class="settings-input" id="quality-soft-tps" type="number" min="0.1" step="0.1"></div>
+                <div class="settings-field"><label for="quality-hard-tps">质量硬 TPS 阈值</label><input class="settings-input" id="quality-hard-tps" type="number" min="0.1" step="0.1"></div>
+                <div class="settings-field"><label for="quality-llm-probe-enabled">启用 LLM 质量探测（0/1）</label><input class="settings-input" id="quality-llm-probe-enabled" type="number" min="0" max="1" step="1"></div>
+              </div>
+            </section>
+            <section class="settings-section">
+              <div class="panel-header"><div><h3 class="panel-title">4. 实时守护</h3><p class="panel-subtitle">CPA 核心执行流式判定；这里保存首字、生成、空闲和 thinking evidence 阈值。</p></div></div>
+              <div class="settings-grid">
+                <div class="settings-field"><label for="realtime-guard-ttfb-seconds">TTFB 阈值（秒）</label><input class="settings-input" id="realtime-guard-ttfb-seconds" type="number" min="0.1" step="0.1"></div>
+                <div class="settings-field"><label for="realtime-guard-generation-seconds">生成阶段阈值（秒）</label><input class="settings-input" id="realtime-guard-generation-seconds" type="number" min="0.1" step="0.1"></div>
+                <div class="settings-field"><label for="realtime-guard-token-threshold">token 阈值</label><input class="settings-input" id="realtime-guard-token-threshold" type="number" min="1"></div>
+                <div class="settings-field"><label for="realtime-guard-timeout-seconds">首个 payload 超时（秒）</label><input class="settings-input" id="realtime-guard-timeout-seconds" type="number" min="1"></div>
+                <div class="settings-field"><label for="realtime-guard-idle-timeout-seconds">无进展超时（秒）</label><input class="settings-input" id="realtime-guard-idle-timeout-seconds" type="number" min="1"></div>
+                <div class="settings-field"><label for="realtime-guard-min-summary-chars">最小思考摘要字符数</label><input class="settings-input" id="realtime-guard-min-summary-chars" type="number" min="1"></div>
+                <div class="settings-field"><label for="realtime-guard-min-encrypted-bytes">最小加密思考字节数</label><input class="settings-input" id="realtime-guard-min-encrypted-bytes" type="number" min="64"></div>
+                <div class="settings-field"><label for="realtime-guard-bytes-per-token">每个思考 token 的加密字节数</label><input class="settings-input" id="realtime-guard-bytes-per-token" type="number" min="1"></div>
+                <div class="settings-field"><label for="realtime-guard-min-output-tokens">最小输出 token 数</label><input class="settings-input" id="realtime-guard-min-output-tokens" type="number" min="8"></div>
+                <div class="settings-field"><label for="realtime-guard-burst-min-reasoning-tokens">burst 最小思考 token 数</label><input class="settings-input" id="realtime-guard-burst-min-reasoning-tokens" type="number" min="1"></div>
+                <div class="settings-field"><label for="realtime-guard-burst-max-visible-tokens">burst 最大可见 token 数</label><input class="settings-input" id="realtime-guard-burst-max-visible-tokens" type="number" min="1"></div>
+                <div class="settings-field"><label for="realtime-guard-burst-max-window-ms">burst 最大窗口（毫秒）</label><input class="settings-input" id="realtime-guard-burst-max-window-ms" type="number" min="1"></div>
+              </div>
+            </section>
+            <div class="help-text">服务器巡检 scope=inspection；保活、复活、健康槽位和实时守护 scope=guard。页面不读取、接收或保存 Management key、xAI 凭据。</div>
             <div id="settings-message" class="message"></div>
           </div>
         </section>
@@ -558,7 +600,7 @@ socks5://203.0.113.11:1080
     const statusLabel = (key) => ({enabled:'已启用', quota:'额度耗尽', disabled:'已停用', abnormal:'账号异常'}[key] || '账号异常');
     const statusTone = (key) => ({enabled:'status-good', quota:'status-violet', disabled:'status-warn', abnormal:'status-bad'}[key] || 'status-bad');
     const nodeTone = (status) => 'node-' + String(status || 'uninspected').toLowerCase();
-    const nodeLabel = (status) => ({healthy:'健康', unhealthy:'异常', inspecting:'检测中', keepalive_probing:'保活探测中', disabled:'已停用', uninspected:'未检测'}[status] || status || '未检测');
+    const nodeLabel = (status) => ({healthy:'健康', healthy_candidate:'候选健康', healthy_fallback:'保底健康', unhealthy:'异常', inspecting:'检测中', probing:'初次探测中', keepalive_probing:'保活探测中', revive_probing:'复活探测中', disabled:'已停用', uninspected:'未检测'}[status] || status || '未检测');
     const accountName = (item) => item.authName || item.authIndex || '未命名账号';
     const accountDisplayName = (item) => state.mask === 'masked' ? maskAccount(accountName(item)) : accountName(item);
 
@@ -671,8 +713,8 @@ socks5://203.0.113.11:1080
     }
 
     function renderGuardNodes() {
-      const rows = state.guardNodes.map((node) => `<tr><td><span class="number-badge">#${node.id}</span></td><td><div class="node-cell"><strong class="mono">${escapeHTML(node.address || '—')}</strong>${node.lastError ? `<span class="subline">${escapeHTML(node.lastError)}</span>` : ''}</div></td><td><span class="node-status ${nodeTone(node.status)}">${nodeLabel(node.status)}</span></td><td>${node.latencyMs ? escapeHTML(node.latencyMs) + ' ms' : '—'}</td><td class="mono">${escapeHTML(node.exitIp || '—')}</td><td>${escapeHTML(node.country || '—')}</td><td>${formatDate(node.createdAt)}</td></tr>`).join('');
-      $('guard-nodes-table').innerHTML = `<table class="data-table node-table"><thead><tr><th>ID</th><th>节点地址</th><th>状态</th><th>延迟</th><th>出口 IP</th><th>国家</th><th>录入时间</th></tr></thead><tbody>${rows || '<tr><td class="empty-cell" colspan="7">暂无通过【增加IP】录入的 IP。</td></tr>'}</tbody></table>`;
+      const rows = state.guardNodes.map((node) => `<tr><td><span class="number-badge">#${node.id}</span></td><td><div class="node-cell"><strong class="mono">${escapeHTML(node.address || '—')}</strong>${node.lastError ? `<span class="subline">${escapeHTML(node.lastError)}</span>` : ''}</div></td><td><span class="node-status ${nodeTone(node.status)}">${nodeLabel(node.status)}</span></td><td><span class="type-badge">${node.slotKind ? `${escapeHTML(node.slotKind)} #${node.slotId}` : '未分配'}</span></td><td>${node.latencyMs ? escapeHTML(node.latencyMs) + ' ms' : '—'}</td><td class="mono">${escapeHTML(node.exitIp || '—')}</td><td>${escapeHTML(node.country || '—')}</td><td>${formatDate(node.createdAt)}</td></tr>`).join('');
+      $('guard-nodes-table').innerHTML = `<table class="data-table node-table"><thead><tr><th>ID</th><th>节点地址</th><th>状态</th><th>健康槽位</th><th>延迟</th><th>出口 IP</th><th>国家</th><th>录入时间</th></tr></thead><tbody>${rows || '<tr><td class="empty-cell" colspan="8">暂无通过【增加IP】录入的 IP。</td></tr>'}</tbody></table>`;
     }
 
     function renderBatches() {
@@ -693,8 +735,55 @@ socks5://203.0.113.11:1080
 
     function renderSettings() {
       if (!state.settings) return;
-      const fields = {'inspection-interval':'inspectionIntervalSeconds','keepalive-worker-count':'keepaliveWorkerCount','keepalive-interval':'keepaliveIntervalSeconds','keepalive-retry-count':'keepaliveProbeRetryCount','ip-batch-retention-days':'ipBatchRetentionDays','first-payload-timeout':'firstPayloadTimeout','progress-timeout':'progressTimeout','min-summary-chars':'minSummaryChars','min-encrypted-bytes':'minEncryptedBytes','encrypted-bytes-per-token':'encryptedBytesPerToken','min-output-tokens':'minOutputTokens','hard-tps':'hardTPS'};
-      Object.keys(fields).forEach((id) => { $(id).value = state.settings[fields[id]] ?? ''; });
+      const fields = {
+        'inspection-interval':'inspectionIntervalSeconds',
+        'worker-count':'workerCount',
+        'refresh-interval':'refreshIntervalSeconds',
+        'probe-retry-count':'probeRetryCount',
+        'ip-batch-retention-days':'ipBatchRetentionDays',
+        'keepalive-worker-count':'keepaliveWorkerCount',
+        'keepalive-interval':'keepaliveIntervalSeconds',
+        'revive-interval':'reviveIntervalSeconds',
+        'healthy-slot-count':'healthySlotCount',
+        'healthy-candidate-slot-count':'healthyCandidateSlotCount',
+        'healthy-slot-max-age-minutes':'healthySlotMaxAgeMinutes',
+        'quality-worker-count':'qualityWorkerCount',
+        'quality-probe-timeout-seconds':'qualityProbeTimeoutSeconds',
+        'quality-probe-model':'qualityProbeModel',
+        'quality-soft-tps':'qualitySoftTPS',
+        'quality-hard-tps':'qualityHardTPS',
+        'quality-llm-probe-enabled':'qualityLLMProbeEnabled',
+        'realtime-guard-ttfb-seconds':'realtimeGuardTTFBSeconds',
+        'realtime-guard-generation-seconds':'realtimeGuardGenerationSeconds',
+        'realtime-guard-token-threshold':'realtimeGuardTokenThreshold',
+        'realtime-guard-timeout-seconds':'realtimeGuardTimeoutSeconds',
+        'realtime-guard-idle-timeout-seconds':'realtimeGuardIdleTimeoutSeconds',
+        'realtime-guard-min-summary-chars':'realtimeGuardMinSummaryChars',
+        'realtime-guard-min-encrypted-bytes':'realtimeGuardMinEncryptedBytes',
+        'realtime-guard-bytes-per-token':'realtimeGuardEncryptedBytesPerReasoningToken',
+        'realtime-guard-min-output-tokens':'realtimeGuardMinOutputTokens',
+        'realtime-guard-burst-min-reasoning-tokens':'realtimeGuardBurstMinReasoningTokens',
+        'realtime-guard-burst-max-visible-tokens':'realtimeGuardBurstMaxVisibleTokens',
+        'realtime-guard-burst-max-window-ms':'realtimeGuardBurstMaxWindowMs'
+      };
+      Object.keys(fields).forEach((id) => {
+        const key = fields[id];
+        $(id).value = key === 'qualityLLMProbeEnabled' ? (state.settings[key] ? 1 : 0) : state.settings[key] ?? '';
+      });
+    }
+
+    function renderGuardRuntimeStatus() {
+      const guard = state.summary && state.summary.guardNodes ? state.summary.guardNodes : {};
+      const slots = state.summary && state.summary.healthySlots ? state.summary.healthySlots : {};
+      const cards = [
+        ['初次探测中', guard.probing || 0, 'P', 'violet'],
+        ['健康主槽位', slots.primary || 0, 'H', 'green'],
+        ['健康候选槽位', slots.candidate || 0, 'C', 'blue'],
+        ['异常待复活', guard.unhealthy || 0, '!', 'red']
+      ];
+      const schedule = state.keepalive && state.keepalive.schedule;
+      const status = schedule ? (schedule.running ? '保活运行中' : schedule.pending ? '保活等待执行' : '保活等待下一轮') : '保活状态未读取';
+      $('guard-runtime-status').innerHTML = `<div class="panel-header"><div><h3 class="panel-title">运行状态</h3><p class="panel-subtitle">${status}；健康槽位由最近一次 guard 探测结果重分配。</p></div></div><div class="summary-grid">${cards.map((card) => `<article class="summary-card tone-${card[3]}"><div class="summary-header"><span class="summary-icon">${card[2]}</span><span class="summary-label">${card[0]}</span></div><strong class="summary-value">${card[1]}</strong></article>`).join('')}</div>`;
     }
 
     function renderKeepalive() {
@@ -726,13 +815,14 @@ socks5://203.0.113.11:1080
     }
     async function refreshGuard() {
       try {
-        const result = await Promise.all([api('/api/batch-nodes'), api('/api/batches'), api('/api/degradation'), api('/api/settings'), api('/api/logs'), api('/api/keepalive')]);
+        const result = await Promise.all([api('/api/batch-nodes'), api('/api/batches'), api('/api/degradation'), api('/api/settings'), api('/api/logs'), api('/api/keepalive'), api('/api/summary')]);
         state.guardNodes = result[0];
         state.batches = result[1].items;
         state.degradation = result[2];
         state.settings = result[3];
         state.logs = result[4];
         state.keepalive = result[5];
+        state.summary = result[6];
         state.batchNodes = state.selectedBatchID ? (await api(`/api/batches/${encodeURIComponent(state.selectedBatchID)}/nodes`)).items : [];
         setMessage('guard-ip-error', '');
         setMessage('batch-message', '');
@@ -740,6 +830,7 @@ socks5://203.0.113.11:1080
         renderGuardNodes();
         renderBatches();
         renderSettings();
+        renderGuardRuntimeStatus();
         renderKeepalive();
         renderDegradation();
         renderLogs();
@@ -783,8 +874,45 @@ socks5://203.0.113.11:1080
       if (target.id === 'refresh-guard') { await refreshGuard(); return; }
       if (target.id === 'run-keepalive') { setBusy(true, '保活探测排队中…'); try { await api('/api/keepalive/run', 'POST', {}); await refreshGuard(); setMessage('keepalive-message', '独立保活探测已排队。'); } catch (error) { setMessage('keepalive-message', error.message, true); } finally { setBusy(false); } return; }
       if (target.id === 'run-inspection') { setBusy(true, '服务端巡检中…'); try { const text = $('node-input').value.trim(); if (text) { await api('/api/nodes', 'POST', {text}); $('node-input').value = ''; } await api('/api/inspection', 'POST', {}); await refreshInspection(); setMessage('node-message', '巡检完成。'); } catch (error) { setMessage('node-message', error.message, true); } finally { setBusy(false); } return; }
-      if (target.id === 'save-settings') { const body = {inspectionIntervalSeconds:Number($('inspection-interval').value), keepaliveWorkerCount:Number($('keepalive-worker-count').value), keepaliveIntervalSeconds:Number($('keepalive-interval').value), keepaliveProbeRetryCount:Number($('keepalive-retry-count').value), ipBatchRetentionDays:Number($('ip-batch-retention-days').value), firstPayloadTimeout:Number($('first-payload-timeout').value), progressTimeout:Number($('progress-timeout').value), minSummaryChars:Number($('min-summary-chars').value), minEncryptedBytes:Number($('min-encrypted-bytes').value), encryptedBytesPerToken:Number($('encrypted-bytes-per-token').value), minOutputTokens:Number($('min-output-tokens').value), hardTPS:Number($('hard-tps').value)}; setBusy(true, '保存策略中…'); try { state.settings = await api('/api/settings', 'PUT', body); renderSettings(); await refreshGuard(); setMessage('settings-message', '配置已保存。'); } catch (error) { setMessage('settings-message', error.message, true); } finally { setBusy(false); } }
-    });
+      if (target.id === 'save-settings') {
+        const numberField = (id) => Number($(id).value);
+        const body = {
+          inspectionIntervalSeconds: numberField('inspection-interval'),
+          workerCount: numberField('worker-count'),
+          refreshIntervalSeconds: numberField('refresh-interval'),
+          probeRetryCount: numberField('probe-retry-count'),
+          ipBatchRetentionDays: numberField('ip-batch-retention-days'),
+          keepaliveWorkerCount: numberField('keepalive-worker-count'),
+          keepaliveIntervalSeconds: numberField('keepalive-interval'),
+          reviveIntervalSeconds: numberField('revive-interval'),
+          healthySlotCount: numberField('healthy-slot-count'),
+          healthyCandidateSlotCount: numberField('healthy-candidate-slot-count'),
+          healthySlotMaxAgeMinutes: numberField('healthy-slot-max-age-minutes'),
+          qualityWorkerCount: numberField('quality-worker-count'),
+          qualityProbeTimeoutSeconds: numberField('quality-probe-timeout-seconds'),
+          qualityProbeModel: $('quality-probe-model').value.trim(),
+          qualitySoftTPS: numberField('quality-soft-tps'),
+          qualityHardTPS: numberField('quality-hard-tps'),
+          qualityLLMProbeEnabled: numberField('quality-llm-probe-enabled') === 1,
+          realtimeGuardTTFBSeconds: numberField('realtime-guard-ttfb-seconds'),
+          realtimeGuardGenerationSeconds: numberField('realtime-guard-generation-seconds'),
+          realtimeGuardTokenThreshold: numberField('realtime-guard-token-threshold'),
+          realtimeGuardTimeoutSeconds: numberField('realtime-guard-timeout-seconds'),
+          realtimeGuardIdleTimeoutSeconds: numberField('realtime-guard-idle-timeout-seconds'),
+          realtimeGuardMinSummaryChars: numberField('realtime-guard-min-summary-chars'),
+          realtimeGuardMinEncryptedBytes: numberField('realtime-guard-min-encrypted-bytes'),
+          realtimeGuardEncryptedBytesPerReasoningToken: numberField('realtime-guard-bytes-per-token'),
+          realtimeGuardMinOutputTokens: numberField('realtime-guard-min-output-tokens'),
+          realtimeGuardBurstMinReasoningTokens: numberField('realtime-guard-burst-min-reasoning-tokens'),
+          realtimeGuardBurstMaxVisibleTokens: numberField('realtime-guard-burst-max-visible-tokens'),
+          realtimeGuardBurstMaxWindowMs: numberField('realtime-guard-burst-max-window-ms')
+        };
+        setBusy(true, '保存策略中…');
+        try { state.settings = await api('/api/settings', 'PUT', body); renderSettings(); await refreshGuard(); setMessage('settings-message', '配置已保存。'); }
+        catch (error) { setMessage('settings-message', error.message, true); }
+        finally { setBusy(false); }
+        return;
+      }    });
 
     $('account-search').addEventListener('input', (event) => { state.keyword = event.target.value; state.page = 1; renderAccountTable(); });
     $('account-page-size').addEventListener('change', (event) => { state.pageSize = Number(event.target.value); state.page = 1; renderAccountTable(); });

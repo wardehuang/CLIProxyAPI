@@ -166,7 +166,7 @@ func runKeepaliveRound(ctx context.Context, store *guardianStore, settings plugi
 		workerGroup.Add(1)
 		go func() {
 			defer workerGroup.Done()
-			runKeepaliveWorker(ctx, store, roundID, settings.KeepaliveProbeRetryCount, &successCount, &failureCount)
+			runKeepaliveWorker(ctx, store, roundID, settings.ProbeRetryCount, &successCount, &failureCount)
 		}()
 	}
 	workerGroup.Wait()
@@ -179,6 +179,9 @@ func runKeepaliveRound(ctx context.Context, store *guardianStore, settings plugi
 		return ctx.Err()
 	}
 	if err := store.finishKeepaliveRound(roundID, "completed", successCount.Load(), failureCount.Load(), deletedBatches, deletedNodes); err != nil {
+		return err
+	}
+	if err := store.reconcileHealthySlots(settings); err != nil {
 		return err
 	}
 	return store.appendLog(logLevelInfo, "keepalive.round_completed", "保活探测轮次完成", fmt.Sprintf("候选 %d，健康 %d，异常 %d，删除批次 %d，删除节点 %d", candidateCount, successCount.Load(), failureCount.Load(), deletedBatches, deletedNodes))

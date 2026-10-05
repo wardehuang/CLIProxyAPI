@@ -21,8 +21,13 @@ type runtimeController struct {
 	store            *guardianStore
 	inspectionCancel context.CancelFunc
 	inspectionGroup  sync.WaitGroup
+	probeCancel      context.CancelFunc
+	probeGroup       sync.WaitGroup
+	probeTrigger     chan struct{}
 	keepaliveCancel  context.CancelFunc
 	keepaliveGroup   sync.WaitGroup
+	reviveCancel     context.CancelFunc
+	reviveGroup      sync.WaitGroup
 	keepaliveState   *keepaliveScheduleState
 	config           pluginConfig
 }
@@ -60,7 +65,13 @@ func (controller *runtimeController) configure(config pluginConfig) error {
 	if settings.InspectionIntervalSeconds > 0 {
 		controller.startInspectionWorkerLocked(settings.InspectionIntervalSeconds)
 	}
-	controller.startKeepaliveWorkerLocked(settings)
+	controller.startInitialProbeWorkerLocked(settings)
+	if settings.KeepaliveIntervalSeconds > 0 {
+		controller.startKeepaliveWorkerLocked(settings)
+	}
+	if settings.ReviveIntervalSeconds > 0 {
+		controller.startReviveWorkerLocked(settings)
+	}
 	return controller.store.appendLog(logLevelInfo, "plugin.configured", "xAI Guardian 已初始化", fmt.Sprintf("数据库 %s", controller.store.path))
 }
 
@@ -84,7 +95,13 @@ func (controller *runtimeController) ensure() error {
 	if settings.InspectionIntervalSeconds > 0 {
 		controller.startInspectionWorkerLocked(settings.InspectionIntervalSeconds)
 	}
-	controller.startKeepaliveWorkerLocked(settings)
+	controller.startInitialProbeWorkerLocked(settings)
+	if settings.KeepaliveIntervalSeconds > 0 {
+		controller.startKeepaliveWorkerLocked(settings)
+	}
+	if settings.ReviveIntervalSeconds > 0 {
+		controller.startReviveWorkerLocked(settings)
+	}
 	return nil
 }
 
@@ -100,10 +117,21 @@ func (controller *runtimeController) stopWorkersLocked() {
 		controller.inspectionGroup.Wait()
 		controller.inspectionCancel = nil
 	}
+	if controller.probeCancel != nil {
+		controller.probeCancel()
+		controller.probeGroup.Wait()
+		controller.probeCancel = nil
+		controller.probeTrigger = nil
+	}
 	if controller.keepaliveCancel != nil {
 		controller.keepaliveCancel()
 		controller.keepaliveGroup.Wait()
 		controller.keepaliveCancel = nil
+	}
+	if controller.reviveCancel != nil {
+		controller.reviveCancel()
+		controller.reviveGroup.Wait()
+		controller.reviveCancel = nil
 	}
 	controller.keepaliveState = nil
 }
@@ -140,6 +168,30 @@ func (controller *runtimeController) startKeepaliveWorkerLocked(settings pluginS
 	go func() {
 		defer controller.keepaliveGroup.Done()
 		runKeepaliveScheduler(workerContext, store, state, settings)
+	}()
+}
+
+func (controller *runtimeController) startInitialProbeWorkerLocked(settings pluginSettings) {
+	workerContext, cancel := context.WithCancel(context.Background())
+	controller.probeCancel = cancel
+	controller.probeTrigger = make(chan struct{}, 1)
+	store := controller.store
+	trigger := controller.probeTrigger
+	controller.probeGroup.Add(1)
+	go func() {
+		defer controller.probeGroup.Done()
+		runInitialProbeScheduler(workerContext, store, settings, trigger)
+	}()
+}
+
+func (controller *runtimeController) startReviveWorkerLocked(settings pluginSettings) {
+	workerContext, cancel := context.WithCancel(context.Background())
+	controller.reviveCancel = cancel
+	store := controller.store
+	controller.reviveGroup.Add(1)
+	go func() {
+		defer controller.reviveGroup.Done()
+		runReviveScheduler(workerContext, store, settings)
 	}()
 }
 
@@ -278,35 +330,69 @@ func (controller *runtimeController) api(method, path string, query url.Values, 
 
 func (controller *runtimeController) updateSettings(store *guardianStore, body []byte) (int, []byte, error) {
 	var payload struct {
-		InspectionIntervalSeconds int `json:"inspectionIntervalSeconds"`
-		KeepaliveWorkerCount      int `json:"keepaliveWorkerCount"`
-		KeepaliveIntervalSeconds  int `json:"keepaliveIntervalSeconds"`
-		KeepaliveProbeRetryCount  int `json:"keepaliveProbeRetryCount"`
-		FirstPayloadTimeout       int `json:"firstPayloadTimeout"`
-		ProgressTimeout           int `json:"progressTimeout"`
-		MinSummaryChars           int `json:"minSummaryChars"`
-		MinEncryptedBytes         int `json:"minEncryptedBytes"`
-		EncryptedBytesPerToken    int `json:"encryptedBytesPerToken"`
-		MinOutputTokens           int `json:"minOutputTokens"`
-		HardTPS                   int `json:"hardTPS"`
-		IPBatchRetentionDays      int `json:"ipBatchRetentionDays"`
+		WorkerCount                                  int     `json:"workerCount"`
+		RefreshIntervalSeconds                       int     `json:"refreshIntervalSeconds"`
+		InspectionIntervalSeconds                    int     `json:"inspectionIntervalSeconds"`
+		KeepaliveWorkerCount                         int     `json:"keepaliveWorkerCount"`
+		KeepaliveIntervalSeconds                     int     `json:"keepaliveIntervalSeconds"`
+		ReviveIntervalSeconds                        int     `json:"reviveIntervalSeconds"`
+		ProbeRetryCount                              int     `json:"probeRetryCount"`
+		HealthySlotCount                             int     `json:"healthySlotCount"`
+		HealthyCandidateSlotCount                    int     `json:"healthyCandidateSlotCount"`
+		HealthySlotMaxAgeMinutes                     int     `json:"healthySlotMaxAgeMinutes"`
+		QualityWorkerCount                           int     `json:"qualityWorkerCount"`
+		QualityProbeTimeoutSeconds                   int     `json:"qualityProbeTimeoutSeconds"`
+		QualityProbeModel                            string  `json:"qualityProbeModel"`
+		QualitySoftTPS                               float64 `json:"qualitySoftTPS"`
+		QualityHardTPS                               float64 `json:"qualityHardTPS"`
+		QualityLLMProbeEnabled                       bool    `json:"qualityLLMProbeEnabled"`
+		RealtimeGuardTTFBSeconds                     float64 `json:"realtimeGuardTTFBSeconds"`
+		RealtimeGuardGenerationSeconds               float64 `json:"realtimeGuardGenerationSeconds"`
+		RealtimeGuardTokenThreshold                  int     `json:"realtimeGuardTokenThreshold"`
+		RealtimeGuardTimeoutSeconds                  int     `json:"realtimeGuardTimeoutSeconds"`
+		RealtimeGuardIdleTimeoutSeconds              int     `json:"realtimeGuardIdleTimeoutSeconds"`
+		RealtimeGuardMinSummaryChars                 int     `json:"realtimeGuardMinSummaryChars"`
+		RealtimeGuardMinEncryptedBytes               int     `json:"realtimeGuardMinEncryptedBytes"`
+		RealtimeGuardEncryptedBytesPerReasoningToken int     `json:"realtimeGuardEncryptedBytesPerReasoningToken"`
+		RealtimeGuardMinOutputTokens                 int     `json:"realtimeGuardMinOutputTokens"`
+		RealtimeGuardBurstMinReasoningTokens         int     `json:"realtimeGuardBurstMinReasoningTokens"`
+		RealtimeGuardBurstMaxVisibleTokens           int     `json:"realtimeGuardBurstMaxVisibleTokens"`
+		RealtimeGuardBurstMaxWindowMS                int     `json:"realtimeGuardBurstMaxWindowMs"`
+		IPBatchRetentionDays                         int     `json:"ipBatchRetentionDays"`
 	}
 	if err := json.Unmarshal(body, &payload); err != nil {
 		return http.StatusBadRequest, nil, err
 	}
 	settings := pluginSettings{
-		InspectionIntervalSeconds: payload.InspectionIntervalSeconds,
-		KeepaliveWorkerCount:      payload.KeepaliveWorkerCount,
-		KeepaliveIntervalSeconds:  payload.KeepaliveIntervalSeconds,
-		KeepaliveProbeRetryCount:  payload.KeepaliveProbeRetryCount,
-		FirstPayloadTimeout:       payload.FirstPayloadTimeout,
-		ProgressTimeout:           payload.ProgressTimeout,
-		MinSummaryChars:           payload.MinSummaryChars,
-		MinEncryptedBytes:         payload.MinEncryptedBytes,
-		EncryptedBytesPerToken:    payload.EncryptedBytesPerToken,
-		MinOutputTokens:           payload.MinOutputTokens,
-		HardTPS:                   payload.HardTPS,
-		IPBatchRetentionDays:      payload.IPBatchRetentionDays,
+		WorkerCount:                                  payload.WorkerCount,
+		RefreshIntervalSeconds:                       payload.RefreshIntervalSeconds,
+		InspectionIntervalSeconds:                    payload.InspectionIntervalSeconds,
+		KeepaliveWorkerCount:                         payload.KeepaliveWorkerCount,
+		KeepaliveIntervalSeconds:                     payload.KeepaliveIntervalSeconds,
+		ReviveIntervalSeconds:                        payload.ReviveIntervalSeconds,
+		ProbeRetryCount:                              payload.ProbeRetryCount,
+		HealthySlotCount:                             payload.HealthySlotCount,
+		HealthyCandidateSlotCount:                    payload.HealthyCandidateSlotCount,
+		HealthySlotMaxAgeMinutes:                     payload.HealthySlotMaxAgeMinutes,
+		QualityWorkerCount:                           payload.QualityWorkerCount,
+		QualityProbeTimeoutSeconds:                   payload.QualityProbeTimeoutSeconds,
+		QualityProbeModel:                            strings.TrimSpace(payload.QualityProbeModel),
+		QualitySoftTPS:                               payload.QualitySoftTPS,
+		QualityHardTPS:                               payload.QualityHardTPS,
+		QualityLLMProbeEnabled:                       payload.QualityLLMProbeEnabled,
+		RealtimeGuardTTFBSeconds:                     payload.RealtimeGuardTTFBSeconds,
+		RealtimeGuardGenerationSeconds:               payload.RealtimeGuardGenerationSeconds,
+		RealtimeGuardTokenThreshold:                  payload.RealtimeGuardTokenThreshold,
+		RealtimeGuardTimeoutSeconds:                  payload.RealtimeGuardTimeoutSeconds,
+		RealtimeGuardIdleTimeoutSeconds:              payload.RealtimeGuardIdleTimeoutSeconds,
+		RealtimeGuardMinSummaryChars:                 payload.RealtimeGuardMinSummaryChars,
+		RealtimeGuardMinEncryptedBytes:               payload.RealtimeGuardMinEncryptedBytes,
+		RealtimeGuardEncryptedBytesPerReasoningToken: payload.RealtimeGuardEncryptedBytesPerReasoningToken,
+		RealtimeGuardMinOutputTokens:                 payload.RealtimeGuardMinOutputTokens,
+		RealtimeGuardBurstMinReasoningTokens:         payload.RealtimeGuardBurstMinReasoningTokens,
+		RealtimeGuardBurstMaxVisibleTokens:           payload.RealtimeGuardBurstMaxVisibleTokens,
+		RealtimeGuardBurstMaxWindowMS:                payload.RealtimeGuardBurstMaxWindowMS,
+		IPBatchRetentionDays:                         payload.IPBatchRetentionDays,
 	}
 	if err := store.setSettings(settings); err != nil {
 		return http.StatusBadRequest, nil, err
@@ -316,7 +402,13 @@ func (controller *runtimeController) updateSettings(store *guardianStore, body [
 	if settings.InspectionIntervalSeconds > 0 {
 		controller.startInspectionWorkerLocked(settings.InspectionIntervalSeconds)
 	}
-	controller.startKeepaliveWorkerLocked(settings)
+	controller.startInitialProbeWorkerLocked(settings)
+	if settings.KeepaliveIntervalSeconds > 0 {
+		controller.startKeepaliveWorkerLocked(settings)
+	}
+	if settings.ReviveIntervalSeconds > 0 {
+		controller.startReviveWorkerLocked(settings)
+	}
 	controller.mutex.Unlock()
 	_ = store.appendLog(logLevelInfo, "settings.updated", "插件配置已保存", "")
 	return jsonAPIResult(publicSettings(settings), nil)
@@ -353,11 +445,14 @@ func (controller *runtimeController) runKeepaliveNow() (int, []byte, error) {
 	return jsonAPIResult(map[string]any{"accepted": accepted, "running": false}, nil)
 }
 
-func (controller *runtimeController) queueKeepaliveAfterBatch() {
+func (controller *runtimeController) queueInitialProbeAfterBatch() {
 	controller.mutex.RLock()
-	state := controller.keepaliveState
+	trigger := controller.probeTrigger
 	controller.mutex.RUnlock()
-	state.queueNow()
+	select {
+	case trigger <- struct{}{}:
+	default:
+	}
 }
 
 func mapKeepaliveRound(round keepaliveRound, found bool) any {
@@ -439,7 +534,7 @@ func (controller *runtimeController) addIPBatch(store *guardianStore, body []byt
 	}
 	_ = store.appendLog(logLevelInfo, "ip_batch.created", "降智守护 IP 批次已创建", fmt.Sprintf("批次 %s，新增 %d，重复 %d，格式错误 %d", batchID, added, duplicates, len(inputErrors)))
 	if added > 0 {
-		controller.queueKeepaliveAfterBatch()
+		controller.queueInitialProbeAfterBatch()
 	}
 	return jsonAPIResult(map[string]any{"batchId": batchID, "added": added, "duplicates": duplicates, "errors": inputErrors}, nil)
 }
@@ -453,13 +548,28 @@ func jsonAPIResult(value any, err error) (int, []byte, error) {
 }
 
 func publicSettings(settings pluginSettings) map[string]any {
-	return map[string]any{"inspectionIntervalSeconds": settings.InspectionIntervalSeconds, "keepaliveWorkerCount": settings.KeepaliveWorkerCount, "keepaliveIntervalSeconds": settings.KeepaliveIntervalSeconds, "keepaliveProbeRetryCount": settings.KeepaliveProbeRetryCount, "firstPayloadTimeout": settings.FirstPayloadTimeout, "progressTimeout": settings.ProgressTimeout, "minSummaryChars": settings.MinSummaryChars, "minEncryptedBytes": settings.MinEncryptedBytes, "encryptedBytesPerToken": settings.EncryptedBytesPerToken, "minOutputTokens": settings.MinOutputTokens, "hardTPS": settings.HardTPS, "ipBatchRetentionDays": settings.IPBatchRetentionDays}
+	return map[string]any{
+		"workerCount": settings.WorkerCount, "refreshIntervalSeconds": settings.RefreshIntervalSeconds,
+		"inspectionIntervalSeconds": settings.InspectionIntervalSeconds,
+		"keepaliveWorkerCount":      settings.KeepaliveWorkerCount, "keepaliveIntervalSeconds": settings.KeepaliveIntervalSeconds,
+		"reviveIntervalSeconds": settings.ReviveIntervalSeconds, "probeRetryCount": settings.ProbeRetryCount,
+		"healthySlotCount": settings.HealthySlotCount, "healthyCandidateSlotCount": settings.HealthyCandidateSlotCount, "healthySlotMaxAgeMinutes": settings.HealthySlotMaxAgeMinutes,
+		"qualityWorkerCount": settings.QualityWorkerCount, "qualityProbeTimeoutSeconds": settings.QualityProbeTimeoutSeconds, "qualityProbeModel": settings.QualityProbeModel,
+		"qualitySoftTPS": settings.QualitySoftTPS, "qualityHardTPS": settings.QualityHardTPS, "qualityLLMProbeEnabled": settings.QualityLLMProbeEnabled,
+		"realtimeGuardTTFBSeconds": settings.RealtimeGuardTTFBSeconds, "realtimeGuardGenerationSeconds": settings.RealtimeGuardGenerationSeconds,
+		"realtimeGuardTokenThreshold": settings.RealtimeGuardTokenThreshold, "realtimeGuardTimeoutSeconds": settings.RealtimeGuardTimeoutSeconds,
+		"realtimeGuardIdleTimeoutSeconds": settings.RealtimeGuardIdleTimeoutSeconds, "realtimeGuardMinSummaryChars": settings.RealtimeGuardMinSummaryChars,
+		"realtimeGuardMinEncryptedBytes": settings.RealtimeGuardMinEncryptedBytes, "realtimeGuardEncryptedBytesPerReasoningToken": settings.RealtimeGuardEncryptedBytesPerReasoningToken,
+		"realtimeGuardMinOutputTokens": settings.RealtimeGuardMinOutputTokens, "realtimeGuardBurstMinReasoningTokens": settings.RealtimeGuardBurstMinReasoningTokens,
+		"realtimeGuardBurstMaxVisibleTokens": settings.RealtimeGuardBurstMaxVisibleTokens, "realtimeGuardBurstMaxWindowMs": settings.RealtimeGuardBurstMaxWindowMS,
+		"ipBatchRetentionDays": settings.IPBatchRetentionDays,
+	}
 }
 
 func publicNodes(nodes []proxyNode) []map[string]any {
 	items := make([]map[string]any, 0, len(nodes))
 	for _, node := range nodes {
-		items = append(items, map[string]any{"id": node.ID, "address": redactProxyURL(node.Address), "protocol": node.Protocol, "host": node.Host, "port": node.Port, "status": node.Status, "latencyMs": node.LatencyMS, "exitIp": node.ExitIP, "country": node.Country, "lastChecked": node.LastChecked, "lastError": sanitizeLogText(node.LastError), "createdAt": node.CreatedAt})
+		items = append(items, map[string]any{"id": node.ID, "address": redactProxyURL(node.Address), "protocol": node.Protocol, "host": node.Host, "port": node.Port, "status": node.Status, "latencyMs": node.LatencyMS, "exitIp": node.ExitIP, "country": node.Country, "lastChecked": node.LastChecked, "lastError": sanitizeLogText(node.LastError), "createdAt": node.CreatedAt, "slotId": node.SlotID, "slotKind": node.SlotKind})
 	}
 	return items
 }

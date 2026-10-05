@@ -3,6 +3,7 @@ package main
 import (
 	"database/sql"
 	"fmt"
+	"math"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -16,31 +17,60 @@ import (
 )
 
 const (
-	defaultDatabasePath              = "/opt/cli-proxy-api/plugin-data/xai-guardian/xai-guardian.sqlite3"
-	defaultInspectionIntervalSeconds = 0
-	defaultFirstPayloadTimeout       = 120
-	defaultProgressTimeout           = 500
-	defaultMinSummaryChars           = 32
-	defaultMinEncryptedBytes         = 64
-	defaultEncryptedBytesPerToken    = 4
-	defaultMinOutputTokens           = 8
-	defaultHardTPS                   = 1000
-	defaultKeepaliveWorkerCount      = 8
-	defaultKeepaliveIntervalSeconds  = 1800
-	defaultKeepaliveProbeRetryCount  = 3
-	defaultIPBatchRetentionDays      = 6
-	maxInspectionIntervalSeconds     = 86400
-	maxKeepaliveIntervalSeconds      = 86400
-	maxKeepaliveWorkerCount          = 64
-	maxKeepaliveProbeRetryCount      = 10
-	degradationFirstCooling          = 24 * time.Hour
-	degradationSecondCooling         = 48 * time.Hour
-	degradationPermanentCoolingUntil = int64(-1)
-	maxIPBatches                     = 5
+	defaultDatabasePath                                 = "/opt/cli-proxy-api/plugin-data/xai-guardian/xai-guardian.sqlite3"
+	defaultInspectionIntervalSeconds                    = 0
+	defaultWorkerCount                                  = 4
+	defaultRefreshIntervalSeconds                       = 30
+	defaultKeepaliveWorkerCount                         = 8
+	defaultKeepaliveIntervalSeconds                     = 1800
+	defaultReviveIntervalSeconds                        = 1800
+	defaultProbeRetryCount                              = 3
+	defaultHealthySlotCount                             = 50
+	defaultHealthyCandidateCount                        = 20
+	defaultHealthySlotMaxAgeMinutes                     = 350
+	defaultQualityWorkerCount                           = 8
+	defaultQualityProbeTimeout                          = 25
+	defaultQualityProbeModel                            = "grok-4.5"
+	defaultQualitySoftTPS                               = 500.0
+	defaultQualityHardTPS                               = 1000.0
+	defaultQualityLLMProbeEnabled                       = false
+	defaultRealtimeGuardTTFBSeconds                     = 5.0
+	defaultRealtimeGuardGenerationSeconds               = 1.25
+	defaultRealtimeGuardTokenThreshold                  = 300
+	defaultRealtimeGuardTimeoutSeconds                  = 120
+	defaultRealtimeGuardIdleTimeoutSeconds              = 500
+	defaultIPBatchRetentionDays                         = 6
+	defaultRealtimeGuardMinSummaryChars                 = 32
+	defaultRealtimeGuardMinEncryptedBytes               = 256
+	defaultRealtimeGuardEncryptedBytesPerReasoningToken = 4
+	defaultRealtimeGuardMinOutputTokens                 = 8
+	defaultRealtimeGuardBurstMinReasoningTokens         = 80
+	defaultRealtimeGuardBurstMaxVisibleTokens           = 32
+	defaultRealtimeGuardBurstMaxWindowMS                = 1000
+	maxInspectionIntervalSeconds                        = 86400
+	maxProbeWorkers                                     = 64
+	maxRefreshIntervalSeconds                           = 3600
+	maxKeepaliveIntervalSeconds                         = 86400
+	maxReviveIntervalSeconds                            = 86400
+	maxKeepaliveWorkerCount                             = 64
+	maxKeepaliveProbeRetryCount                         = 10
+	maxSlotCount                                        = 1000
+	maxHealthySlotMaxAgeMinutes                         = 10080
+	maxQualityProbeTimeoutSeconds                       = 600
+	maxQualityProbeModelLength                          = 128
+	degradationFirstCooling                             = 24 * time.Hour
+	degradationSecondCooling                            = 48 * time.Hour
+	degradationPermanentCoolingUntil                    = int64(-1)
+	maxIPBatches                                        = 5
 
 	statusUninspected      = "uninspected"
 	statusInspecting       = "inspecting"
 	statusKeepaliveProbing = "keepalive_probing"
+	statusProbing          = "probing"
+	statusReviveProbing    = "revive_probing"
+	statusHealthyCandidate = "healthy_candidate"
+	statusHealthyFallback  = "healthy_fallback"
+	statusCooldown         = "cooldown"
 	statusHealthy          = "healthy"
 	statusUnhealthy        = "unhealthy"
 	statusDisabled         = "disabled"
@@ -53,18 +83,35 @@ const (
 var logURLPattern = regexp.MustCompile(`(?i)\bhttps?://[^\s"'<>]+`)
 
 type pluginSettings struct {
-	InspectionIntervalSeconds int
-	KeepaliveWorkerCount      int
-	KeepaliveIntervalSeconds  int
-	KeepaliveProbeRetryCount  int
-	FirstPayloadTimeout       int
-	ProgressTimeout           int
-	MinSummaryChars           int
-	MinEncryptedBytes         int
-	EncryptedBytesPerToken    int
-	MinOutputTokens           int
-	HardTPS                   int
-	IPBatchRetentionDays      int
+	WorkerCount                                  int
+	RefreshIntervalSeconds                       int
+	InspectionIntervalSeconds                    int
+	KeepaliveWorkerCount                         int
+	KeepaliveIntervalSeconds                     int
+	ReviveIntervalSeconds                        int
+	ProbeRetryCount                              int
+	HealthySlotCount                             int
+	HealthyCandidateSlotCount                    int
+	HealthySlotMaxAgeMinutes                     int
+	QualityWorkerCount                           int
+	QualityProbeTimeoutSeconds                   int
+	QualityProbeModel                            string
+	QualitySoftTPS                               float64
+	QualityHardTPS                               float64
+	QualityLLMProbeEnabled                       bool
+	RealtimeGuardTTFBSeconds                     float64
+	RealtimeGuardGenerationSeconds               float64
+	RealtimeGuardTokenThreshold                  int
+	RealtimeGuardTimeoutSeconds                  int
+	RealtimeGuardIdleTimeoutSeconds              int
+	RealtimeGuardMinSummaryChars                 int
+	RealtimeGuardMinEncryptedBytes               int
+	RealtimeGuardEncryptedBytesPerReasoningToken int
+	RealtimeGuardMinOutputTokens                 int
+	RealtimeGuardBurstMinReasoningTokens         int
+	RealtimeGuardBurstMaxVisibleTokens           int
+	RealtimeGuardBurstMaxWindowMS                int
+	IPBatchRetentionDays                         int
 }
 
 type proxyNode struct {
@@ -80,6 +127,8 @@ type proxyNode struct {
 	LastChecked int64
 	LastError   string
 	CreatedAt   int64
+	SlotID      int64
+	SlotKind    string
 }
 
 type inspectionRun struct {
@@ -250,7 +299,6 @@ CREATE TABLE IF NOT EXISTS nodes (
     created_at INTEGER NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_nodes_status ON nodes(status, id);
-CREATE UNIQUE INDEX IF NOT EXISTS idx_nodes_scope_address ON nodes(scope, address);
 CREATE TABLE IF NOT EXISTS ip_batches (
     batch_id TEXT PRIMARY KEY,
     sequence_number INTEGER NOT NULL DEFAULT 0,
@@ -311,6 +359,49 @@ CREATE TABLE IF NOT EXISTS keepalive_round_nodes (
     FOREIGN KEY(node_id) REFERENCES nodes(id) ON DELETE CASCADE
 );
 CREATE INDEX IF NOT EXISTS idx_keepalive_round_nodes_node ON keepalive_round_nodes(node_id);
+CREATE TABLE IF NOT EXISTS probe_rounds (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    started_at INTEGER NOT NULL,
+    completed_at INTEGER NOT NULL DEFAULT 0,
+    status TEXT NOT NULL,
+    candidate_count INTEGER NOT NULL DEFAULT 0,
+    success_count INTEGER NOT NULL DEFAULT 0,
+    failure_count INTEGER NOT NULL DEFAULT 0
+);
+CREATE TABLE IF NOT EXISTS probe_round_nodes (
+    round_id INTEGER NOT NULL,
+    node_id INTEGER NOT NULL,
+    previous_status TEXT NOT NULL DEFAULT '',
+    PRIMARY KEY(round_id, node_id),
+    FOREIGN KEY(round_id) REFERENCES probe_rounds(id) ON DELETE CASCADE,
+    FOREIGN KEY(node_id) REFERENCES nodes(id) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS idx_probe_round_nodes_node ON probe_round_nodes(node_id);
+CREATE TABLE IF NOT EXISTS revive_rounds (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    started_at INTEGER NOT NULL,
+    completed_at INTEGER NOT NULL DEFAULT 0,
+    status TEXT NOT NULL,
+    candidate_count INTEGER NOT NULL DEFAULT 0,
+    success_count INTEGER NOT NULL DEFAULT 0,
+    failure_count INTEGER NOT NULL DEFAULT 0
+);
+CREATE TABLE IF NOT EXISTS revive_round_nodes (
+    round_id INTEGER NOT NULL,
+    node_id INTEGER NOT NULL,
+    previous_status TEXT NOT NULL DEFAULT '',
+    PRIMARY KEY(round_id, node_id),
+    FOREIGN KEY(round_id) REFERENCES revive_rounds(id) ON DELETE CASCADE,
+    FOREIGN KEY(node_id) REFERENCES nodes(id) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS idx_revive_round_nodes_node ON revive_round_nodes(node_id);
+CREATE TABLE IF NOT EXISTS healthy_slots (
+    slot_id INTEGER PRIMARY KEY,
+    slot_kind TEXT NOT NULL,
+    node_id INTEGER NOT NULL DEFAULT 0,
+    refreshed_at INTEGER NOT NULL DEFAULT 0
+);
+CREATE INDEX IF NOT EXISTS idx_healthy_slots_node ON healthy_slots(node_id);
 CREATE TABLE IF NOT EXISTS auth_bindings (
     auth_index TEXT PRIMARY KEY,
     auth_name TEXT NOT NULL,
@@ -344,21 +435,44 @@ CREATE TABLE IF NOT EXISTS plugin_logs (
 CREATE INDEX IF NOT EXISTS idx_plugin_logs_created ON plugin_logs(created_at DESC, id DESC);
 INSERT OR IGNORE INTO plugin_settings(setting_key, setting_value) VALUES
     ('inspection_interval_seconds', '0'),
+    ('worker_count', '4'),
+    ('refresh_interval_seconds', '30'),
     ('keepalive_worker_count', '8'),
     ('keepalive_interval_seconds', '1800'),
-    ('keepalive_probe_retry_count', '3'),
-
-    ('first_payload_timeout_seconds', '120'),
-    ('progress_timeout_seconds', '500'),
-    ('min_summary_chars', '32'),
-    ('min_encrypted_bytes', '64'),
-    ('encrypted_bytes_per_reasoning_token', '4'),
-    ('min_output_tokens', '8'),
-    ('hard_tps', '1000'),
+    ('revive_interval_seconds', '1800'),
+    ('probe_retry_count', '3'),
+    ('healthy_slot_count', '50'),
+    ('healthy_candidate_slot_count', '20'),
+    ('healthy_slot_max_age_minutes', '350'),
+    ('quality_worker_count', '8'),
+    ('quality_probe_timeout_seconds', '25'),
+    ('quality_probe_model', 'grok-4.5'),
+    ('quality_soft_tps', '500'),
+    ('quality_hard_tps', '1000'),
+    ('quality_llm_probe_enabled', '0'),
+    ('realtime_guard_ttfb_seconds', '5'),
+    ('realtime_guard_generation_seconds', '1.25'),
+    ('realtime_guard_token_threshold', '300'),
+    ('realtime_guard_timeout_seconds', '120'),
+    ('realtime_guard_idle_timeout_seconds', '500'),
+    ('realtime_guard_min_summary_chars', '32'),
+    ('realtime_guard_min_encrypted_bytes', '256'),
+    ('realtime_guard_encrypted_bytes_per_reasoning_token', '4'),
+    ('realtime_guard_min_output_tokens', '8'),
+    ('realtime_guard_burst_min_reasoning_tokens', '80'),
+    ('realtime_guard_burst_max_visible_tokens', '32'),
+    ('realtime_guard_burst_max_window_ms', '1000'),
     ('ip_batch_retention_days', '6');
 `)
 	if err != nil {
 		return fmt.Errorf("initialize sqlite database: %w", err)
+	}
+	if _, err := store.database.Exec(`
+INSERT INTO plugin_settings(setting_key, setting_value)
+SELECT 'probe_retry_count', setting_value FROM plugin_settings
+WHERE setting_key = 'keepalive_probe_retry_count'
+  AND NOT EXISTS (SELECT 1 FROM plugin_settings WHERE setting_key = 'probe_retry_count')`); err != nil {
+		return fmt.Errorf("migrate probe retry setting: %w", err)
 	}
 	if err := store.ensureAuthBindingColumns(); err != nil {
 		return err
@@ -370,6 +484,9 @@ INSERT OR IGNORE INTO plugin_settings(setting_key, setting_value) VALUES
 		return err
 	}
 	if err := store.recoverKeepaliveState(); err != nil {
+		return err
+	}
+	if err := store.recoverProbeAndReviveState(); err != nil {
 		return err
 	}
 	return nil
@@ -394,6 +511,9 @@ func (store *guardianStore) ensureNodeScopeColumn() error {
 	}
 	if err := rows.Err(); err != nil {
 		return fmt.Errorf("iterate node scope schema: %w", err)
+	}
+	if err := rows.Close(); err != nil {
+		return fmt.Errorf("close node scope schema: %w", err)
 	}
 	if _, err := store.database.Exec(`ALTER TABLE nodes ADD COLUMN scope TEXT NOT NULL DEFAULT 'inspection'`); err != nil {
 		return fmt.Errorf("add node scope column: %w", err)
@@ -420,6 +540,9 @@ func (store *guardianStore) ensureAuthBindingColumns() error {
 	}
 	if err := rows.Err(); err != nil {
 		return fmt.Errorf("iterate auth binding schema: %w", err)
+	}
+	if err := rows.Close(); err != nil {
+		return fmt.Errorf("close auth binding schema: %w", err)
 	}
 	columns := []struct {
 		name       string
@@ -449,21 +572,7 @@ func (store *guardianStore) close() error {
 }
 
 func (store *guardianStore) settings() (pluginSettings, error) {
-	settings := pluginSettings{
-		InspectionIntervalSeconds: defaultInspectionIntervalSeconds,
-		KeepaliveWorkerCount:      defaultKeepaliveWorkerCount,
-		KeepaliveIntervalSeconds:  defaultKeepaliveIntervalSeconds,
-		KeepaliveProbeRetryCount:  defaultKeepaliveProbeRetryCount,
-
-		FirstPayloadTimeout:    defaultFirstPayloadTimeout,
-		ProgressTimeout:        defaultProgressTimeout,
-		MinSummaryChars:        defaultMinSummaryChars,
-		MinEncryptedBytes:      defaultMinEncryptedBytes,
-		EncryptedBytesPerToken: defaultEncryptedBytesPerToken,
-		MinOutputTokens:        defaultMinOutputTokens,
-		HardTPS:                defaultHardTPS,
-		IPBatchRetentionDays:   defaultIPBatchRetentionDays,
-	}
+	settings := defaultPluginSettings()
 	rows, err := store.database.Query(`SELECT setting_key, setting_value FROM plugin_settings`)
 	if err != nil {
 		return pluginSettings{}, fmt.Errorf("read plugin settings: %w", err)
@@ -474,36 +583,84 @@ func (store *guardianStore) settings() (pluginSettings, error) {
 		if err := rows.Scan(&key, &value); err != nil {
 			return pluginSettings{}, fmt.Errorf("scan plugin settings: %w", err)
 		}
-		parsed, err := strconv.Atoi(strings.TrimSpace(value))
-		if err != nil {
-			continue
-		}
 		switch key {
-		case "inspection_interval_seconds":
-			settings.InspectionIntervalSeconds = parsed
-		case "keepalive_worker_count":
-			settings.KeepaliveWorkerCount = parsed
-		case "keepalive_interval_seconds":
-			settings.KeepaliveIntervalSeconds = parsed
-		case "keepalive_probe_retry_count":
-			settings.KeepaliveProbeRetryCount = parsed
-
-		case "first_payload_timeout_seconds":
-			settings.FirstPayloadTimeout = parsed
-		case "progress_timeout_seconds":
-			settings.ProgressTimeout = parsed
-		case "min_summary_chars":
-			settings.MinSummaryChars = parsed
-		case "min_encrypted_bytes":
-			settings.MinEncryptedBytes = parsed
-		case "encrypted_bytes_per_reasoning_token":
-			settings.EncryptedBytesPerToken = parsed
-		case "min_output_tokens":
-			settings.MinOutputTokens = parsed
-		case "hard_tps":
-			settings.HardTPS = parsed
-		case "ip_batch_retention_days":
-			settings.IPBatchRetentionDays = parsed
+		case "quality_probe_model":
+			settings.QualityProbeModel = strings.TrimSpace(value)
+		case "quality_llm_probe_enabled":
+			settings.QualityLLMProbeEnabled = strings.TrimSpace(value) == "1" || strings.EqualFold(strings.TrimSpace(value), "true")
+		case "quality_soft_tps":
+			parsed, parseErr := strconv.ParseFloat(strings.TrimSpace(value), 64)
+			if parseErr == nil {
+				settings.QualitySoftTPS = parsed
+			}
+		case "quality_hard_tps":
+			parsed, parseErr := strconv.ParseFloat(strings.TrimSpace(value), 64)
+			if parseErr == nil {
+				settings.QualityHardTPS = parsed
+			}
+		case "realtime_guard_ttfb_seconds":
+			parsed, parseErr := strconv.ParseFloat(strings.TrimSpace(value), 64)
+			if parseErr == nil {
+				settings.RealtimeGuardTTFBSeconds = parsed
+			}
+		case "realtime_guard_generation_seconds":
+			parsed, parseErr := strconv.ParseFloat(strings.TrimSpace(value), 64)
+			if parseErr == nil {
+				settings.RealtimeGuardGenerationSeconds = parsed
+			}
+		default:
+			parsed, parseErr := strconv.Atoi(strings.TrimSpace(value))
+			if parseErr != nil {
+				continue
+			}
+			switch key {
+			case "worker_count":
+				settings.WorkerCount = parsed
+			case "refresh_interval_seconds":
+				settings.RefreshIntervalSeconds = parsed
+			case "inspection_interval_seconds":
+				settings.InspectionIntervalSeconds = parsed
+			case "keepalive_worker_count":
+				settings.KeepaliveWorkerCount = parsed
+			case "keepalive_interval_seconds":
+				settings.KeepaliveIntervalSeconds = parsed
+			case "revive_interval_seconds":
+				settings.ReviveIntervalSeconds = parsed
+			case "probe_retry_count":
+				settings.ProbeRetryCount = parsed
+			case "healthy_slot_count":
+				settings.HealthySlotCount = parsed
+			case "healthy_candidate_slot_count":
+				settings.HealthyCandidateSlotCount = parsed
+			case "healthy_slot_max_age_minutes":
+				settings.HealthySlotMaxAgeMinutes = parsed
+			case "quality_worker_count":
+				settings.QualityWorkerCount = parsed
+			case "quality_probe_timeout_seconds":
+				settings.QualityProbeTimeoutSeconds = parsed
+			case "realtime_guard_token_threshold":
+				settings.RealtimeGuardTokenThreshold = parsed
+			case "realtime_guard_timeout_seconds":
+				settings.RealtimeGuardTimeoutSeconds = parsed
+			case "realtime_guard_idle_timeout_seconds":
+				settings.RealtimeGuardIdleTimeoutSeconds = parsed
+			case "realtime_guard_min_summary_chars":
+				settings.RealtimeGuardMinSummaryChars = parsed
+			case "realtime_guard_min_encrypted_bytes":
+				settings.RealtimeGuardMinEncryptedBytes = parsed
+			case "realtime_guard_encrypted_bytes_per_reasoning_token":
+				settings.RealtimeGuardEncryptedBytesPerReasoningToken = parsed
+			case "realtime_guard_min_output_tokens":
+				settings.RealtimeGuardMinOutputTokens = parsed
+			case "realtime_guard_burst_min_reasoning_tokens":
+				settings.RealtimeGuardBurstMinReasoningTokens = parsed
+			case "realtime_guard_burst_max_visible_tokens":
+				settings.RealtimeGuardBurstMaxVisibleTokens = parsed
+			case "realtime_guard_burst_max_window_ms":
+				settings.RealtimeGuardBurstMaxWindowMS = parsed
+			case "ip_batch_retention_days":
+				settings.IPBatchRetentionDays = parsed
+			}
 		}
 	}
 	if err := rows.Err(); err != nil {
@@ -520,19 +677,35 @@ func (store *guardianStore) setSettings(settings pluginSettings) error {
 		return err
 	}
 	values := map[string]string{
-		"inspection_interval_seconds": strconv.Itoa(settings.InspectionIntervalSeconds),
-		"keepalive_worker_count":      strconv.Itoa(settings.KeepaliveWorkerCount),
-		"keepalive_interval_seconds":  strconv.Itoa(settings.KeepaliveIntervalSeconds),
-		"keepalive_probe_retry_count": strconv.Itoa(settings.KeepaliveProbeRetryCount),
-
-		"first_payload_timeout_seconds":       strconv.Itoa(settings.FirstPayloadTimeout),
-		"progress_timeout_seconds":            strconv.Itoa(settings.ProgressTimeout),
-		"min_summary_chars":                   strconv.Itoa(settings.MinSummaryChars),
-		"min_encrypted_bytes":                 strconv.Itoa(settings.MinEncryptedBytes),
-		"encrypted_bytes_per_reasoning_token": strconv.Itoa(settings.EncryptedBytesPerToken),
-		"min_output_tokens":                   strconv.Itoa(settings.MinOutputTokens),
-		"hard_tps":                            strconv.Itoa(settings.HardTPS),
-		"ip_batch_retention_days":             strconv.Itoa(settings.IPBatchRetentionDays),
+		"worker_count":                                       strconv.Itoa(settings.WorkerCount),
+		"refresh_interval_seconds":                           strconv.Itoa(settings.RefreshIntervalSeconds),
+		"inspection_interval_seconds":                        strconv.Itoa(settings.InspectionIntervalSeconds),
+		"keepalive_worker_count":                             strconv.Itoa(settings.KeepaliveWorkerCount),
+		"keepalive_interval_seconds":                         strconv.Itoa(settings.KeepaliveIntervalSeconds),
+		"revive_interval_seconds":                            strconv.Itoa(settings.ReviveIntervalSeconds),
+		"probe_retry_count":                                  strconv.Itoa(settings.ProbeRetryCount),
+		"healthy_slot_count":                                 strconv.Itoa(settings.HealthySlotCount),
+		"healthy_candidate_slot_count":                       strconv.Itoa(settings.HealthyCandidateSlotCount),
+		"healthy_slot_max_age_minutes":                       strconv.Itoa(settings.HealthySlotMaxAgeMinutes),
+		"quality_worker_count":                               strconv.Itoa(settings.QualityWorkerCount),
+		"quality_probe_timeout_seconds":                      strconv.Itoa(settings.QualityProbeTimeoutSeconds),
+		"quality_probe_model":                                strings.TrimSpace(settings.QualityProbeModel),
+		"quality_soft_tps":                                   strconv.FormatFloat(settings.QualitySoftTPS, 'f', -1, 64),
+		"quality_hard_tps":                                   strconv.FormatFloat(settings.QualityHardTPS, 'f', -1, 64),
+		"quality_llm_probe_enabled":                          strconv.FormatBool(settings.QualityLLMProbeEnabled),
+		"realtime_guard_ttfb_seconds":                        strconv.FormatFloat(settings.RealtimeGuardTTFBSeconds, 'f', -1, 64),
+		"realtime_guard_generation_seconds":                  strconv.FormatFloat(settings.RealtimeGuardGenerationSeconds, 'f', -1, 64),
+		"realtime_guard_token_threshold":                     strconv.Itoa(settings.RealtimeGuardTokenThreshold),
+		"realtime_guard_timeout_seconds":                     strconv.Itoa(settings.RealtimeGuardTimeoutSeconds),
+		"realtime_guard_idle_timeout_seconds":                strconv.Itoa(settings.RealtimeGuardIdleTimeoutSeconds),
+		"realtime_guard_min_summary_chars":                   strconv.Itoa(settings.RealtimeGuardMinSummaryChars),
+		"realtime_guard_min_encrypted_bytes":                 strconv.Itoa(settings.RealtimeGuardMinEncryptedBytes),
+		"realtime_guard_encrypted_bytes_per_reasoning_token": strconv.Itoa(settings.RealtimeGuardEncryptedBytesPerReasoningToken),
+		"realtime_guard_min_output_tokens":                   strconv.Itoa(settings.RealtimeGuardMinOutputTokens),
+		"realtime_guard_burst_min_reasoning_tokens":          strconv.Itoa(settings.RealtimeGuardBurstMinReasoningTokens),
+		"realtime_guard_burst_max_visible_tokens":            strconv.Itoa(settings.RealtimeGuardBurstMaxVisibleTokens),
+		"realtime_guard_burst_max_window_ms":                 strconv.Itoa(settings.RealtimeGuardBurstMaxWindowMS),
+		"ip_batch_retention_days":                            strconv.Itoa(settings.IPBatchRetentionDays),
 	}
 	tx, err := store.database.Begin()
 	if err != nil {
@@ -555,21 +728,44 @@ func validateSettings(settings pluginSettings) error {
 	if settings.InspectionIntervalSeconds < 0 || settings.InspectionIntervalSeconds > maxInspectionIntervalSeconds {
 		return fmt.Errorf("inspection interval is out of range")
 	}
+	if settings.WorkerCount < 1 || settings.WorkerCount > maxProbeWorkers {
+		return fmt.Errorf("probe worker count is out of range")
+	}
+	if settings.RefreshIntervalSeconds < 0 || settings.RefreshIntervalSeconds > maxRefreshIntervalSeconds {
+		return fmt.Errorf("probe refresh interval is out of range")
+	}
 	if settings.KeepaliveWorkerCount < 1 || settings.KeepaliveWorkerCount > maxKeepaliveWorkerCount {
 		return fmt.Errorf("keepalive worker count is out of range")
 	}
 	if settings.KeepaliveIntervalSeconds < 1 || settings.KeepaliveIntervalSeconds > maxKeepaliveIntervalSeconds {
 		return fmt.Errorf("keepalive interval is out of range")
 	}
-	if settings.KeepaliveProbeRetryCount < 1 || settings.KeepaliveProbeRetryCount > maxKeepaliveProbeRetryCount {
-		return fmt.Errorf("keepalive probe retry count is out of range")
+	if settings.ReviveIntervalSeconds < 1 || settings.ReviveIntervalSeconds > maxReviveIntervalSeconds {
+		return fmt.Errorf("revive interval is out of range")
 	}
-
-	if settings.FirstPayloadTimeout < 1 || settings.ProgressTimeout < 1 {
-		return fmt.Errorf("stream timeouts must be positive")
+	if settings.ProbeRetryCount < 1 || settings.ProbeRetryCount > maxKeepaliveProbeRetryCount {
+		return fmt.Errorf("probe retry count is out of range")
 	}
-	if settings.MinSummaryChars < 1 || settings.MinEncryptedBytes < 1 || settings.EncryptedBytesPerToken < 1 || settings.MinOutputTokens < 1 || settings.HardTPS < 1 {
-		return fmt.Errorf("xAI evidence thresholds must be positive")
+	if settings.HealthySlotCount < 1 || settings.HealthySlotCount > maxSlotCount || settings.HealthyCandidateSlotCount < 0 || settings.HealthyCandidateSlotCount > maxSlotCount || settings.HealthySlotCount+settings.HealthyCandidateSlotCount > maxSlotCount {
+		return fmt.Errorf("healthy slot counts are out of range")
+	}
+	if settings.HealthySlotMaxAgeMinutes < 1 || settings.HealthySlotMaxAgeMinutes > maxHealthySlotMaxAgeMinutes {
+		return fmt.Errorf("healthy slot max age is out of range")
+	}
+	if settings.QualityWorkerCount < 1 || settings.QualityWorkerCount > maxProbeWorkers || settings.QualityProbeTimeoutSeconds < 1 || settings.QualityProbeTimeoutSeconds > maxQualityProbeTimeoutSeconds {
+		return fmt.Errorf("quality probe settings are out of range")
+	}
+	if strings.TrimSpace(settings.QualityProbeModel) == "" || len(settings.QualityProbeModel) > maxQualityProbeModelLength {
+		return fmt.Errorf("quality probe model is invalid")
+	}
+	if settings.QualitySoftTPS <= 0 || settings.QualityHardTPS <= settings.QualitySoftTPS {
+		return fmt.Errorf("quality hard TPS must be greater than quality soft TPS")
+	}
+	if math.IsNaN(settings.RealtimeGuardTTFBSeconds) || math.IsInf(settings.RealtimeGuardTTFBSeconds, 0) || settings.RealtimeGuardTTFBSeconds <= 0 || math.IsNaN(settings.RealtimeGuardGenerationSeconds) || math.IsInf(settings.RealtimeGuardGenerationSeconds, 0) || settings.RealtimeGuardGenerationSeconds <= 0 {
+		return fmt.Errorf("realtime guard thresholds must be positive")
+	}
+	if settings.RealtimeGuardTokenThreshold < 1 || settings.RealtimeGuardTimeoutSeconds < 1 || settings.RealtimeGuardIdleTimeoutSeconds < 1 || settings.RealtimeGuardMinSummaryChars < 1 || settings.RealtimeGuardMinEncryptedBytes < 64 || settings.RealtimeGuardEncryptedBytesPerReasoningToken < 1 || settings.RealtimeGuardMinOutputTokens < 8 || settings.RealtimeGuardBurstMinReasoningTokens < 1 || settings.RealtimeGuardBurstMaxVisibleTokens < 1 || settings.RealtimeGuardBurstMaxWindowMS < 1 {
+		return fmt.Errorf("realtime guard evidence thresholds are out of range")
 	}
 	if settings.IPBatchRetentionDays < 1 {
 		return fmt.Errorf("IP batch retention days must be positive")
@@ -800,9 +996,10 @@ WHERE scope = 'guard'
 
 func (store *guardianStore) listIPNodes() ([]proxyNode, error) {
 	rows, err := store.database.Query(`
-SELECT DISTINCT nodes.id, nodes.address, nodes.protocol, nodes.host, nodes.port, nodes.status, nodes.latency_ms, nodes.exit_ip, nodes.country, nodes.last_checked, nodes.last_error, nodes.created_at
+SELECT DISTINCT nodes.id, nodes.address, nodes.protocol, nodes.host, nodes.port, nodes.status, nodes.latency_ms, nodes.exit_ip, nodes.country, nodes.last_checked, nodes.last_error, nodes.created_at, COALESCE(healthy_slots.slot_id, 0), COALESCE(healthy_slots.slot_kind, '')
 FROM nodes
 INNER JOIN ip_batch_nodes ON ip_batch_nodes.node_id = nodes.id
+LEFT JOIN healthy_slots ON healthy_slots.node_id = nodes.id
 WHERE nodes.scope = 'guard'
 ORDER BY nodes.id DESC`)
 	if err != nil {
@@ -812,7 +1009,7 @@ ORDER BY nodes.id DESC`)
 	items := make([]proxyNode, 0)
 	for rows.Next() {
 		var item proxyNode
-		if err := rows.Scan(&item.ID, &item.Address, &item.Protocol, &item.Host, &item.Port, &item.Status, &item.LatencyMS, &item.ExitIP, &item.Country, &item.LastChecked, &item.LastError, &item.CreatedAt); err != nil {
+		if err := rows.Scan(&item.ID, &item.Address, &item.Protocol, &item.Host, &item.Port, &item.Status, &item.LatencyMS, &item.ExitIP, &item.Country, &item.LastChecked, &item.LastError, &item.CreatedAt, &item.SlotID, &item.SlotKind); err != nil {
 			return nil, fmt.Errorf("scan IP node: %w", err)
 		}
 		items = append(items, item)
@@ -823,14 +1020,14 @@ ORDER BY nodes.id DESC`)
 func (store *guardianStore) listIPBatches() ([]ipBatch, error) {
 	rows, err := store.database.Query(`
 SELECT batches.batch_id, batches.sequence_number, batches.created_at, batches.total_count, batches.duplicate_count, batches.input_error_count,
-       COALESCE(SUM(CASE WHEN nodes.status IN (?, ?, ?) THEN 1 ELSE 0 END), 0),
-       COALESCE(SUM(CASE WHEN nodes.status = ? THEN 1 ELSE 0 END), 0)
+       COALESCE(SUM(CASE WHEN nodes.status IN (?, ?, ?, ?, ?) THEN 1 ELSE 0 END), 0),
+       COALESCE(SUM(CASE WHEN nodes.status IN (?, ?, ?) THEN 1 ELSE 0 END), 0)
 FROM ip_batches AS batches
 LEFT JOIN ip_batch_nodes AS batch_nodes ON batch_nodes.batch_id = batches.batch_id
 LEFT JOIN nodes ON nodes.id = batch_nodes.node_id AND nodes.scope = 'guard'
 GROUP BY batches.batch_id, batches.sequence_number, batches.created_at, batches.total_count, batches.duplicate_count, batches.input_error_count
 ORDER BY batches.sequence_number DESC, batches.created_at DESC, batches.batch_id DESC
-LIMIT ?`, statusHealthy, statusUnhealthy, statusDisabled, statusHealthy, maxIPBatches)
+LIMIT ?`, statusHealthy, statusHealthyCandidate, statusHealthyFallback, statusUnhealthy, statusDisabled, statusHealthy, statusHealthyCandidate, statusHealthyFallback, maxIPBatches)
 	if err != nil {
 		return nil, fmt.Errorf("list IP batches: %w", err)
 	}
@@ -850,9 +1047,10 @@ LIMIT ?`, statusHealthy, statusUnhealthy, statusDisabled, statusHealthy, maxIPBa
 
 func (store *guardianStore) listIPBatchNodes(batchID string) ([]proxyNode, error) {
 	rows, err := store.database.Query(`
-SELECT nodes.id, nodes.address, nodes.protocol, nodes.host, nodes.port, nodes.status, nodes.latency_ms, nodes.exit_ip, nodes.country, nodes.last_checked, nodes.last_error, nodes.created_at
+SELECT nodes.id, nodes.address, nodes.protocol, nodes.host, nodes.port, nodes.status, nodes.latency_ms, nodes.exit_ip, nodes.country, nodes.last_checked, nodes.last_error, nodes.created_at, COALESCE(healthy_slots.slot_id, 0), COALESCE(healthy_slots.slot_kind, '')
 FROM nodes
 INNER JOIN ip_batch_nodes ON ip_batch_nodes.node_id = nodes.id
+LEFT JOIN healthy_slots ON healthy_slots.node_id = nodes.id
 WHERE ip_batch_nodes.batch_id = ? AND nodes.scope = 'guard'
 ORDER BY nodes.id DESC`, batchID)
 	if err != nil {
@@ -862,7 +1060,7 @@ ORDER BY nodes.id DESC`, batchID)
 	items := make([]proxyNode, 0)
 	for rows.Next() {
 		var item proxyNode
-		if err := rows.Scan(&item.ID, &item.Address, &item.Protocol, &item.Host, &item.Port, &item.Status, &item.LatencyMS, &item.ExitIP, &item.Country, &item.LastChecked, &item.LastError, &item.CreatedAt); err != nil {
+		if err := rows.Scan(&item.ID, &item.Address, &item.Protocol, &item.Host, &item.Port, &item.Status, &item.LatencyMS, &item.ExitIP, &item.Country, &item.LastChecked, &item.LastError, &item.CreatedAt, &item.SlotID, &item.SlotKind); err != nil {
 			return nil, fmt.Errorf("scan IP batch node: %w", err)
 		}
 		items = append(items, item)
@@ -1174,6 +1372,34 @@ func (store *guardianStore) summary() (map[string]any, error) {
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("iterate node summary: %w", err)
 	}
+	if err := rows.Close(); err != nil {
+		return nil, fmt.Errorf("close node summary: %w", err)
+	}
+	guardRows, err := store.database.Query(`SELECT status, COUNT(*) FROM nodes WHERE scope = 'guard' GROUP BY status`)
+	if err != nil {
+		return nil, fmt.Errorf("read guard node summary: %w", err)
+	}
+	guardCounts := map[string]int64{statusUninspected: 0, statusProbing: 0, statusKeepaliveProbing: 0, statusReviveProbing: 0, statusHealthy: 0, statusHealthyCandidate: 0, statusHealthyFallback: 0, statusUnhealthy: 0}
+	for guardRows.Next() {
+		var status string
+		var count int64
+		if err := guardRows.Scan(&status, &count); err != nil {
+			guardRows.Close()
+			return nil, fmt.Errorf("scan guard node summary: %w", err)
+		}
+		guardCounts[status] = count
+	}
+	if err := guardRows.Err(); err != nil {
+		guardRows.Close()
+		return nil, fmt.Errorf("iterate guard node summary: %w", err)
+	}
+	if err := guardRows.Close(); err != nil {
+		return nil, fmt.Errorf("close guard node summary: %w", err)
+	}
+	slotCounts, err := store.healthySlotSummary()
+	if err != nil {
+		return nil, err
+	}
 	var accounts, degraded int64
 	if err := store.database.QueryRow(`SELECT COUNT(*) FROM auth_bindings WHERE inspection_run_id = COALESCE((SELECT id FROM inspection_runs WHERE status = 'completed' ORDER BY id DESC LIMIT 1), 0)`).Scan(&accounts); err != nil {
 		return nil, fmt.Errorf("count auth bindings: %w", err)
@@ -1181,5 +1407,5 @@ func (store *guardianStore) summary() (map[string]any, error) {
 	if err := store.database.QueryRow(`SELECT COUNT(*) FROM degradation_states`).Scan(&degraded); err != nil {
 		return nil, fmt.Errorf("count degradation states: %w", err)
 	}
-	return map[string]any{"nodes": counts, "accountCount": accounts, "degradedAccountCount": degraded}, nil
+	return map[string]any{"nodes": counts, "guardNodes": guardCounts, "healthySlots": slotCounts, "accountCount": accounts, "degradedAccountCount": degraded}, nil
 }
