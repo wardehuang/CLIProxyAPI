@@ -14,18 +14,33 @@ func (store *guardianStore) ensureNodeScopeUniqueIndex() error {
 	}
 	defer rows.Close()
 
-	legacyUniqueAddress := false
-	hasScopedUniqueIndex := false
+	type nodeIndex struct {
+		name   string
+		unique bool
+	}
+	indexes := make([]nodeIndex, 0)
 	for rows.Next() {
 		var sequence, isUnique, partial int
 		var origin, indexName string
 		if err := rows.Scan(&sequence, &indexName, &isUnique, &origin, &partial); err != nil {
 			return fmt.Errorf("scan node index: %w", err)
 		}
-		if isUnique == 0 {
+		indexes = append(indexes, nodeIndex{name: indexName, unique: isUnique != 0})
+	}
+	if err := rows.Err(); err != nil {
+		return fmt.Errorf("iterate node indexes: %w", err)
+	}
+	if err := rows.Close(); err != nil {
+		return fmt.Errorf("close node indexes: %w", err)
+	}
+
+	legacyUniqueAddress := false
+	hasScopedUniqueIndex := false
+	for _, index := range indexes {
+		if !index.unique {
 			continue
 		}
-		columns, err := nodeIndexColumns(store, indexName)
+		columns, err := nodeIndexColumns(store, index.name)
 		if err != nil {
 			return err
 		}
@@ -35,9 +50,6 @@ func (store *guardianStore) ensureNodeScopeUniqueIndex() error {
 		if len(columns) == 2 && ((columns[0] == "scope" && columns[1] == "address") || (columns[0] == "address" && columns[1] == "scope")) {
 			hasScopedUniqueIndex = true
 		}
-	}
-	if err := rows.Err(); err != nil {
-		return fmt.Errorf("iterate node indexes: %w", err)
 	}
 
 	if legacyUniqueAddress {
