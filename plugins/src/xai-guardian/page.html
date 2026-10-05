@@ -150,6 +150,8 @@
     .summary-icon { display: inline-flex; width: 32px; height: 32px; flex: 0 0 32px; align-items: center; justify-content: center; border-radius: 9px; color: var(--summary-accent); background: color-mix(in srgb, var(--summary-accent) 15%, transparent); font-size: 17px; font-weight: 800; }
     .summary-label { overflow: hidden; color: var(--text-secondary); font-size: 13px; font-weight: 700; text-overflow: ellipsis; white-space: nowrap; }
     .summary-value { position: relative; z-index: 1; margin-top: auto; color: var(--text-primary); font-size: 26px; line-height: 1; }
+    button.summary-card[data-guard-status] { width: 100%; color: inherit; text-align: left; cursor: pointer; }
+    button.summary-card[data-guard-status]:hover, button.summary-card[data-guard-status].active { border-color: var(--summary-accent); box-shadow: 0 0 0 2px color-mix(in srgb, var(--summary-accent) 22%, transparent), 0 10px 24px color-mix(in srgb, var(--summary-accent) 15%, transparent); }
 
     .data-panel { min-width: 0; overflow: hidden; border: 1px solid var(--border-color); border-radius: 18px; background: var(--bg-primary); }
     .data-header { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 12px; padding: 12px; border-bottom: 1px solid var(--border-color); background: color-mix(in srgb, var(--bg-primary) 82%, var(--bg-tertiary)); }
@@ -267,8 +269,13 @@
     .run-stat small { display: block; color: var(--text-tertiary); font-size: 11px; }
     .run-stat strong { display: block; margin-top: 5px; font-size: 18px; }
     .settings-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px; }
+    .probe-settings-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); }
     .settings-field { display: grid; gap: 6px; }
     .settings-field label { color: var(--text-secondary); font-size: 12px; font-weight: 700; }
+    .settings-checkbox-field { display: flex; align-items: center; gap: 8px; color: var(--text-secondary); font-size: 13px; font-weight: 700; }
+    .settings-checkbox-field input { width: 18px; height: 18px; accent-color: var(--primary-color); }
+    .settings-help { color: var(--text-tertiary); font-size: 12px; }
+    .page-refresh-field { width: min(100%, 360px); }
     .settings-input { width: 100%; min-height: 38px; padding: 0 10px; border: 1px solid var(--border-color); border-radius: 10px; outline: none; background: var(--bg-tertiary); color: var(--text-primary); }
     .log-table { min-width: 850px; }
     .log-table th:nth-child(1), .log-table td:nth-child(1) { width: 170px; }
@@ -300,7 +307,7 @@
     @container xai-guardian-page (max-width: 1080px) {
       .summary-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); }
       .server-summary-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-      .settings-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+      .settings-grid, .probe-settings-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
     }
     @container xai-guardian-page (max-width: 720px) {
       .page { padding: 18px 14px 32px; }
@@ -308,7 +315,7 @@
       .segmented-tabs { width: 100%; }
       .segmented-tab { flex: 1 1 0; padding-inline: 10px; }
       .mode-switch-copy { margin: 10px 2px 2px; }
-      .summary-grid, .server-summary-grid, .settings-grid, .detail-grid, .run-summary { grid-template-columns: 1fr; }
+      .summary-grid, .server-summary-grid, .settings-grid, .probe-settings-grid, .detail-grid, .run-summary { grid-template-columns: 1fr; }
       .guard-tabs { width: 100%; }
       .guard-tab { flex: 1 1 0; padding-inline: 10px; }
       .account-panel, .server-panel, .guard-panel { padding: 12px; border-radius: 18px; }
@@ -326,12 +333,12 @@
       <div class="mode-switch-main">
         <div class="segmented-tabs" role="tablist" aria-label="xAI Guardian 页面">
           <button class="segmented-tab active" type="button" role="tab" aria-selected="true" data-mode="accounts">账号状态</button>
-          <button class="segmented-tab" type="button" role="tab" aria-selected="false" data-mode="inspection">服务端巡检</button>
+
           <button class="segmented-tab" type="button" role="tab" aria-selected="false" data-mode="guard">降智守护</button>
         </div>
         <div class="mode-switch-copy">
           <strong id="mode-title">账号状态</strong>
-          <p id="mode-description">仅显示最后一次服务端巡检快照；未运行巡检时不显示当前 CPA 账号清单。</p>
+          <p id="mode-description">仅显示最后一次后台账号检查快照；未运行后台账号检查时不显示当前 CPA 账号清单。</p>
         </div>
       </div>
     </section>
@@ -343,7 +350,7 @@
           <div class="data-header">
             <input class="search-input" id="account-search" type="search" placeholder="搜索账号" aria-label="搜索账号">
             <div class="data-actions">
-              <button class="refresh-button" id="refresh-accounts" type="button">刷新</button>
+
               <div class="toggle-group" aria-label="账号显示方式">
                 <button class="pill-button active" type="button" data-mask="full">完整</button>
                 <button class="pill-button" type="button" data-mask="masked">脱敏</button>
@@ -371,32 +378,6 @@
       </section>
     </section>
 
-    <section class="view" data-view="inspection" role="tabpanel">
-      <section class="panel server-panel">
-        <div class="server-summary-grid" id="node-summary"></div>
-        <div class="server-input-panel">
-          <div class="panel-header">
-            <div>
-              <h2 class="panel-title">服务端巡检</h2>
-              <p class="panel-subtitle">维护服务端巡检节点，执行出口 IP、国家和连通性检查。</p>
-            </div>
-            <div class="panel-extra"><button class="primary-button" id="run-inspection" type="button">立即巡检</button><button class="secondary-button" id="refresh-inspection" type="button">刷新</button></div>
-          </div>
-          <textarea class="node-input" id="node-input" placeholder="每行一个代理，例如 http://203.0.113.10:8080；也支持 host:port,出口IP,port,protocol"></textarea>
-          <div class="help-text">不接受带用户名或密码的代理地址。代理凭据不写入插件 SQLite；URL、日志和错误信息会脱敏。</div>
-          <div id="node-message" class="message"></div>
-        </div>
-        <div class="data-panel">
-          <div class="data-header"><div><strong>节点状态</strong><div class="subline">当前插件 SQLite 中保存的服务端巡检节点</div></div></div>
-          <div id="nodes-error" class="message error hidden"></div>
-          <div class="table-wrap" id="nodes-table"></div>
-        </div>
-        <div class="run-panel">
-          <div class="panel-header"><div><h2 class="panel-title">最近巡检</h2><p class="panel-subtitle">只统计本次实际完成检查的节点。</p></div><span class="muted" id="run-updated">尚未运行</span></div>
-          <div id="inspection-run"></div>
-        </div>
-      </section>
-    </section>
 
     <section class="view" data-view="guard" role="tabpanel">
       <section class="panel guard-panel">
@@ -408,10 +389,11 @@
         </nav>
 
         <section class="guard-subview active" data-guard-view="ips" role="tabpanel">
+          <div class="run-panel" id="guard-runtime-status"></div>
           <div class="data-panel">
             <div class="data-header">
-              <div><strong>IP列表</strong><div class="subline">显示通过【增加IP】录入的降智守护 IP；服务端巡检在独立页签执行。</div></div>
-              <div class="data-actions"><button class="primary-button" id="add-ip" type="button">增加IP</button><button class="secondary-button" id="refresh-guard-ips" type="button">刷新</button></div>
+              <div><strong>IP列表</strong><div class="subline">显示通过【增加IP】录入的降智守护 IP；节点探测、保活和复活独立运行。</div></div>
+              <div class="data-actions"><button class="primary-button" id="add-ip" type="button">增加IP</button></div>
             </div>
             <div id="guard-ip-error" class="message error hidden"></div>
             <div class="table-wrap" id="guard-nodes-table"></div>
@@ -421,8 +403,8 @@
         <section class="guard-subview" data-guard-view="batches" role="tabpanel" hidden>
           <div class="data-panel">
             <div class="data-header">
-              <div><strong>批次查看</strong><div class="subline">查看以前通过【增加IP】创建的批次及其节点结果，不显示服务端巡检批次。</div></div>
-              <div class="data-actions"><button class="secondary-button" id="refresh-batches" type="button">刷新</button><button class="secondary-button" id="batch-back" type="button" hidden>返回批次列表</button></div>
+              <div><strong>批次查看</strong><div class="subline">查看以前通过【增加IP】创建的批次及其节点结果，不显示后台账号检查批次。</div></div>
+              <div class="data-actions"><button class="secondary-button" id="batch-back" type="button" hidden>返回批次列表</button></div>
             </div>
             <div id="batch-message" class="message error hidden"></div>
             <div class="table-wrap" id="batches-table"></div>
@@ -444,27 +426,24 @@
         <section class="guard-subview" data-guard-view="settings" role="tabpanel" hidden>
           <div class="settings-panel">
             <div class="panel-header">
-              <div><h2 class="panel-title">配置</h2><p class="panel-subtitle">四个守护运行区与服务端巡检分开保存。调度线程和间隔保存后重启对应 worker；实时守护阈值对新请求生效。</p></div>
-              <div class="panel-extra"><button class="primary-button" id="save-settings" type="button">保存</button><button class="secondary-button" id="refresh-guard" type="button">刷新</button></div>
+              <div><h2 class="panel-title">配置</h2><p class="panel-subtitle">保存到插件 SQLite。探测/保活/复活调度类：下次启动生效。实时守护阈值、页面刷新：立即生效。</p></div>
+              <div class="panel-extra"><span class="help-text">调度类下次启动</span><button class="primary-button" id="save-settings" type="button">保存</button></div>
             </div>
-            <div class="run-panel" id="guard-runtime-status"></div>
             <section class="settings-section">
-              <div class="panel-header"><div><h3 class="panel-title">服务端巡检</h3><p class="panel-subtitle">独立于下面四个保活探测区；只控制 inspection scope 的自动巡检。</p></div></div>
-              <div class="settings-grid">
-                <div class="settings-field"><label for="inspection-interval">自动巡检间隔（秒，0=关闭）</label><input class="settings-input" id="inspection-interval" type="number" min="0" max="86400"></div>
+              <div class="panel-header"><div><h3 class="panel-title">1. 探测与页面</h3><p class="panel-subtitle">新录入 IP 进入独立 probe round；页面刷新只读取 guard scope 的结果，不触发探测。</p></div></div>
+              <label class="settings-checkbox-field" for="debug-enabled"><input id="debug-enabled" type="checkbox">启用调试日志</label>
+              <div class="settings-help">关闭时日志页仅显示守护日志；其他日志页签保留，内容提示需打开调试。立即生效。守护日志最多 100 条；批次查看最多 5 个批次。</div>
+              <div class="settings-grid probe-settings-grid">
+                <div class="settings-field"><label for="worker-count">探测线程数</label><input class="settings-input" id="worker-count" type="number" min="1" max="64" step="1"><span class="settings-help">【未探测】并发 · 1–64</span></div>
+                <div class="settings-field"><label for="probe-retry-count">探测总次数</label><input class="settings-input" id="probe-retry-count" type="number" min="1" max="10" step="1"><span class="settings-help">含首次 · 全失败才异常 · 1–10</span></div>
+                <div class="settings-field"><label for="schedule-group-count">xAI 调度组数</label><input class="settings-input" id="schedule-group-count" type="number" min="1" max="1000" step="1"><span class="settings-help">组级最大并发 · 忙碌时不可修改 · 1–1000 · 下次启动生效</span></div>
               </div>
+              <div class="settings-field page-refresh-field"><label for="refresh-interval">页面刷新（秒）</label><input class="settings-input" id="refresh-interval" type="number" min="5" max="3600" step="5"><span class="settings-help">只读数据 · 不探测 · 5–3600 · 立即生效</span></div>
+              <div class="panel-extra"><button class="secondary-button" id="view-schedule-group-counters" type="button">查看调用次数</button><span class="help-text" id="schedule-group-counters-summary"></span></div>
+              <div id="schedule-group-counters" class="table-wrap" hidden></div>
             </section>
             <section class="settings-section">
-              <div class="panel-header"><div><h3 class="panel-title">1. 探测与页面</h3><p class="panel-subtitle">新录入 IP 进入独立 probe round；页面只读取 guard scope 的结果。</p></div></div>
-              <div class="settings-grid">
-                <div class="settings-field"><label for="worker-count">初次探测 worker 数（线程）</label><input class="settings-input" id="worker-count" type="number" min="1" max="64"></div>
-                <div class="settings-field"><label for="refresh-interval">初次探测间隔（秒，0=关闭自动轮询）</label><input class="settings-input" id="refresh-interval" type="number" min="0" max="3600"></div>
-                <div class="settings-field"><label for="probe-retry-count">单节点探测重试次数</label><input class="settings-input" id="probe-retry-count" type="number" min="1" max="10"></div>
-                <div class="settings-field"><label for="ip-batch-retention-days">IP 批次保留时间（天）</label><input class="settings-input" id="ip-batch-retention-days" type="number" min="1"></div>
-              </div>
-            </section>
-            <section class="settings-section">
-              <div class="panel-header"><div><h3 class="panel-title">2. 保活与复活</h3><p class="panel-subtitle">保活重新检查已纳入批次的节点；复活只领取 unhealthy 节点。两者都不调用服务端巡检。</p></div><div class="panel-extra"><button class="primary-button" id="run-keepalive" type="button">立即保活探测</button><button class="secondary-button" id="refresh-keepalive" type="button">刷新状态</button></div></div>
+              <div class="panel-header"><div><h3 class="panel-title">2. 保活与复活</h3><p class="panel-subtitle">保活复查健康、已连通和冷却中节点；复活只领取异常节点。两者都不调用后台账号检查。</p></div><div class="panel-extra"><button class="primary-button" id="run-keepalive" type="button">立即保活探测</button></div></div>
               <div id="keepalive-status"></div>
               <div id="keepalive-message" class="message"></div>
               <div class="settings-grid">
@@ -504,7 +483,7 @@
                 <div class="settings-field"><label for="realtime-guard-burst-max-window-ms">burst 最大窗口（毫秒）</label><input class="settings-input" id="realtime-guard-burst-max-window-ms" type="number" min="1"></div>
               </div>
             </section>
-            <div class="help-text">服务器巡检 scope=inspection；保活、复活、健康槽位和实时守护 scope=guard。页面不读取、接收或保存 Management key、xAI 凭据。</div>
+            <div class="help-text">IP 列表、保活、复活、健康槽位和实时守护使用 guard 数据域；账号状态后台快照单独维护。页面不读取、接收或保存 Management key、xAI 凭据。</div>
             <div id="settings-message" class="message"></div>
           </div>
         </section>
@@ -562,10 +541,10 @@ socks5://203.0.113.11:1080
       window.parent.postMessage({type:'cpa-plugin-api-request', requestId, endpoint:apiEndpoint, method:'POST', body:payload}, '*');
     });
     const state = {
-      accounts: [], nodes: [], guardNodes: [], batches: [], batchNodes: [], degradation: [], logs: [], settings: null, keepalive: null,
-      inspection: {run: null, results: []}, summary: null,
-      mode: 'accounts', guardTab: 'ips', selectedBatchID: '', filter: 'all', mask: 'full', page: 1, pageSize: 100,
-      keyword: '', expandedAccount: '', busy: false
+      accounts: [], guardNodes: [], batches: [], batchNodes: [], degradation: [], logs: [], settings: null, keepalive: null,
+      summary: null,
+      mode: 'accounts', guardTab: 'ips', selectedBatchID: '', filter: 'all', guardStatusFilter: 'all', mask: 'full', page: 1, pageSize: 100,
+      keyword: '', expandedAccount: '', busy: false, pageRefreshTimer: 0
     };
     const $ = (id) => document.getElementById(id);
     const escapeHTML = (value) => String(value ?? '').replace(/[&<>"']/g, (char) => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[char]));
@@ -600,7 +579,7 @@ socks5://203.0.113.11:1080
     const statusLabel = (key) => ({enabled:'已启用', quota:'额度耗尽', disabled:'已停用', abnormal:'账号异常'}[key] || '账号异常');
     const statusTone = (key) => ({enabled:'status-good', quota:'status-violet', disabled:'status-warn', abnormal:'status-bad'}[key] || 'status-bad');
     const nodeTone = (status) => 'node-' + String(status || 'uninspected').toLowerCase();
-    const nodeLabel = (status) => ({healthy:'健康', healthy_candidate:'候选健康', healthy_fallback:'保底健康', unhealthy:'异常', inspecting:'检测中', probing:'初次探测中', keepalive_probing:'保活探测中', revive_probing:'复活探测中', disabled:'已停用', uninspected:'未检测'}[status] || status || '未检测');
+    const nodeLabel = (status) => ({healthy:'健康', healthy_candidate:'健康备选', healthy_fallback:'健康保底', connected:'已连通', cooldown:'冷却中', unhealthy:'异常', inspecting:'探测中', probing:'探测中', keepalive_probing:'保活探测中', revive_probing:'复活探测中', disabled:'已停用', uninspected:'未探测'}[status] || status || '未探测');
     const accountName = (item) => item.authName || item.authIndex || '未命名账号';
     const accountDisplayName = (item) => state.mask === 'masked' ? maskAccount(accountName(item)) : accountName(item);
 
@@ -623,8 +602,7 @@ socks5://203.0.113.11:1080
 
     function renderMode() {
       const descriptions = {
-        accounts: ['账号状态', '仅显示最后一次服务端巡检快照；未运行巡检时不显示当前 CPA 账号清单。'],
-        inspection: ['服务端巡检', '维护服务端巡检节点，执行出口 IP、国家和连通性检查。'],
+        accounts: ['账号状态', '仅显示最后一次后台账号检查快照；未运行后台账号检查时不显示当前 CPA 账号清单。'],
         guard: ['降智守护', '查看降智记录、守护策略和插件日志。']
       };
       document.querySelectorAll('[data-mode]').forEach((button) => {
@@ -681,39 +659,19 @@ socks5://203.0.113.11:1080
           <td><span class="number-badge">${numberValue(item.scheduleGroup) ?? '—'}</span></td>
           <td><div class="quota-cell"><span class="quota-empty">— 暂无额度 —</span></div></td>
           <td>${formatDate(item.lastInspection)}</td>
-        </tr>${expanded ? `<tr class="detail-row"><td colspan="8"><section class="detail-panel"><div class="detail-hero"><div><span class="detail-eyebrow">xAI Guardian Account</span><h3>${displayName}</h3></div><div class="detail-badges"><span class="status-badge ${statusTone(key)}">${statusLabel(key)}</span><span class="type-badge">${escapeHTML(accountType)}</span></div></div><div class="detail-grid"><div class="detail-section"><h4>基础信息</h4><dl class="detail-list"><div><dt>Auth Index</dt><dd class="mono">${escapeHTML(item.authIndex || '—')}</dd></div><div><dt>账号类型</dt><dd>${escapeHTML(accountType)}</dd></div><div><dt>调度组</dt><dd>${numberValue(item.scheduleGroup) ?? '—'}</dd></div></dl></div><div class="detail-section"><h4>巡检状态</h4><dl class="detail-list"><div><dt>状态</dt><dd>${escapeHTML(item.status || '—')}</dd></div><div><dt>优先级</dt><dd>${numberValue(item.priority) ?? '—'}</dd></div><div><dt>最近巡检</dt><dd>${formatFullDate(item.lastInspection)}</dd></div></dl></div></div></section></td></tr>` : ''}`;
+        </tr>${expanded ? `<tr class="detail-row"><td colspan="8"><section class="detail-panel"><div class="detail-hero"><div><span class="detail-eyebrow">xAI Guardian Account</span><h3>${displayName}</h3></div><div class="detail-badges"><span class="status-badge ${statusTone(key)}">${statusLabel(key)}</span><span class="type-badge">${escapeHTML(accountType)}</span></div></div><div class="detail-grid"><div class="detail-section"><h4>基础信息</h4><dl class="detail-list"><div><dt>Auth Index</dt><dd class="mono">${escapeHTML(item.authIndex || '—')}</dd></div><div><dt>账号类型</dt><dd>${escapeHTML(accountType)}</dd></div><div><dt>调度组</dt><dd>${numberValue(item.scheduleGroup) ?? '—'}</dd></div></dl></div><div class="detail-section"><h4>账号检查状态</h4><dl class="detail-list"><div><dt>状态</dt><dd>${escapeHTML(item.status || '—')}</dd></div><div><dt>优先级</dt><dd>${numberValue(item.priority) ?? '—'}</dd></div><div><dt>最近检查</dt><dd>${formatFullDate(item.lastInspection)}</dd></div></dl></div></div></section></td></tr>` : ''}`;
       }).join('');
-      $('accounts-table').innerHTML = `<table class="data-table account-table"><thead><tr><th>账号</th><th>出口IP</th><th>账号类型</th><th>状态</th><th>优先级</th><th>调度组</th><th>额度窗口</th><th>最后巡检</th></tr></thead><tbody>${body || '<tr><td class="empty-cell" colspan="8">没有可展示的最后一次服务端巡检数据。</td></tr>'}</tbody></table>`;
+      $('accounts-table').innerHTML = `<table class="data-table account-table"><thead><tr><th>账号</th><th>出口IP</th><th>账号类型</th><th>状态</th><th>优先级</th><th>调度组</th><th>额度窗口</th><th>最后检查</th></tr></thead><tbody>${body || '<tr><td class="empty-cell" colspan="8">没有可展示的最后一次后台账号检查数据。</td></tr>'}</tbody></table>`;
       $('accounts-page-info').textContent = `第 ${state.page} / ${totalPages} 页，显示 ${filtered.length ? start + 1 : 0} - ${Math.min(start + state.pageSize, filtered.length)} / ${filtered.length}`;
       $('account-page-prev').disabled = state.page <= 1;
       $('account-page-next').disabled = state.page >= totalPages;
       renderAccountSummary();
     }
 
-    function renderNodeSummary() {
-      const counts = {total:state.nodes.length, healthy:0, unhealthy:0, inspecting:0, uninspected:0};
-      state.nodes.forEach((node) => { if (counts[node.status] !== undefined) counts[node.status] += 1; else counts.uninspected += 1; });
-      const cards = [['节点总数', counts.total, 'N', 'blue'], ['健康', counts.healthy, '✓', 'green'], ['异常', counts.unhealthy, '!', 'red'], ['检测中/未检测', counts.inspecting + counts.uninspected, '…', 'violet']];
-      $('node-summary').innerHTML = cards.map((card) => `<article class="summary-card tone-${card[3]}"><div class="summary-header"><span class="summary-icon">${card[2]}</span><span class="summary-label">${card[0]}</span></div><strong class="summary-value">${card[1]}</strong></article>`).join('');
-    }
-
-    function renderNodes() {
-      const rows = state.nodes.map((node) => `<tr><td><span class="number-badge">#${node.id}</span></td><td><div class="node-cell"><strong class="mono">${escapeHTML(node.address || '—')}</strong>${node.lastError ? `<span class="subline">${escapeHTML(node.lastError)}</span>` : ''}</div></td><td><span class="node-status ${nodeTone(node.status)}">${nodeLabel(node.status)}</span></td><td>${node.latencyMs ? escapeHTML(node.latencyMs) + ' ms' : '—'}</td><td class="mono">${escapeHTML(node.exitIp || '—')}</td><td>${escapeHTML(node.country || '—')}</td><td>${formatDate(node.lastChecked)}</td><td><button class="danger-button" type="button" data-delete-node="${node.id}">删除</button></td></tr>`).join('');
-      $('nodes-table').innerHTML = `<table class="data-table node-table"><thead><tr><th>ID</th><th>节点地址</th><th>状态</th><th>延迟</th><th>出口 IP</th><th>国家</th><th>最近检查</th><th>操作</th></tr></thead><tbody>${rows || '<tr><td class="empty-cell" colspan="8">没有巡检节点。</td></tr>'}</tbody></table>`;
-      renderNodeSummary();
-    }
-
-    function renderInspection() {
-      const run = state.inspection.run;
-      if (!run) { $('inspection-run').innerHTML = '<div class="help-text">尚未运行巡检。</div>'; $('run-updated').textContent = '尚未运行'; return; }
-      $('run-updated').textContent = `完成于 ${formatDate(run.completedAt || run.startedAt)}`;
-      const results = state.inspection.results || [];
-      const rows = results.map((item) => `<tr><td><span class="number-badge">#${item.nodeId}</span></td><td><span class="node-status ${nodeTone(item.status)}">${nodeLabel(item.status)}</span></td><td>${item.latencyMs ? escapeHTML(item.latencyMs) + ' ms' : '—'}</td><td class="mono">${escapeHTML(item.exitIp || '—')}</td><td>${escapeHTML(item.country || '—')}</td><td>${item.error ? escapeHTML(item.error) : '—'}</td><td>${formatDate(item.checkedAt)}</td></tr>`).join('');
-      $('inspection-run').innerHTML = `<div class="run-summary"><div class="run-stat"><small>批次 ID</small><strong>${run.id}</strong></div><div class="run-stat"><small>状态</small><strong>${escapeHTML(run.status)}</strong></div><div class="run-stat"><small>实际检查</small><strong>${run.total}</strong></div><div class="run-stat"><small>健康 / 异常</small><strong>${run.healthy} / ${run.unhealthy}</strong></div></div><div class="help-text">开始：${formatFullDate(run.startedAt)}　完成：${formatFullDate(run.completedAt)}</div><div class="table-wrap"><table class="data-table node-table"><thead><tr><th>节点 ID</th><th>状态</th><th>延迟</th><th>出口 IP</th><th>国家</th><th>错误</th><th>检查时间</th></tr></thead><tbody>${rows || '<tr><td class="empty-cell" colspan="7">本批次没有完成的节点检查。</td></tr>'}</tbody></table></div>`;
-    }
 
     function renderGuardNodes() {
-      const rows = state.guardNodes.map((node) => `<tr><td><span class="number-badge">#${node.id}</span></td><td><div class="node-cell"><strong class="mono">${escapeHTML(node.address || '—')}</strong>${node.lastError ? `<span class="subline">${escapeHTML(node.lastError)}</span>` : ''}</div></td><td><span class="node-status ${nodeTone(node.status)}">${nodeLabel(node.status)}</span></td><td><span class="type-badge">${node.slotKind ? `${escapeHTML(node.slotKind)} #${node.slotId}` : '未分配'}</span></td><td>${node.latencyMs ? escapeHTML(node.latencyMs) + ' ms' : '—'}</td><td class="mono">${escapeHTML(node.exitIp || '—')}</td><td>${escapeHTML(node.country || '—')}</td><td>${formatDate(node.createdAt)}</td></tr>`).join('');
+      const visibleNodes = state.guardStatusFilter === 'all' ? state.guardNodes : state.guardNodes.filter((node) => node.status === state.guardStatusFilter);
+      const rows = visibleNodes.map((node) => `<tr><td><span class="number-badge">#${node.id}</span></td><td><div class="node-cell"><strong class="mono">${escapeHTML(node.address || '—')}</strong>${node.lastError ? `<span class="subline">${escapeHTML(node.lastError)}</span>` : ''}</div></td><td><span class="node-status ${nodeTone(node.status)}">${nodeLabel(node.status)}</span></td><td><span class="type-badge">${node.slotKind ? `${escapeHTML(node.slotKind)} #${node.slotId}` : '未分配'}</span></td><td>${node.latencyMs ? escapeHTML(node.latencyMs) + ' ms' : '—'}</td><td class="mono">${escapeHTML(node.exitIp || '—')}</td><td>${escapeHTML(node.country || '—')}</td><td>${formatDate(node.createdAt)}</td></tr>`).join('');
       $('guard-nodes-table').innerHTML = `<table class="data-table node-table"><thead><tr><th>ID</th><th>节点地址</th><th>状态</th><th>健康槽位</th><th>延迟</th><th>出口 IP</th><th>国家</th><th>录入时间</th></tr></thead><tbody>${rows || '<tr><td class="empty-cell" colspan="8">暂无通过【增加IP】录入的 IP。</td></tr>'}</tbody></table>`;
     }
 
@@ -736,11 +694,10 @@ socks5://203.0.113.11:1080
     function renderSettings() {
       if (!state.settings) return;
       const fields = {
-        'inspection-interval':'inspectionIntervalSeconds',
         'worker-count':'workerCount',
+        'schedule-group-count':'scheduleGroupCount',
         'refresh-interval':'refreshIntervalSeconds',
         'probe-retry-count':'probeRetryCount',
-        'ip-batch-retention-days':'ipBatchRetentionDays',
         'keepalive-worker-count':'keepaliveWorkerCount',
         'keepalive-interval':'keepaliveIntervalSeconds',
         'revive-interval':'reviveIntervalSeconds',
@@ -770,20 +727,28 @@ socks5://203.0.113.11:1080
         const key = fields[id];
         $(id).value = key === 'qualityLLMProbeEnabled' ? (state.settings[key] ? 1 : 0) : state.settings[key] ?? '';
       });
+      $('debug-enabled').checked = Boolean(state.settings.debugEnabled);
     }
 
     function renderGuardRuntimeStatus() {
       const guard = state.summary && state.summary.guardNodes ? state.summary.guardNodes : {};
       const slots = state.summary && state.summary.healthySlots ? state.summary.healthySlots : {};
+      const primaryTotal = slots.primaryTotal || (state.settings && state.settings.healthySlotCount) || 0;
+      const candidateTotal = slots.candidateTotal || (state.settings && state.settings.healthyCandidateSlotCount) || 0;
       const cards = [
-        ['初次探测中', guard.probing || 0, 'P', 'violet'],
-        ['健康主槽位', slots.primary || 0, 'H', 'green'],
-        ['健康候选槽位', slots.candidate || 0, 'C', 'blue'],
-        ['异常待复活', guard.unhealthy || 0, '!', 'red']
+        ['健康', `${guard.healthy || 0}/${primaryTotal}`, 'H', 'green', 'healthy'],
+        ['健康备选', `${guard.healthy_candidate || 0}/${candidateTotal}`, 'C', 'blue', 'healthy_candidate'],
+        ['已连通', guard.connected || 0, '✓', 'green', 'connected'],
+        ['冷却中', guard.cooldown || 0, '⏱', 'amber', 'cooldown'],
+        ['探测中', guard.probing || 0, 'P', 'violet', 'probing'],
+        ['保活探测中', guard.keepalive_probing || 0, 'K', 'violet', 'keepalive_probing'],
+        ['复活探测中', guard.revive_probing || 0, 'R', 'violet', 'revive_probing'],
+        ['未探测', guard.uninspected || 0, '…', 'blue', 'uninspected'],
+        ['异常', guard.unhealthy || 0, '!', 'red', 'unhealthy']
       ];
       const schedule = state.keepalive && state.keepalive.schedule;
       const status = schedule ? (schedule.running ? '保活运行中' : schedule.pending ? '保活等待执行' : '保活等待下一轮') : '保活状态未读取';
-      $('guard-runtime-status').innerHTML = `<div class="panel-header"><div><h3 class="panel-title">运行状态</h3><p class="panel-subtitle">${status}；健康槽位由最近一次 guard 探测结果重分配。</p></div></div><div class="summary-grid">${cards.map((card) => `<article class="summary-card tone-${card[3]}"><div class="summary-header"><span class="summary-icon">${card[2]}</span><span class="summary-label">${card[0]}</span></div><strong class="summary-value">${card[1]}</strong></article>`).join('')}</div>`;
+      $('guard-runtime-status').innerHTML = `<div class="panel-header"><div><h3 class="panel-title">运行状态</h3><p class="panel-subtitle">${status}；点击卡片切换 IP 列表筛选。</p></div><span class="muted">${state.guardStatusFilter === 'all' ? '当前：全部' : `当前：${nodeLabel(state.guardStatusFilter)}`}</span></div><div class="summary-grid">${cards.map((card) => `<button class="summary-card tone-${card[3]}${state.guardStatusFilter === card[4] ? ' active' : ''}" type="button" data-guard-status="${card[4]}"><span class="summary-header"><span class="summary-icon">${card[2]}</span><span class="summary-label">${card[0]}</span></span><strong class="summary-value">${card[1]}</strong></button>`).join('')}</div>`;
     }
 
     function renderKeepalive() {
@@ -805,14 +770,32 @@ socks5://203.0.113.11:1080
       $('logs-table').innerHTML = `<table class="data-table log-table"><thead><tr><th>时间</th><th>级别</th><th>事件</th><th>消息</th></tr></thead><tbody>${rows || '<tr><td class="empty-cell" colspan="4">没有日志。</td></tr>'}</tbody></table>`;
     }
 
+    function renderScheduleGroupCounters(result) {
+      $('schedule-group-counters-summary').textContent = `共 ${result.groupCount} 个调度组，累计 ${result.totalCalls} 次调用。`;
+      $('schedule-group-counters').innerHTML = `<table class="data-table"><thead><tr><th>调度组</th><th>调用次数</th></tr></thead><tbody>${result.items.map((item) => `<tr><td>${item.groupId}</td><td>${item.callCount}</td></tr>`).join('')}</tbody></table>`;
+      $('schedule-group-counters').hidden = false;
+    }
+
+    function refreshActiveView() {
+      if (state.mode === 'accounts') return refreshAccounts();
+      return refreshGuard();
+    }
+
+    function restartPageRefreshTimer() {
+      if (state.pageRefreshTimer) window.clearInterval(state.pageRefreshTimer);
+      state.pageRefreshTimer = 0;
+      const seconds = Number(state.settings && state.settings.refreshIntervalSeconds);
+      if (!Number.isFinite(seconds) || seconds < 5) return;
+      state.pageRefreshTimer = window.setInterval(() => {
+        if (!state.busy && document.visibilityState === 'visible') refreshActiveView();
+      }, seconds * 1000);
+    }
+
     async function refreshAccounts() {
       try { state.accounts = await api('/api/accounts'); setMessage('accounts-error', ''); renderAccountTable(); }
       catch (error) { setMessage('accounts-error', error.message, true); $('accounts-table').innerHTML = '<div class="help-text">账号状态请求失败。</div>'; }
     }
-    async function refreshInspection() {
-      try { const result = await Promise.all([api('/api/nodes'), api('/api/inspection'), api('/api/summary')]); state.nodes = result[0]; state.inspection = result[1]; state.summary = result[2]; setMessage('nodes-error', ''); renderNodes(); renderInspection(); }
-      catch (error) { setMessage('nodes-error', error.message, true); }
-    }
+
     async function refreshGuard() {
       try {
         const result = await Promise.all([api('/api/batch-nodes'), api('/api/batches'), api('/api/degradation'), api('/api/settings'), api('/api/logs'), api('/api/keepalive'), api('/api/summary')]);
@@ -834,13 +817,14 @@ socks5://203.0.113.11:1080
         renderKeepalive();
         renderDegradation();
         renderLogs();
+        restartPageRefreshTimer();
       } catch (error) {
         setMessage('guard-ip-error', error.message, true);
         setMessage('batch-message', error.message, true);
         setMessage('guard-error', error.message, true);
       }
     }
-    async function refreshAll() { await Promise.all([refreshAccounts(), refreshInspection(), refreshGuard()]); }
+    async function refreshAll() { await Promise.all([refreshAccounts(), refreshGuard()]); }
 
     function setBusy(value, message) {
       state.busy = value;
@@ -848,7 +832,7 @@ socks5://203.0.113.11:1080
       if (value) {
         const overlay = document.createElement('div');
         overlay.className = 'overlay'; overlay.id = 'operation-overlay';
-        overlay.innerHTML = `<div class="operation-card" role="status"><span class="spinner" aria-hidden="true"></span><strong>${escapeHTML(message || '巡检中…')}</strong><small>正在写入最近一次插件记录，请稍候</small></div>`;
+        overlay.innerHTML = `<div class="operation-card" role="status"><span class="spinner" aria-hidden="true"></span><strong>${escapeHTML(message || '检查中…')}</strong><small>正在写入最近一次插件记录，请稍候</small></div>`;
         document.body.appendChild(overlay);
       } else { $('operation-overlay')?.remove(); }
     }
@@ -859,29 +843,26 @@ socks5://203.0.113.11:1080
       if (target.dataset.closeModal) { $(target.dataset.closeModal).hidden = true; return; }
       if (target.dataset.guardTab) { state.guardTab = target.dataset.guardTab; renderGuardTab(); return; }
       if (target.dataset.mode) { state.mode = target.dataset.mode; renderMode(); renderGuardTab(); return; }
+      if (target.dataset.guardStatus) { state.guardStatusFilter = state.guardStatusFilter === target.dataset.guardStatus ? 'all' : target.dataset.guardStatus; renderGuardNodes(); renderGuardRuntimeStatus(); return; }
       if (target.dataset.batchId) { state.selectedBatchID = target.dataset.batchId; state.batchNodes = (await api(`/api/batches/${encodeURIComponent(state.selectedBatchID)}/nodes`)).items; renderBatches(); return; }
       if (target.dataset.filter) { state.filter = target.dataset.filter; state.page = 1; document.querySelectorAll('[data-filter]').forEach((item) => item.classList.toggle('active', item.dataset.filter === state.filter)); renderAccountTable(); return; }
       if (target.dataset.mask) { state.mask = target.dataset.mask; document.querySelectorAll('[data-mask]').forEach((item) => item.classList.toggle('active', item.dataset.mask === state.mask)); renderAccountTable(); renderDegradation(); return; }
-      if (target.dataset.deleteNode) { if (!window.confirm('确认删除这个巡检节点？')) return; setBusy(true, '删除节点中…'); try { await api(`/api/nodes/${target.dataset.deleteNode}/delete`, 'POST', {}); await refreshInspection(); setMessage('node-message', '节点已删除。'); } catch (error) { setMessage('node-message', error.message, true); } finally { setBusy(false); } return; }
       if (target.dataset.clearAuth) { setBusy(true, '清除降智记录中…'); try { await api('/api/degradation/clear', 'POST', {authIndex:target.dataset.clearAuth}); await refreshGuard(); await refreshAccounts(); setMessage('settings-message', '降智记录已清除。'); } catch (error) { setMessage('settings-message', error.message, true); } finally { setBusy(false); } return; }
       if (target.id === 'add-ip') { $('add-ip-message').textContent = ''; $('add-ip-message').classList.add('hidden'); $('add-ip-modal').hidden = false; $('ip-input').focus(); return; }
-      if (target.id === 'submit-add-ip') { const text = $('ip-input').value.trim(); if (!text) { setMessage('add-ip-message', '请输入至少一行 IP。', true); return; } setBusy(true, '增加 IP 中…'); try { const result = await api('/api/batches', 'POST', {text}); const errorCount = Array.isArray(result.errors) ? result.errors.length : 0; $('ip-input').value = ''; $('add-ip-modal').hidden = true; await refreshInspection(); await refreshGuard(); setMessage('guard-ip-error', `已录入 ${result.added} 个 IP，重复 ${result.duplicates} 个${errorCount ? `，${errorCount} 行格式错误` : ''}。`, errorCount > 0); } catch (error) { setMessage('add-ip-message', error.message, true); } finally { setBusy(false); } return; }
+      if (target.id === 'submit-add-ip') { const text = $('ip-input').value.trim(); if (!text) { setMessage('add-ip-message', '请输入至少一行 IP。', true); return; } setBusy(true, '增加 IP 中…'); try { const result = await api('/api/batches', 'POST', {text}); const errorCount = Array.isArray(result.errors) ? result.errors.length : 0; $('ip-input').value = ''; $('add-ip-modal').hidden = true; await refreshGuard(); setMessage('guard-ip-error', `已录入 ${result.added} 个 IP，重复 ${result.duplicates} 个${errorCount ? `，${errorCount} 行格式错误` : ''}。`, errorCount > 0); } catch (error) { setMessage('add-ip-message', error.message, true); } finally { setBusy(false); } return; }
       if (target.id === 'batch-back') { state.selectedBatchID = ''; state.batchNodes = []; renderBatches(); return; }
-      if (target.id === 'refresh-accounts') { await refreshAccounts(); return; }
-      if (target.id === 'refresh-inspection') { await refreshInspection(); return; }
-      if (target.id === 'refresh-guard-ips' || target.id === 'refresh-batches') { await refreshGuard(); return; }
-      if (target.id === 'refresh-keepalive') { await refreshGuard(); return; }
-      if (target.id === 'refresh-guard') { await refreshGuard(); return; }
+      if (target.id === 'view-schedule-group-counters') { try { renderScheduleGroupCounters(await api('/api/schedule-groups/counters')); } catch (error) { $('schedule-group-counters-summary').textContent = error.message; } return; }
       if (target.id === 'run-keepalive') { setBusy(true, '保活探测排队中…'); try { await api('/api/keepalive/run', 'POST', {}); await refreshGuard(); setMessage('keepalive-message', '独立保活探测已排队。'); } catch (error) { setMessage('keepalive-message', error.message, true); } finally { setBusy(false); } return; }
-      if (target.id === 'run-inspection') { setBusy(true, '服务端巡检中…'); try { const text = $('node-input').value.trim(); if (text) { await api('/api/nodes', 'POST', {text}); $('node-input').value = ''; } await api('/api/inspection', 'POST', {}); await refreshInspection(); setMessage('node-message', '巡检完成。'); } catch (error) { setMessage('node-message', error.message, true); } finally { setBusy(false); } return; }
+
       if (target.id === 'save-settings') {
         const numberField = (id) => Number($(id).value);
         const body = {
-          inspectionIntervalSeconds: numberField('inspection-interval'),
           workerCount: numberField('worker-count'),
+          scheduleGroupCount: numberField('schedule-group-count'),
+          debugEnabled: $('debug-enabled').checked,
           refreshIntervalSeconds: numberField('refresh-interval'),
           probeRetryCount: numberField('probe-retry-count'),
-          ipBatchRetentionDays: numberField('ip-batch-retention-days'),
+          ipBatchRetentionDays: state.settings.ipBatchRetentionDays,
           keepaliveWorkerCount: numberField('keepalive-worker-count'),
           keepaliveIntervalSeconds: numberField('keepalive-interval'),
           reviveIntervalSeconds: numberField('revive-interval'),
@@ -908,7 +889,7 @@ socks5://203.0.113.11:1080
           realtimeGuardBurstMaxWindowMs: numberField('realtime-guard-burst-max-window-ms')
         };
         setBusy(true, '保存策略中…');
-        try { state.settings = await api('/api/settings', 'PUT', body); renderSettings(); await refreshGuard(); setMessage('settings-message', '配置已保存。'); }
+        try { state.settings = await api('/api/settings', 'PUT', body); renderSettings(); restartPageRefreshTimer(); await refreshGuard(); setMessage('settings-message', '配置已保存。'); }
         catch (error) { setMessage('settings-message', error.message, true); }
         finally { setBusy(false); }
         return;

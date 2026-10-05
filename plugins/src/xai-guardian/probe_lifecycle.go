@@ -9,21 +9,14 @@ import (
 )
 
 func runInitialProbeScheduler(ctx context.Context, store *guardianStore, settings pluginSettings, trigger <-chan struct{}) {
-	_ = store.appendLog(logLevelInfo, "probe.scheduler_started", "初次探测 worker 已启动", fmt.Sprintf("线程数 %d，间隔 %d 秒", settings.WorkerCount, settings.RefreshIntervalSeconds))
-	firstRound := settings.RefreshIntervalSeconds > 0
+	_ = store.appendLog(logLevelInfo, "probe.scheduler_started", "初次探测 worker 已启动", fmt.Sprintf("线程数 %d", settings.WorkerCount))
+	firstRound := true
 	for {
 		if ctx.Err() != nil {
 			return
 		}
 		if firstRound {
 			firstRound = false
-		} else if settings.RefreshIntervalSeconds > 0 {
-			select {
-			case <-ctx.Done():
-				return
-			case <-trigger:
-			case <-time.After(time.Duration(settings.RefreshIntervalSeconds) * time.Second):
-			}
 		} else {
 			select {
 			case <-ctx.Done():

@@ -162,7 +162,7 @@ func (store *guardianStore) startKeepaliveRound() (int64, error) {
 func (store *guardianStore) snapshotKeepaliveRound(roundID int64) (int64, error) {
 	result, err := store.database.Exec(`INSERT INTO keepalive_round_nodes(round_id, node_id, previous_status)
 SELECT ?, id, status FROM nodes
-WHERE scope = 'guard' AND status IN (?, ?, ?)`, roundID, statusHealthy, statusHealthyCandidate, statusHealthyFallback)
+WHERE scope = 'guard' AND status IN (?, ?, ?, ?, ?)`, roundID, statusHealthy, statusHealthyCandidate, statusHealthyFallback, statusConnected, statusCooldown)
 	if err != nil {
 		return 0, fmt.Errorf("snapshot keepalive nodes: %w", err)
 	}
@@ -186,9 +186,9 @@ func (store *guardianStore) claimNextKeepalive(roundID int64) (keepaliveNodeClai
 	err = tx.QueryRow(`SELECT nodes.id, nodes.address, nodes.protocol, nodes.host, nodes.port, nodes.status, nodes.latency_ms, nodes.exit_ip, nodes.country, nodes.last_checked, nodes.last_error, nodes.created_at, keepalive_round_nodes.previous_status
 FROM keepalive_round_nodes
 INNER JOIN nodes ON nodes.id = keepalive_round_nodes.node_id
-WHERE keepalive_round_nodes.round_id = ? AND nodes.scope = 'guard' AND nodes.status IN (?, ?, ?, ?, ?)
+WHERE keepalive_round_nodes.round_id = ? AND nodes.scope = 'guard' AND nodes.status IN (?, ?, ?, ?, ?, ?, ?)
 ORDER BY nodes.id
-LIMIT 1`, roundID, statusUninspected, statusHealthy, statusUnhealthy, statusHealthyCandidate, statusHealthyFallback).Scan(
+LIMIT 1`, roundID, statusUninspected, statusHealthy, statusUnhealthy, statusHealthyCandidate, statusHealthyFallback, statusConnected, statusCooldown).Scan(
 		&claim.Node.ID,
 		&claim.Node.Address,
 		&claim.Node.Protocol,
@@ -209,7 +209,7 @@ LIMIT 1`, roundID, statusUninspected, statusHealthy, statusUnhealthy, statusHeal
 	if err != nil {
 		return keepaliveNodeClaim{}, false, fmt.Errorf("read keepalive claim: %w", err)
 	}
-	if _, err := tx.Exec(`UPDATE nodes SET status = ? WHERE id = ? AND scope = 'guard' AND status IN (?, ?, ?, ?, ?)`, statusKeepaliveProbing, claim.Node.ID, statusUninspected, statusHealthy, statusUnhealthy, statusHealthyCandidate, statusHealthyFallback); err != nil {
+	if _, err := tx.Exec(`UPDATE nodes SET status = ? WHERE id = ? AND scope = 'guard' AND status IN (?, ?, ?, ?, ?, ?, ?)`, statusKeepaliveProbing, claim.Node.ID, statusUninspected, statusHealthy, statusUnhealthy, statusHealthyCandidate, statusHealthyFallback, statusConnected, statusCooldown); err != nil {
 		return keepaliveNodeClaim{}, false, fmt.Errorf("mark keepalive node: %w", err)
 	}
 	if err := tx.Commit(); err != nil {

@@ -108,8 +108,11 @@ type registration struct {
 }
 
 type registrationCapabilities struct {
-	ManagementAPI  bool `json:"management_api"`
-	XAIStreamGuard bool `json:"xai_stream_guard"`
+	ManagementAPI             bool `json:"management_api"`
+	Scheduler                 bool `json:"scheduler"`
+	SchedulerAcrossPriorities bool `json:"scheduler_across_priorities"`
+	RequestLifecyclePlugin    bool `json:"request_lifecycle_plugin"`
+	XAIStreamGuard            bool `json:"xai_stream_guard"`
 }
 
 type managementRequest struct {
@@ -279,6 +282,27 @@ func handleMethod(method string, request []byte) ([]byte, error) {
 			return nil, err
 		}
 		return okEnvelope(response)
+	case pluginabi.MethodSchedulerPick:
+		var pickRequest pluginapi.SchedulerPickRequest
+		if len(request) > 0 {
+			if err := json.Unmarshal(request, &pickRequest); err != nil {
+				return nil, fmt.Errorf("decode scheduler pick request: %w", err)
+			}
+		}
+		response, err := guardianRuntime.schedulerPick(pickRequest)
+		if err != nil {
+			return nil, err
+		}
+		return okEnvelope(response)
+	case pluginabi.MethodRequestComplete:
+		var completion pluginapi.RequestCompletion
+		if len(request) > 0 {
+			if err := json.Unmarshal(request, &completion); err != nil {
+				return nil, fmt.Errorf("decode request completion: %w", err)
+			}
+		}
+		guardianRuntime.scheduleGroups.release(completion)
+		return okEnvelope(map[string]any{})
 	default:
 		return errorEnvelope("unknown_method", "unknown method: "+method), nil
 	}
@@ -318,7 +342,7 @@ func pluginRegistration() registration {
 				{Name: "inspection_interval_seconds", Type: pluginapi.ConfigFieldTypeInteger, Description: "Automatic server inspection interval; 0 disables the worker."},
 			},
 		},
-		Capabilities: registrationCapabilities{ManagementAPI: true, XAIStreamGuard: true},
+		Capabilities: registrationCapabilities{ManagementAPI: true, Scheduler: true, SchedulerAcrossPriorities: true, RequestLifecyclePlugin: true, XAIStreamGuard: true},
 	}
 }
 
@@ -392,7 +416,7 @@ func isAllowedUIPath(method, path string) bool {
 	switch method {
 	case http.MethodGet:
 		switch path {
-		case "/api/summary", "/api/settings", "/api/accounts", "/api/nodes", "/api/batch-nodes", "/api/batches", "/api/inspection", "/api/keepalive", "/api/degradation", "/api/logs":
+		case "/api/summary", "/api/schedule-groups/counters", "/api/settings", "/api/accounts", "/api/nodes", "/api/batch-nodes", "/api/batches", "/api/inspection", "/api/keepalive", "/api/degradation", "/api/logs":
 			return true
 		default:
 			return strings.HasPrefix(path, "/api/batches/") && strings.HasSuffix(path, "/nodes")

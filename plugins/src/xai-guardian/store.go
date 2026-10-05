@@ -20,6 +20,8 @@ const (
 	defaultDatabasePath                                 = "/opt/cli-proxy-api/plugin-data/xai-guardian/xai-guardian.sqlite3"
 	defaultInspectionIntervalSeconds                    = 0
 	defaultWorkerCount                                  = 4
+	defaultScheduleGroupCount                           = 4
+	defaultDebugEnabled                                 = false
 	defaultRefreshIntervalSeconds                       = 30
 	defaultKeepaliveWorkerCount                         = 8
 	defaultKeepaliveIntervalSeconds                     = 1800
@@ -49,6 +51,7 @@ const (
 	defaultRealtimeGuardBurstMaxWindowMS                = 1000
 	maxInspectionIntervalSeconds                        = 86400
 	maxProbeWorkers                                     = 64
+	maxScheduleGroupCount                               = 1000
 	maxRefreshIntervalSeconds                           = 3600
 	maxKeepaliveIntervalSeconds                         = 86400
 	maxReviveIntervalSeconds                            = 86400
@@ -72,6 +75,7 @@ const (
 	statusHealthyFallback  = "healthy_fallback"
 	statusCooldown         = "cooldown"
 	statusHealthy          = "healthy"
+	statusConnected        = "connected"
 	statusUnhealthy        = "unhealthy"
 	statusDisabled         = "disabled"
 
@@ -84,6 +88,8 @@ var logURLPattern = regexp.MustCompile(`(?i)\bhttps?://[^\s"'<>]+`)
 
 type pluginSettings struct {
 	WorkerCount                                  int
+	ScheduleGroupCount                           int
+	DebugEnabled                                 bool
 	RefreshIntervalSeconds                       int
 	InspectionIntervalSeconds                    int
 	KeepaliveWorkerCount                         int
@@ -436,6 +442,8 @@ CREATE INDEX IF NOT EXISTS idx_plugin_logs_created ON plugin_logs(created_at DES
 INSERT OR IGNORE INTO plugin_settings(setting_key, setting_value) VALUES
     ('inspection_interval_seconds', '0'),
     ('worker_count', '4'),
+    ('schedule_group_count', '4'),
+    ('debug_enabled', '0'),
     ('refresh_interval_seconds', '30'),
     ('keepalive_worker_count', '8'),
     ('keepalive_interval_seconds', '1800'),
@@ -481,6 +489,12 @@ WHERE setting_key = 'keepalive_probe_retry_count'
 		return err
 	}
 	if err := store.ensureNodeScopeUniqueIndex(); err != nil {
+		return err
+	}
+	if err := store.ensureScheduleGroupStorage(); err != nil {
+		return err
+	}
+	if err := store.reconcileScheduleGroupCounters(defaultScheduleGroupCount); err != nil {
 		return err
 	}
 	if err := store.recoverKeepaliveState(); err != nil {
@@ -598,6 +612,8 @@ func (store *guardianStore) settings() (pluginSettings, error) {
 			if parseErr == nil {
 				settings.QualityHardTPS = parsed
 			}
+		case "debug_enabled":
+			settings.DebugEnabled = strings.TrimSpace(value) == "1" || strings.EqualFold(strings.TrimSpace(value), "true")
 		case "realtime_guard_ttfb_seconds":
 			parsed, parseErr := strconv.ParseFloat(strings.TrimSpace(value), 64)
 			if parseErr == nil {
@@ -616,6 +632,8 @@ func (store *guardianStore) settings() (pluginSettings, error) {
 			switch key {
 			case "worker_count":
 				settings.WorkerCount = parsed
+			case "schedule_group_count":
+				settings.ScheduleGroupCount = parsed
 			case "refresh_interval_seconds":
 				settings.RefreshIntervalSeconds = parsed
 			case "inspection_interval_seconds":
@@ -678,6 +696,8 @@ func (store *guardianStore) setSettings(settings pluginSettings) error {
 	}
 	values := map[string]string{
 		"worker_count":                                       strconv.Itoa(settings.WorkerCount),
+		"schedule_group_count":                               strconv.Itoa(settings.ScheduleGroupCount),
+		"debug_enabled":                                      strconv.FormatBool(settings.DebugEnabled),
 		"refresh_interval_seconds":                           strconv.Itoa(settings.RefreshIntervalSeconds),
 		"inspection_interval_seconds":                        strconv.Itoa(settings.InspectionIntervalSeconds),
 		"keepalive_worker_count":                             strconv.Itoa(settings.KeepaliveWorkerCount),
@@ -731,8 +751,11 @@ func validateSettings(settings pluginSettings) error {
 	if settings.WorkerCount < 1 || settings.WorkerCount > maxProbeWorkers {
 		return fmt.Errorf("probe worker count is out of range")
 	}
-	if settings.RefreshIntervalSeconds < 0 || settings.RefreshIntervalSeconds > maxRefreshIntervalSeconds {
-		return fmt.Errorf("probe refresh interval is out of range")
+	if settings.ScheduleGroupCount < 1 || settings.ScheduleGroupCount > maxScheduleGroupCount {
+		return fmt.Errorf("schedule group count is out of range")
+	}
+	if settings.RefreshIntervalSeconds < 5 || settings.RefreshIntervalSeconds > maxRefreshIntervalSeconds {
+		return fmt.Errorf("page refresh interval is out of range")
 	}
 	if settings.KeepaliveWorkerCount < 1 || settings.KeepaliveWorkerCount > maxKeepaliveWorkerCount {
 		return fmt.Errorf("keepalive worker count is out of range")
@@ -836,11 +859,15 @@ func redactLogURL(value string) string {
 	return parsed.Scheme + "://" + parsed.Host
 }
 
-func (store *guardianStore) listLogs(limit int) ([]pluginLog, error) {
+func (store *guardianStore) listLogs(limit int, debugEnabled bool) ([]pluginLog, error) {
 	if limit <= 0 || limit > 1000 {
 		limit = 200
 	}
-	rows, err := store.database.Query(`SELECT id, created_at, level, event, message, detail FROM plugin_logs ORDER BY id DESC LIMIT ?`, limit)
+	query := `SELECT id, created_at, level, event, message, detail FROM plugin_logs ORDER BY id DESC LIMIT ?`
+	if !debugEnabled {
+		query = `SELECT id, created_at, level, event, message, detail FROM plugin_logs WHERE event LIKE 'guard.%' ORDER BY id DESC LIMIT ?`
+	}
+	rows, err := store.database.Query(query, limit)
 	if err != nil {
 		return nil, fmt.Errorf("list plugin logs: %w", err)
 	}
@@ -1379,7 +1406,7 @@ func (store *guardianStore) summary() (map[string]any, error) {
 	if err != nil {
 		return nil, fmt.Errorf("read guard node summary: %w", err)
 	}
-	guardCounts := map[string]int64{statusUninspected: 0, statusProbing: 0, statusKeepaliveProbing: 0, statusReviveProbing: 0, statusHealthy: 0, statusHealthyCandidate: 0, statusHealthyFallback: 0, statusUnhealthy: 0}
+	guardCounts := map[string]int64{statusUninspected: 0, statusProbing: 0, statusKeepaliveProbing: 0, statusReviveProbing: 0, statusHealthy: 0, statusHealthyCandidate: 0, statusHealthyFallback: 0, statusConnected: 0, statusCooldown: 0, statusUnhealthy: 0}
 	for guardRows.Next() {
 		var status string
 		var count int64
@@ -1400,6 +1427,12 @@ func (store *guardianStore) summary() (map[string]any, error) {
 	if err != nil {
 		return nil, err
 	}
+	settings, err := store.settings()
+	if err != nil {
+		return nil, err
+	}
+	slotCounts["primaryTotal"] = int64(settings.HealthySlotCount)
+	slotCounts["candidateTotal"] = int64(settings.HealthyCandidateSlotCount)
 	var accounts, degraded int64
 	if err := store.database.QueryRow(`SELECT COUNT(*) FROM auth_bindings WHERE inspection_run_id = COALESCE((SELECT id FROM inspection_runs WHERE status = 'completed' ORDER BY id DESC LIMIT 1), 0)`).Scan(&accounts); err != nil {
 		return nil, fmt.Errorf("count auth bindings: %w", err)

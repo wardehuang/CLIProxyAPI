@@ -14,22 +14,24 @@ import (
 	"time"
 )
 
-var guardianRuntime = &runtimeController{}
+var guardianRuntime = &runtimeController{scheduleGroups: newScheduleGroupState()}
 
 type runtimeController struct {
-	mutex            sync.RWMutex
-	store            *guardianStore
-	inspectionCancel context.CancelFunc
-	inspectionGroup  sync.WaitGroup
-	probeCancel      context.CancelFunc
-	probeGroup       sync.WaitGroup
-	probeTrigger     chan struct{}
-	keepaliveCancel  context.CancelFunc
-	keepaliveGroup   sync.WaitGroup
-	reviveCancel     context.CancelFunc
-	reviveGroup      sync.WaitGroup
-	keepaliveState   *keepaliveScheduleState
-	config           pluginConfig
+	mutex                     sync.RWMutex
+	store                     *guardianStore
+	inspectionCancel          context.CancelFunc
+	inspectionGroup           sync.WaitGroup
+	probeCancel               context.CancelFunc
+	probeGroup                sync.WaitGroup
+	probeTrigger              chan struct{}
+	keepaliveCancel           context.CancelFunc
+	keepaliveGroup            sync.WaitGroup
+	reviveCancel              context.CancelFunc
+	reviveGroup               sync.WaitGroup
+	keepaliveState            *keepaliveScheduleState
+	scheduleGroups            *scheduleGroupState
+	runtimeScheduleGroupCount int
+	config                    pluginConfig
 }
 
 func (controller *runtimeController) configure(config pluginConfig) error {
@@ -60,8 +62,13 @@ func (controller *runtimeController) configure(config pluginConfig) error {
 	if err := controller.store.setSettings(settings); err != nil {
 		return err
 	}
+	if err := controller.store.reconcileScheduleGroupCounters(settings.ScheduleGroupCount); err != nil {
+		return err
+	}
+	controller.runtimeScheduleGroupCount = settings.ScheduleGroupCount
 	controller.config = config
 	controller.stopWorkersLocked()
+	controller.scheduleGroups.resetRuntime()
 	if settings.InspectionIntervalSeconds > 0 {
 		controller.startInspectionWorkerLocked(settings.InspectionIntervalSeconds)
 	}
@@ -92,6 +99,12 @@ func (controller *runtimeController) ensure() error {
 		controller.store = nil
 		return err
 	}
+	if err := store.reconcileScheduleGroupCounters(settings.ScheduleGroupCount); err != nil {
+		_ = store.close()
+		controller.store = nil
+		return err
+	}
+	controller.runtimeScheduleGroupCount = settings.ScheduleGroupCount
 	if settings.InspectionIntervalSeconds > 0 {
 		controller.startInspectionWorkerLocked(settings.InspectionIntervalSeconds)
 	}
@@ -199,6 +212,7 @@ func (controller *runtimeController) shutdown() {
 	controller.mutex.Lock()
 	defer controller.mutex.Unlock()
 	controller.stopWorkersLocked()
+	controller.scheduleGroups.resetRuntime()
 	if controller.store != nil {
 		_ = controller.store.appendLog(logLevelInfo, "plugin.shutdown", "xAI Guardian 正在停止", "")
 		_ = controller.store.close()
@@ -220,6 +234,9 @@ func (controller *runtimeController) api(method, path string, query url.Values, 
 	if method == http.MethodGet && path == "/api/summary" {
 		value, err := store.summary()
 		return jsonAPIResult(value, err)
+	}
+	if method == http.MethodGet && path == "/api/schedule-groups/counters" {
+		return controller.scheduleGroupCountersAPI(store)
 	}
 	if method == http.MethodGet && path == "/api/settings" {
 		settings, err := store.settings()
@@ -308,7 +325,11 @@ func (controller *runtimeController) api(method, path string, query url.Values, 
 	}
 	if method == http.MethodGet && path == "/api/logs" {
 		limit, _ := strconv.Atoi(query.Get("limit"))
-		logs, err := store.listLogs(limit)
+		settings, err := store.settings()
+		if err != nil {
+			return http.StatusInternalServerError, nil, err
+		}
+		logs, err := store.listLogs(limit, settings.DebugEnabled)
 		return jsonAPIResult(logs, err)
 	}
 	if len(strings.Split(strings.Trim(path, "/"), "/")) == 4 && strings.HasPrefix(path, "/api/nodes/") && strings.HasSuffix(path, "/delete") && method == http.MethodPost {
@@ -331,6 +352,8 @@ func (controller *runtimeController) api(method, path string, query url.Values, 
 func (controller *runtimeController) updateSettings(store *guardianStore, body []byte) (int, []byte, error) {
 	var payload struct {
 		WorkerCount                                  int     `json:"workerCount"`
+		ScheduleGroupCount                           int     `json:"scheduleGroupCount"`
+		DebugEnabled                                 bool    `json:"debugEnabled"`
 		RefreshIntervalSeconds                       int     `json:"refreshIntervalSeconds"`
 		InspectionIntervalSeconds                    int     `json:"inspectionIntervalSeconds"`
 		KeepaliveWorkerCount                         int     `json:"keepaliveWorkerCount"`
@@ -363,10 +386,16 @@ func (controller *runtimeController) updateSettings(store *guardianStore, body [
 	if err := json.Unmarshal(body, &payload); err != nil {
 		return http.StatusBadRequest, nil, err
 	}
+	currentSettings, err := store.settings()
+	if err != nil {
+		return http.StatusInternalServerError, nil, err
+	}
 	settings := pluginSettings{
 		WorkerCount:                                  payload.WorkerCount,
+		ScheduleGroupCount:                           payload.ScheduleGroupCount,
+		DebugEnabled:                                 payload.DebugEnabled,
 		RefreshIntervalSeconds:                       payload.RefreshIntervalSeconds,
-		InspectionIntervalSeconds:                    payload.InspectionIntervalSeconds,
+		InspectionIntervalSeconds:                    currentSettings.InspectionIntervalSeconds,
 		KeepaliveWorkerCount:                         payload.KeepaliveWorkerCount,
 		KeepaliveIntervalSeconds:                     payload.KeepaliveIntervalSeconds,
 		ReviveIntervalSeconds:                        payload.ReviveIntervalSeconds,
@@ -394,22 +423,14 @@ func (controller *runtimeController) updateSettings(store *guardianStore, body [
 		RealtimeGuardBurstMaxWindowMS:                payload.RealtimeGuardBurstMaxWindowMS,
 		IPBatchRetentionDays:                         payload.IPBatchRetentionDays,
 	}
+	controller.mutex.Lock()
+	defer controller.mutex.Unlock()
+	if settings.ScheduleGroupCount != currentSettings.ScheduleGroupCount && controller.scheduleGroups.hasBusy() {
+		return http.StatusConflict, nil, errScheduleGroupCountBusy
+	}
 	if err := store.setSettings(settings); err != nil {
 		return http.StatusBadRequest, nil, err
 	}
-	controller.mutex.Lock()
-	controller.stopWorkersLocked()
-	if settings.InspectionIntervalSeconds > 0 {
-		controller.startInspectionWorkerLocked(settings.InspectionIntervalSeconds)
-	}
-	controller.startInitialProbeWorkerLocked(settings)
-	if settings.KeepaliveIntervalSeconds > 0 {
-		controller.startKeepaliveWorkerLocked(settings)
-	}
-	if settings.ReviveIntervalSeconds > 0 {
-		controller.startReviveWorkerLocked(settings)
-	}
-	controller.mutex.Unlock()
 	_ = store.appendLog(logLevelInfo, "settings.updated", "插件配置已保存", "")
 	return jsonAPIResult(publicSettings(settings), nil)
 }
@@ -549,7 +570,7 @@ func jsonAPIResult(value any, err error) (int, []byte, error) {
 
 func publicSettings(settings pluginSettings) map[string]any {
 	return map[string]any{
-		"workerCount": settings.WorkerCount, "refreshIntervalSeconds": settings.RefreshIntervalSeconds,
+		"workerCount": settings.WorkerCount, "scheduleGroupCount": settings.ScheduleGroupCount, "debugEnabled": settings.DebugEnabled, "refreshIntervalSeconds": settings.RefreshIntervalSeconds,
 		"inspectionIntervalSeconds": settings.InspectionIntervalSeconds,
 		"keepaliveWorkerCount":      settings.KeepaliveWorkerCount, "keepaliveIntervalSeconds": settings.KeepaliveIntervalSeconds,
 		"reviveIntervalSeconds": settings.ReviveIntervalSeconds, "probeRetryCount": settings.ProbeRetryCount,

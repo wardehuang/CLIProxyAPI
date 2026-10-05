@@ -3,6 +3,8 @@ package main
 func defaultPluginSettings() pluginSettings {
 	return pluginSettings{
 		WorkerCount:                                  defaultWorkerCount,
+		ScheduleGroupCount:                           defaultScheduleGroupCount,
+		DebugEnabled:                                 defaultDebugEnabled,
 		RefreshIntervalSeconds:                       defaultRefreshIntervalSeconds,
 		InspectionIntervalSeconds:                    defaultInspectionIntervalSeconds,
 		KeepaliveWorkerCount:                         defaultKeepaliveWorkerCount,
