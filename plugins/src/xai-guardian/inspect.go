@@ -57,7 +57,7 @@ func parseProxyLines(text string) ([]proxyNode, []inputLineError) {
 }
 
 func parseProxyAddress(raw string) (proxyNode, error) {
-	address := strings.TrimSpace(raw)
+	address := strings.Trim(strings.TrimSpace(raw), "\"'")
 	if !strings.Contains(address, "://") {
 		address = "http://" + address
 	}
@@ -71,9 +71,6 @@ func parseProxyAddress(raw string) (proxyNode, error) {
 	default:
 		return proxyNode{}, fmt.Errorf("unsupported proxy protocol")
 	}
-	if parsed.User != nil {
-		return proxyNode{}, fmt.Errorf("proxy credentials are not accepted")
-	}
 	if (parsed.Path != "" && parsed.Path != "/") || parsed.RawQuery != "" || parsed.Fragment != "" {
 		return proxyNode{}, fmt.Errorf("proxy address does not support path, query, or fragment")
 	}
@@ -84,12 +81,22 @@ func parseProxyAddress(raw string) (proxyNode, error) {
 	if err != nil || port < 1 || port > 65535 {
 		return proxyNode{}, fmt.Errorf("invalid proxy port")
 	}
-	canonical := parsed.Scheme + "://" + parsed.Host
+	canonical := parsed.Scheme + "://"
+	if parsed.User != nil {
+		canonical += parsed.User.String() + "@"
+	}
+	canonical += parsed.Host
 	return proxyNode{Address: canonical, Protocol: strings.ToLower(parsed.Scheme), Host: parsed.Hostname(), Port: port}, nil
 }
 
 func parseCSVProxyAddress(raw string) (proxyNode, error) {
 	fields := strings.Split(raw, ",")
+	if len(fields) == 3 {
+		for index := range fields {
+			fields[index] = strings.Trim(strings.TrimSpace(fields[index]), "\"'")
+		}
+		return parseProxyAddress(fields[2] + "://" + fields[0] + ":" + fields[1])
+	}
 	if len(fields) != 4 && len(fields) != 5 {
 		return proxyNode{}, fmt.Errorf("CSV proxy format must be host:port,ip,port,protocol[,domain]")
 	}
@@ -210,7 +217,12 @@ func newProxyHTTPClient(proxyURL string) (*http.Client, error) {
 	case "http", "https":
 		transport.Proxy = http.ProxyURL(parsed)
 	case "socks5", "socks5h":
-		socksDialer, err := proxy.SOCKS5("tcp", parsed.Host, nil, &net.Dialer{Timeout: probeDialTimeout, KeepAlive: 30 * time.Second})
+		var authentication *proxy.Auth
+		if parsed.User != nil {
+			password, _ := parsed.User.Password()
+			authentication = &proxy.Auth{User: parsed.User.Username(), Password: password}
+		}
+		socksDialer, err := proxy.SOCKS5("tcp", parsed.Host, authentication, &net.Dialer{Timeout: probeDialTimeout, KeepAlive: 30 * time.Second})
 		if err != nil {
 			return nil, fmt.Errorf("create socks5 proxy: %w", err)
 		}

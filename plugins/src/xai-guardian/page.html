@@ -513,15 +513,15 @@
       <div class="modal-head">
         <div>
           <h2 id="add-ip-modal-title">增加IP</h2>
-          <p>每一行录入一个代理 IP；提交后生成独立批次。代理凭据不接受、不保存。</p>
+          <p>每一行录入一个代理节点；必须包含 host 和 port。支持代理 URL 中的认证信息，按原插件明文展示。</p>
         </div>
         <button class="secondary-button" type="button" data-close-modal="add-ip-modal" aria-label="关闭">关闭</button>
       </div>
       <div class="modal-body">
-        <textarea class="modal-input" id="ip-input" placeholder="http://203.0.113.10:8080
+        <textarea class="modal-input" id="ip-input" placeholder="http://username:password@203.0.113.10:8080
 socks5://203.0.113.11:1080
 203.0.113.12:8080,203.0.113.12,8080,http"></textarea>
-        <div class="help-text">支持 http、https、socks5、socks5h URL；也支持 host:port,出口IP,port,protocol。格式错误行不会写入数据库。</div>
+        <div class="help-text">支持 http、https、socks5、socks5h URL，可选 username:password@；也支持 host:port、host,port,protocol、host:port,出口IP,port,protocol。只填裸 IP 无法录入。格式错误行不会写入数据库。</div>
         <div id="add-ip-message" class="message"></div>
         <div class="modal-actions">
           <button class="secondary-button" type="button" data-close-modal="add-ip-modal">取消</button>

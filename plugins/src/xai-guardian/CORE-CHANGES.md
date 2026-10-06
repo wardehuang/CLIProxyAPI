@@ -8,7 +8,7 @@
 - **服务端巡检**：录入服务端代理节点，独立执行出口 IP、国家和连通性检查；节点使用 `inspection` scope，不读取或写入 guard 批次。
 - **降智守护**：接收 xAI stream completion，依据思考或工具行动证据决定 `flush`、`retry`、`fail`，保存降智次数和日志；页面包含 **IP列表**、**批次查看**、**日志**、**配置** 四个独立子页签。**批次查看**只展示通过【增加IP】创建的 IP 批次及其节点结果，配置不再使用弹窗。
 
-插件 SQLite 只保存配置、代理节点、增加 IP 批次及其节点关联、账号绑定元数据、后台检查记录、keepalive 探测轮次及结果状态、日志和降智状态；后台检查节点与增加 IP 节点按 scope 分离。账号状态绑定带有检查 run ID，禁止未关联检查的数据进入账号状态 API。xAI token、Authorization header、密码和代理认证信息不写入 SQLite、不写入页面、不写入日志。
+插件 SQLite 只保存配置、代理节点、增加 IP 批次及其节点关联、账号绑定元数据、后台检查记录、keepalive 探测轮次及结果状态、日志和降智状态；后台检查节点与增加 IP 节点按 scope 分离。账号状态绑定带有检查 run ID，禁止未关联检查的数据进入账号状态 API。代理 URL 可包含认证信息，按原插件语义写入 SQLite、页面和 API 明文展示；日志仍使用脱敏文本，避免错误详情泄露认证信息。xAI token 和 CPA Authorization header 不进入该页面链路。
 
 插件通过 `host.auth.list` 临时读取 CPA 管理的认证元数据，并在后台检查同步时通过 `host.auth.get` 只解析 `schedule_group`；认证值仍由 CPA 认证链管理，插件不向页面输出、不持久化认证值。
 
@@ -20,6 +20,7 @@ IP 批次按 `created_at` 计算生命周期。`ip_batch_retention_days` 默认 
 
 - 【IP列表】显示九类 guard 状态卡：健康、健康备选、已连通、冷却中、探测中、保活探测中、复活探测中、未探测、异常；健康类显示 `M/N`，其他状态显示数量。卡片点击只改变 IP 列表筛选，不触发探测。
 - 配置保留【探测与页面】、【保活与复活】、【健康槽位】、【实时守护】四个分区。健康槽位只负责健康节点槽位分配，不包含质量探测配置或质量探测功能。配置保存到插件 SQLite；探测/保活/复活调度类下次启动生效，实时守护阈值和页面刷新立即生效。配置页不提供页面刷新按钮或后台检查入口。
+- 【增加IP】接受可选认证信息的代理 URL、`host:port`、`host,port,protocol` 和 `host:port,出口IP,port,protocol[,domain]`；必须包含端口。IP 列表与 API 按原插件明文展示代理 URL；日志继续脱敏。全量解析失败时返回逐行格式错误，不再只返回笼统的 `no valid proxy nodes`。
 - `schedule_group_count` 范围为 `1–1000`。调度组通过宿主 `Scheduler.Pick` 和 `RequestLifecyclePlugin` 请求完成回调接入；只处理 xAI candidate，按 `schedule_group` 属性分组，组内一次只允许一个请求，计数写入 `schedule_group_counters`。忙碌时修改组数返回冲突。
 
 ## 管理页面鉴权链路

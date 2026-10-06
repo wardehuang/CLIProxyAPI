@@ -520,7 +520,7 @@ func (controller *runtimeController) addNodes(store *guardianStore, body []byte)
 	}
 	nodes, errors := parseProxyLines(text)
 	if len(nodes) == 0 {
-		return http.StatusBadRequest, nil, fmt.Errorf("no valid proxy nodes")
+		return http.StatusBadRequest, nil, fmt.Errorf("no valid proxy nodes: %s", summarizeInputErrors(errors))
 	}
 	added, duplicates, err := store.insertNodes(nodes)
 	if err != nil {
@@ -547,7 +547,7 @@ func (controller *runtimeController) addIPBatch(store *guardianStore, body []byt
 	}
 	nodes, inputErrors := parseProxyLines(text)
 	if len(nodes) == 0 {
-		return http.StatusBadRequest, nil, fmt.Errorf("no valid proxy nodes")
+		return http.StatusBadRequest, nil, fmt.Errorf("no valid proxy nodes: %s", summarizeInputErrors(inputErrors))
 	}
 	batchID, added, duplicates, err := store.insertIPBatch(nodes, len(inputErrors))
 	if err != nil {
@@ -558,6 +558,24 @@ func (controller *runtimeController) addIPBatch(store *guardianStore, body []byt
 		controller.queueInitialProbeAfterBatch()
 	}
 	return jsonAPIResult(map[string]any{"batchId": batchID, "added": added, "duplicates": duplicates, "errors": inputErrors}, nil)
+}
+
+func summarizeInputErrors(inputErrors []inputLineError) string {
+	if len(inputErrors) == 0 {
+		return "input is empty"
+	}
+	const maxDetails = 5
+	details := make([]string, 0, min(len(inputErrors), maxDetails))
+	for index, inputError := range inputErrors {
+		if index == maxDetails {
+			break
+		}
+		details = append(details, fmt.Sprintf("line %d: %s", inputError.Line, inputError.Message))
+	}
+	if len(inputErrors) > maxDetails {
+		details = append(details, fmt.Sprintf("and %d more", len(inputErrors)-maxDetails))
+	}
+	return strings.Join(details, "; ")
 }
 
 func jsonAPIResult(value any, err error) (int, []byte, error) {
@@ -588,7 +606,7 @@ func publicSettings(settings pluginSettings) map[string]any {
 func publicNodes(nodes []proxyNode) []map[string]any {
 	items := make([]map[string]any, 0, len(nodes))
 	for _, node := range nodes {
-		items = append(items, map[string]any{"id": node.ID, "address": redactProxyURL(node.Address), "protocol": node.Protocol, "host": node.Host, "port": node.Port, "status": node.Status, "latencyMs": node.LatencyMS, "exitIp": node.ExitIP, "country": node.Country, "lastChecked": node.LastChecked, "lastError": sanitizeLogText(node.LastError), "createdAt": node.CreatedAt, "slotId": node.SlotID, "slotKind": node.SlotKind})
+		items = append(items, map[string]any{"id": node.ID, "address": node.Address, "protocol": node.Protocol, "host": node.Host, "port": node.Port, "status": node.Status, "latencyMs": node.LatencyMS, "exitIp": node.ExitIP, "country": node.Country, "lastChecked": node.LastChecked, "lastError": sanitizeLogText(node.LastError), "createdAt": node.CreatedAt, "slotId": node.SlotID, "slotKind": node.SlotKind})
 	}
 	return items
 }
