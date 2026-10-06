@@ -206,6 +206,7 @@ def compose_text(commit: str, build_date: str, version: str) -> str:
       - ./auths:/home/ubuntu/.cli-proxy-api
       - ./logs:/CLIProxyAPI/logs
       - ./plugins:/CLIProxyAPI/plugins
+      - ./plugin-data:/opt/cli-proxy-api/plugin-data
     restart: unless-stopped
 """
 
@@ -245,7 +246,7 @@ fi
 
 if [ -d "$ROOT" ]; then
   sudo mkdir -p "$BACKUP"
-  for item in config.yaml auths docker-compose.18458.yml plugins; do
+  for item in config.yaml auths docker-compose.18458.yml plugin-data plugins; do
     if [ -e "$ROOT/$item" ]; then
       sudo cp -a "$ROOT/$item" "$BACKUP/$item"
     fi
@@ -259,7 +260,7 @@ if [ -d "$ROOT" ]; then
 else
   sudo mkdir -p "$ROOT"
 fi
-sudo mkdir -p "$ROOT/source" "$ROOT/logs" "$ROOT/plugins"
+sudo mkdir -p "$ROOT/source" "$ROOT/logs" "$ROOT/plugin-data" "$ROOT/plugins"
 sudo tar -xzf "$STAGE/source.tar.gz" -C "$ROOT"
 
 if [ ! -f "$ROOT/config.yaml" ]; then
