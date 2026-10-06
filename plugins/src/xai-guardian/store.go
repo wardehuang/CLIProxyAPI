@@ -27,6 +27,7 @@ const (
 	defaultKeepaliveIntervalSeconds                     = 1800
 	defaultReviveIntervalSeconds                        = 1800
 	defaultProbeRetryCount                              = 3
+	defaultMaxReviveFailureCount                        = 3
 	defaultHealthySlotCount                             = 50
 	defaultHealthyCandidateCount                        = 20
 	defaultHealthySlotMaxAgeMinutes                     = 350
@@ -49,6 +50,7 @@ const (
 	maxRefreshIntervalSeconds                           = 3600
 	maxKeepaliveIntervalSeconds                         = 86400
 	maxReviveIntervalSeconds                            = 86400
+	maxMaxReviveFailureCount                            = 100
 	maxKeepaliveWorkerCount                             = 64
 	maxKeepaliveProbeRetryCount                         = 10
 	maxSlotCount                                        = 1000
@@ -90,7 +92,7 @@ const (
 	maxGroupedLogSets    = 10
 )
 
-var logURLPattern = regexp.MustCompile(`(?i)\bhttps?://[^\s"'<>]+`)
+var logURLPattern = regexp.MustCompile(`(?i)\b(?:https?|socks5h?)://[^\s"'<>]+`)
 
 type pluginSettings struct {
 	WorkerCount                                  int
@@ -102,6 +104,7 @@ type pluginSettings struct {
 	KeepaliveIntervalSeconds                     int
 	ReviveIntervalSeconds                        int
 	ProbeRetryCount                              int
+	MaxReviveFailureCount                        int
 	HealthySlotCount                             int
 	HealthyCandidateSlotCount                    int
 	HealthySlotMaxAgeMinutes                     int
@@ -199,21 +202,25 @@ type ipBatch struct {
 }
 
 type authBinding struct {
-	AuthIndex       string `json:"authIndex"`
-	AuthName        string `json:"authName"`
-	NodeID          int64  `json:"nodeId"`
-	ProxyURL        string `json:"proxyUrl"`
-	ExitIP          string `json:"exitIp"`
-	Status          string `json:"status"`
-	Priority        int    `json:"priority"`
-	Success         int64  `json:"success"`
-	Failed          int64  `json:"failed"`
-	UpdatedAt       int64  `json:"updatedAt"`
-	LastChecked     int64  `json:"lastChecked"`
-	InspectionRunID int64  `json:"-"`
-	AccountType     string `json:"accountType"`
-	ScheduleGroup   *int   `json:"scheduleGroup,omitempty"`
-	LastInspection  int64  `json:"lastInspection"`
+	AuthIndex          string `json:"authIndex"`
+	AuthName           string `json:"authName"`
+	SlotID             int64  `json:"slotId"`
+	NodeID             int64  `json:"nodeId"`
+	ProxyURL           string `json:"proxyUrl"`
+	ExitIP             string `json:"exitIp"`
+	Status             string `json:"status"`
+	Priority           int    `json:"priority"`
+	Success            int64  `json:"success"`
+	Failed             int64  `json:"failed"`
+	UpdatedAt          int64  `json:"updatedAt"`
+	LastChecked        int64  `json:"lastChecked"`
+	InspectionRunID    int64  `json:"-"`
+	AccountType        string `json:"accountType"`
+	ScheduleGroup      *int   `json:"scheduleGroup,omitempty"`
+	LastInspection     int64  `json:"lastInspection"`
+	ProxyWriteAttempts int    `json:"-"`
+	ProxyWriteError    string `json:"-"`
+	ProxyWriteAt       int64  `json:"-"`
 }
 
 type degradationState struct {
@@ -265,9 +272,10 @@ type pluginLogList struct {
 }
 
 type guardianStore struct {
-	database *sql.DB
-	path     string
-	mutex    sync.Mutex
+	database              *sql.DB
+	path                  string
+	mutex                 sync.Mutex
+	authDistributionMutex sync.Mutex
 }
 
 func openGuardianStore(path string) (*guardianStore, error) {
@@ -438,9 +446,21 @@ CREATE TABLE IF NOT EXISTS healthy_slots (
     refreshed_at INTEGER NOT NULL DEFAULT 0
 );
 CREATE INDEX IF NOT EXISTS idx_healthy_slots_node ON healthy_slots(node_id);
+CREATE TABLE IF NOT EXISTS auth_selection_history (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    selected_at INTEGER NOT NULL,
+    auth_index TEXT NOT NULL,
+    auth_identity TEXT NOT NULL DEFAULT '',
+    selection_source TEXT NOT NULL,
+    node_id INTEGER NOT NULL,
+    slot_id INTEGER NOT NULL,
+    was_success INTEGER NOT NULL DEFAULT 1
+);
+CREATE INDEX IF NOT EXISTS idx_auth_selection_history_node ON auth_selection_history(node_id, was_success, selected_at DESC, id DESC);
 CREATE TABLE IF NOT EXISTS auth_bindings (
     auth_index TEXT PRIMARY KEY,
     auth_name TEXT NOT NULL,
+    slot_id INTEGER NOT NULL DEFAULT 0,
     node_id INTEGER NOT NULL DEFAULT 0,
     proxy_url TEXT NOT NULL DEFAULT '',
     status TEXT NOT NULL,
@@ -448,7 +468,10 @@ CREATE TABLE IF NOT EXISTS auth_bindings (
     success_count INTEGER NOT NULL DEFAULT 0,
     failed_count INTEGER NOT NULL DEFAULT 0,
     updated_at INTEGER NOT NULL,
-    last_checked INTEGER NOT NULL DEFAULT 0
+    last_checked INTEGER NOT NULL DEFAULT 0,
+    proxy_write_attempts INTEGER NOT NULL DEFAULT 0,
+    proxy_write_error TEXT NOT NULL DEFAULT '',
+    proxy_write_at INTEGER NOT NULL DEFAULT 0
 );
 CREATE INDEX IF NOT EXISTS idx_auth_bindings_node ON auth_bindings(node_id);
 CREATE TABLE IF NOT EXISTS degradation_states (
@@ -484,6 +507,7 @@ INSERT OR IGNORE INTO plugin_settings(setting_key, setting_value) VALUES
     ('keepalive_interval_seconds', '1800'),
     ('revive_interval_seconds', '1800'),
     ('probe_retry_count', '3'),
+    ('max_revive_failure_count', '3'),
     ('healthy_slot_count', '50'),
     ('healthy_candidate_slot_count', '20'),
     ('healthy_slot_max_age_minutes', '350'),
@@ -518,6 +542,12 @@ WHERE setting_key = 'keepalive_probe_retry_count'
 		return fmt.Errorf("migrate probe retry setting: %w", err)
 	}
 	if err := store.ensureAuthBindingColumns(); err != nil {
+		return err
+	}
+	if err := store.ensureAuthSelectionHistoryColumns(); err != nil {
+		return err
+	}
+	if err := store.ensureNodeReviveColumns(); err != nil {
 		return err
 	}
 	if err := store.ensureNodeScopeColumn(); err != nil {
@@ -666,10 +696,14 @@ func (store *guardianStore) ensureAuthBindingColumns() error {
 		name       string
 		definition string
 	}{
+		{name: "slot_id", definition: "integer not null default 0"},
 		{name: "inspection_run_id", definition: "integer not null default 0"},
 		{name: "account_type", definition: "text not null default ''"},
 		{name: "schedule_group", definition: "integer"},
 		{name: "last_inspection", definition: "integer not null default 0"},
+		{name: "proxy_write_attempts", definition: "integer not null default 0"},
+		{name: "proxy_write_error", definition: "text not null default ''"},
+		{name: "proxy_write_at", definition: "integer not null default 0"},
 	}
 	for _, column := range columns {
 		if _, exists := existingColumns[column.name]; exists {
@@ -678,6 +712,75 @@ func (store *guardianStore) ensureAuthBindingColumns() error {
 		if _, err := store.database.Exec(`ALTER TABLE auth_bindings ADD COLUMN ` + column.name + ` ` + column.definition); err != nil {
 			return fmt.Errorf("add auth binding column %s: %w", column.name, err)
 		}
+	}
+	if _, err := store.database.Exec(`UPDATE auth_bindings
+SET slot_id = COALESCE((SELECT healthy_slots.slot_id FROM healthy_slots WHERE healthy_slots.node_id = auth_bindings.node_id AND healthy_slots.slot_kind = 'primary' LIMIT 1), 0)
+WHERE auth_bindings.node_id <> 0 AND auth_bindings.slot_id = 0`); err != nil {
+		return fmt.Errorf("backfill auth binding slots: %w", err)
+	}
+	return nil
+}
+
+func (store *guardianStore) ensureAuthSelectionHistoryColumns() error {
+	rows, err := store.database.Query(`PRAGMA table_info(auth_selection_history)`)
+	if err != nil {
+		return fmt.Errorf("inspect auth selection history schema: %w", err)
+	}
+	existingColumns := make(map[string]struct{})
+	for rows.Next() {
+		var columnID, notNull, primaryKey int
+		var columnName, columnType string
+		var defaultValue any
+		if err := rows.Scan(&columnID, &columnName, &columnType, &notNull, &defaultValue, &primaryKey); err != nil {
+			rows.Close()
+			return fmt.Errorf("scan auth selection history schema: %w", err)
+		}
+		existingColumns[columnName] = struct{}{}
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return fmt.Errorf("iterate auth selection history schema: %w", err)
+	}
+	if err := rows.Close(); err != nil {
+		return fmt.Errorf("close auth selection history schema: %w", err)
+	}
+	if _, exists := existingColumns["auth_identity"]; exists {
+		return nil
+	}
+	if _, err := store.database.Exec(`ALTER TABLE auth_selection_history ADD COLUMN auth_identity TEXT NOT NULL DEFAULT ''`); err != nil {
+		return fmt.Errorf("add auth selection identity column: %w", err)
+	}
+	return nil
+}
+
+func (store *guardianStore) ensureNodeReviveColumns() error {
+	rows, err := store.database.Query(`PRAGMA table_info(nodes)`)
+	if err != nil {
+		return fmt.Errorf("inspect node revive schema: %w", err)
+	}
+	existingColumns := make(map[string]struct{})
+	for rows.Next() {
+		var columnID, notNull, primaryKey int
+		var columnName, columnType string
+		var defaultValue any
+		if err := rows.Scan(&columnID, &columnName, &columnType, &notNull, &defaultValue, &primaryKey); err != nil {
+			rows.Close()
+			return fmt.Errorf("scan node revive schema: %w", err)
+		}
+		existingColumns[columnName] = struct{}{}
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return fmt.Errorf("iterate node revive schema: %w", err)
+	}
+	if err := rows.Close(); err != nil {
+		return fmt.Errorf("close node revive schema: %w", err)
+	}
+	if _, exists := existingColumns["revive_failure_count"]; exists {
+		return nil
+	}
+	if _, err := store.database.Exec(`ALTER TABLE nodes ADD COLUMN revive_failure_count INTEGER NOT NULL DEFAULT 0`); err != nil {
+		return fmt.Errorf("add node revive failure column: %w", err)
 	}
 	return nil
 }
@@ -736,6 +839,8 @@ func (store *guardianStore) settings() (pluginSettings, error) {
 				settings.ReviveIntervalSeconds = parsed
 			case "probe_retry_count":
 				settings.ProbeRetryCount = parsed
+			case "max_revive_failure_count":
+				settings.MaxReviveFailureCount = parsed
 			case "healthy_slot_count":
 				settings.HealthySlotCount = parsed
 			case "healthy_candidate_slot_count":
@@ -790,6 +895,7 @@ func (store *guardianStore) setSettings(settings pluginSettings) error {
 		"keepalive_interval_seconds":                         strconv.Itoa(settings.KeepaliveIntervalSeconds),
 		"revive_interval_seconds":                            strconv.Itoa(settings.ReviveIntervalSeconds),
 		"probe_retry_count":                                  strconv.Itoa(settings.ProbeRetryCount),
+		"max_revive_failure_count":                           strconv.Itoa(settings.MaxReviveFailureCount),
 		"healthy_slot_count":                                 strconv.Itoa(settings.HealthySlotCount),
 		"healthy_candidate_slot_count":                       strconv.Itoa(settings.HealthyCandidateSlotCount),
 		"healthy_slot_max_age_minutes":                       strconv.Itoa(settings.HealthySlotMaxAgeMinutes),
@@ -848,6 +954,9 @@ func validateSettings(settings pluginSettings) error {
 	}
 	if settings.ProbeRetryCount < 1 || settings.ProbeRetryCount > maxKeepaliveProbeRetryCount {
 		return fmt.Errorf("probe retry count is out of range")
+	}
+	if settings.MaxReviveFailureCount < 1 || settings.MaxReviveFailureCount > maxMaxReviveFailureCount {
+		return fmt.Errorf("max revive failure count is out of range")
 	}
 	if settings.HealthySlotCount < 1 || settings.HealthySlotCount > maxSlotCount || settings.HealthyCandidateSlotCount < 0 || settings.HealthyCandidateSlotCount > maxSlotCount || settings.HealthySlotCount+settings.HealthyCandidateSlotCount > maxSlotCount {
 		return fmt.Errorf("healthy slot counts are out of range")
@@ -1208,6 +1317,55 @@ func (store *guardianStore) deleteExpiredIPBatches(now time.Time, retentionDays 
 	}
 	defer tx.Rollback()
 
+	if _, err := tx.Exec(`DELETE FROM healthy_slots
+WHERE node_id IN (
+    SELECT expired_links.node_id
+    FROM ip_batch_nodes AS expired_links
+    INNER JOIN ip_batches AS expired_batches ON expired_batches.batch_id = expired_links.batch_id
+    WHERE expired_batches.created_at <= ?
+      AND NOT EXISTS (
+        SELECT 1
+        FROM ip_batch_nodes AS retained_links
+        INNER JOIN ip_batches AS retained_batches ON retained_batches.batch_id = retained_links.batch_id
+        WHERE retained_links.node_id = expired_links.node_id
+          AND retained_batches.created_at > ?
+      )
+  )`, cutoff, cutoff); err != nil {
+		return 0, 0, fmt.Errorf("clear expired IP batch slots: %w", err)
+	}
+	if _, err := tx.Exec(`UPDATE auth_bindings SET slot_id = 0, node_id = 0, proxy_url = '', updated_at = ?
+WHERE node_id IN (
+    SELECT expired_links.node_id
+    FROM ip_batch_nodes AS expired_links
+    INNER JOIN ip_batches AS expired_batches ON expired_batches.batch_id = expired_links.batch_id
+    WHERE expired_batches.created_at <= ?
+      AND NOT EXISTS (
+        SELECT 1
+        FROM ip_batch_nodes AS retained_links
+        INNER JOIN ip_batches AS retained_batches ON retained_batches.batch_id = retained_links.batch_id
+        WHERE retained_links.node_id = expired_links.node_id
+          AND retained_batches.created_at > ?
+      )
+  )`, time.Now().UnixMilli(), cutoff, cutoff); err != nil {
+		return 0, 0, fmt.Errorf("clear expired IP batch auth bindings: %w", err)
+	}
+	if _, err := tx.Exec(`DELETE FROM auth_selection_history
+WHERE node_id IN (
+    SELECT expired_links.node_id
+    FROM ip_batch_nodes AS expired_links
+    INNER JOIN ip_batches AS expired_batches ON expired_batches.batch_id = expired_links.batch_id
+    WHERE expired_batches.created_at <= ?
+      AND NOT EXISTS (
+        SELECT 1
+        FROM ip_batch_nodes AS retained_links
+        INNER JOIN ip_batches AS retained_batches ON retained_batches.batch_id = retained_links.batch_id
+        WHERE retained_links.node_id = expired_links.node_id
+          AND retained_batches.created_at > ?
+      )
+  )`, cutoff, cutoff); err != nil {
+		return 0, 0, fmt.Errorf("clear expired IP batch auth history: %w", err)
+	}
+
 	nodeResult, err := tx.Exec(`
 DELETE FROM nodes
 WHERE scope = 'guard'
@@ -1232,7 +1390,7 @@ WHERE scope = 'guard'
 		return 0, 0, fmt.Errorf("read expired IP batch node delete result: %w", err)
 	}
 
-	batchResult, err := tx.Exec(`DELETE FROM ip_batches WHERE created_at < ?`, cutoff)
+	batchResult, err := tx.Exec(`DELETE FROM ip_batches WHERE created_at <= ?`, cutoff)
 	if err != nil {
 		return 0, 0, fmt.Errorf("delete expired IP batches: %w", err)
 	}
@@ -1270,6 +1428,10 @@ ORDER BY nodes.id DESC`)
 }
 
 func (store *guardianStore) listIPBatches() ([]ipBatch, error) {
+	settings, err := store.settings()
+	if err != nil {
+		return nil, fmt.Errorf("read IP batch retention settings: %w", err)
+	}
 	rows, err := store.database.Query(`
 SELECT batches.batch_id, batches.sequence_number, batches.created_at, batches.total_count, batches.duplicate_count, batches.input_error_count,
        COALESCE(SUM(CASE WHEN nodes.status IN (?, ?, ?, ?, ?) THEN 1 ELSE 0 END), 0),
@@ -1290,7 +1452,7 @@ LIMIT ?`, statusHealthy, statusHealthyCandidate, statusHealthyFallback, statusUn
 		if err := rows.Scan(&item.ID, &item.SequenceNumber, &item.CreatedAt, &item.TotalCount, &item.DuplicateCount, &item.InputErrorCount, &item.CompletedCount, &item.InitialConnectedCount); err != nil {
 			return nil, fmt.Errorf("scan IP batch: %w", err)
 		}
-		item.ExpiresAt = time.UnixMilli(item.CreatedAt).AddDate(0, 0, defaultIPBatchRetentionDays).UnixMilli()
+		item.ExpiresAt = time.UnixMilli(item.CreatedAt).AddDate(0, 0, settings.IPBatchRetentionDays).UnixMilli()
 		item.RealtimeConnectedCount = item.InitialConnectedCount
 		items = append(items, item)
 	}
@@ -1360,8 +1522,17 @@ func (store *guardianStore) deleteNode(id int64) error {
 		return fmt.Errorf("begin node delete: %w", err)
 	}
 	defer tx.Rollback()
-	if _, err := tx.Exec(`UPDATE auth_bindings SET node_id = 0, proxy_url = '' WHERE node_id = ?`, id); err != nil {
+	if _, err := tx.Exec(`DELETE FROM healthy_slots WHERE node_id = ?`, id); err != nil {
+		return fmt.Errorf("clear node slots: %w", err)
+	}
+	if _, err := tx.Exec(`DELETE FROM ip_batch_nodes WHERE node_id = ?`, id); err != nil {
+		return fmt.Errorf("clear node batch links: %w", err)
+	}
+	if _, err := tx.Exec(`UPDATE auth_bindings SET slot_id = 0, node_id = 0, proxy_url = '', updated_at = ? WHERE node_id = ?`, time.Now().UnixMilli(), id); err != nil {
 		return fmt.Errorf("clear node bindings: %w", err)
+	}
+	if _, err := tx.Exec(`DELETE FROM auth_selection_history WHERE node_id = ?`, id); err != nil {
+		return fmt.Errorf("clear node auth history: %w", err)
 	}
 	result, err := tx.Exec(`DELETE FROM nodes WHERE id = ? AND scope = 'inspection'`, id)
 	if err != nil {
@@ -1458,9 +1629,9 @@ func (store *guardianStore) upsertAuthBindings(bindings []authBinding) error {
 		}
 	}
 	for _, binding := range bindings {
-		_, err := tx.Exec(`INSERT INTO auth_bindings(auth_index, auth_name, node_id, proxy_url, status, priority, success_count, failed_count, updated_at, last_checked, inspection_run_id, account_type, schedule_group, last_inspection)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-ON CONFLICT(auth_index) DO UPDATE SET auth_name=excluded.auth_name, node_id=CASE WHEN excluded.node_id <> 0 THEN excluded.node_id ELSE auth_bindings.node_id END, proxy_url=CASE WHEN excluded.proxy_url <> '' THEN excluded.proxy_url ELSE auth_bindings.proxy_url END, status=excluded.status, priority=excluded.priority, success_count=excluded.success_count, failed_count=excluded.failed_count, updated_at=excluded.updated_at, last_checked=excluded.last_checked, inspection_run_id=excluded.inspection_run_id, account_type=excluded.account_type, schedule_group=excluded.schedule_group, last_inspection=excluded.last_inspection`, binding.AuthIndex, binding.AuthName, binding.NodeID, binding.ProxyURL, binding.Status, binding.Priority, binding.Success, binding.Failed, binding.UpdatedAt, binding.LastChecked, binding.InspectionRunID, binding.AccountType, binding.ScheduleGroup, binding.LastInspection)
+		_, err := tx.Exec(`INSERT INTO auth_bindings(auth_index, auth_name, slot_id, node_id, proxy_url, status, priority, success_count, failed_count, updated_at, last_checked, inspection_run_id, account_type, schedule_group, last_inspection)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+ON CONFLICT(auth_index) DO UPDATE SET auth_name=excluded.auth_name, slot_id=CASE WHEN excluded.slot_id <> 0 THEN excluded.slot_id ELSE auth_bindings.slot_id END, node_id=CASE WHEN excluded.node_id <> 0 THEN excluded.node_id ELSE auth_bindings.node_id END, proxy_url=CASE WHEN excluded.proxy_url <> '' THEN excluded.proxy_url ELSE auth_bindings.proxy_url END, status=excluded.status, priority=excluded.priority, success_count=excluded.success_count, failed_count=excluded.failed_count, updated_at=excluded.updated_at, last_checked=CASE WHEN excluded.last_checked <> 0 THEN excluded.last_checked ELSE auth_bindings.last_checked END, inspection_run_id=CASE WHEN excluded.inspection_run_id <> 0 THEN excluded.inspection_run_id ELSE auth_bindings.inspection_run_id END, account_type=CASE WHEN excluded.account_type <> '' THEN excluded.account_type ELSE auth_bindings.account_type END, schedule_group=COALESCE(excluded.schedule_group, auth_bindings.schedule_group), last_inspection=CASE WHEN excluded.last_inspection <> 0 THEN excluded.last_inspection ELSE auth_bindings.last_inspection END`, binding.AuthIndex, binding.AuthName, binding.SlotID, binding.NodeID, binding.ProxyURL, binding.Status, binding.Priority, binding.Success, binding.Failed, binding.UpdatedAt, binding.LastChecked, binding.InspectionRunID, binding.AccountType, binding.ScheduleGroup, binding.LastInspection)
 		if err != nil {
 			return fmt.Errorf("save auth binding %s: %w", binding.AuthIndex, err)
 		}
@@ -1481,16 +1652,72 @@ ON CONFLICT(auth_index) DO UPDATE SET auth_name=excluded.auth_name, node_id=CASE
 	return nil
 }
 
+func (store *guardianStore) replaceAuthDistribution(assignments map[string]authAssignment) error {
+	tx, err := store.database.Begin()
+	if err != nil {
+		return fmt.Errorf("begin auth distribution replacement: %w", err)
+	}
+	defer tx.Rollback()
+	now := time.Now().UnixMilli()
+	if _, err := tx.Exec(`UPDATE auth_bindings SET slot_id = 0, node_id = 0, proxy_url = '', updated_at = ?`, now); err != nil {
+		return fmt.Errorf("clear auth distribution: %w", err)
+	}
+	for authIndex, assignment := range assignments {
+		updated, err := tx.Exec(`UPDATE auth_bindings SET slot_id = ?, node_id = ?, proxy_url = ?, updated_at = ? WHERE auth_index = ?`, assignment.SlotID, assignment.NodeID, assignment.ProxyURL, now, authIndex)
+		if err != nil {
+			return fmt.Errorf("bind auth %s to healthy slot: %w", authIndex, err)
+		}
+		count, err := updated.RowsAffected()
+		if err != nil {
+			return fmt.Errorf("read auth %s binding result: %w", authIndex, err)
+		}
+		if count != 1 {
+			return fmt.Errorf("auth %s is not present in the current auth binding snapshot", authIndex)
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit auth distribution replacement: %w", err)
+	}
+	return nil
+}
+
+func (store *guardianStore) recordAuthSelection(selection authSelection) error {
+	_, err := store.database.Exec(`INSERT INTO auth_selection_history(selected_at, auth_index, auth_identity, selection_source, node_id, slot_id, was_success) VALUES (?, ?, ?, ?, ?, ?, 1)`, time.Now().UnixMilli(), selection.AuthIndex, selection.AuthIdentity, selection.Source, selection.NodeID, selection.SlotID)
+	if err != nil {
+		return fmt.Errorf("record auth selection %s: %w", selection.AuthIndex, err)
+	}
+	return nil
+}
+
+func (store *guardianStore) recordAuthProxyWriteFailure(authIndex string, err error, attempts int) {
+	_, _ = store.database.Exec(`UPDATE auth_bindings SET proxy_write_attempts = proxy_write_attempts + ?, proxy_write_error = ?, proxy_write_at = ?, status = 'write_failed', updated_at = ? WHERE auth_index = ?`, attempts, sanitizeLogText(err.Error()), time.Now().UnixMilli(), time.Now().UnixMilli(), authIndex)
+}
+
+func (store *guardianStore) recordAuthProxyWriteSuccess(authIndex string) {
+	_, _ = store.database.Exec(`UPDATE auth_bindings SET proxy_write_error = '', proxy_write_at = ?, status = CASE WHEN status = 'write_failed' THEN 'available' ELSE status END, updated_at = ? WHERE auth_index = ?`, time.Now().UnixMilli(), time.Now().UnixMilli(), authIndex)
+}
+
+func (store *guardianStore) recordAuthDistributionFailure(nodeID int64, err error) {
+	_, _ = store.database.Exec(`UPDATE auth_bindings SET proxy_write_error = ?, proxy_write_at = ?, updated_at = ? WHERE node_id = ?`, sanitizeLogText(err.Error()), time.Now().UnixMilli(), time.Now().UnixMilli(), nodeID)
+}
+
 func (store *guardianStore) observeAuthAttempt(authIndex, authName, proxyURL string) error {
 	redactedProxy := redactProxyURL(proxyURL)
 	nodeID := int64(0)
-	if redactedProxy != "" {
-		_ = store.database.QueryRow(`SELECT id FROM nodes WHERE address = ? AND scope = 'inspection'`, redactedProxy).Scan(&nodeID)
+	if strings.TrimSpace(proxyURL) != "" {
+		_ = store.database.QueryRow(`SELECT id FROM nodes WHERE address = ? AND scope IN ('guard', 'inspection') ORDER BY CASE scope WHEN 'guard' THEN 0 ELSE 1 END, id DESC LIMIT 1`, strings.TrimSpace(proxyURL)).Scan(&nodeID)
+	}
+	if nodeID == 0 && redactedProxy != "" {
+		_ = store.database.QueryRow(`SELECT id FROM nodes WHERE address = ? AND scope IN ('guard', 'inspection') ORDER BY CASE scope WHEN 'guard' THEN 0 ELSE 1 END, id DESC LIMIT 1`, redactedProxy).Scan(&nodeID)
+	}
+	observedProxy := strings.TrimSpace(proxyURL)
+	if observedProxy == "" {
+		observedProxy = redactedProxy
 	}
 	now := time.Now().UnixMilli()
-	_, err := store.database.Exec(`INSERT INTO auth_bindings(auth_index, auth_name, node_id, proxy_url, status, updated_at, last_checked)
-VALUES (?, ?, ?, ?, ?, ?, ?)
-ON CONFLICT(auth_index) DO UPDATE SET auth_name=CASE WHEN excluded.auth_name <> '' THEN excluded.auth_name ELSE auth_bindings.auth_name END, node_id=CASE WHEN excluded.node_id <> 0 THEN excluded.node_id ELSE auth_bindings.node_id END, proxy_url=CASE WHEN excluded.proxy_url <> '' THEN excluded.proxy_url ELSE auth_bindings.proxy_url END, status=excluded.status, updated_at=excluded.updated_at, last_checked=excluded.last_checked`, authIndex, authName, nodeID, redactedProxy, "observed", now, now)
+	_, err := store.database.Exec(`INSERT INTO auth_bindings(auth_index, auth_name, slot_id, node_id, proxy_url, status, updated_at, last_checked)
+VALUES (?, ?, 0, ?, ?, ?, ?, ?)
+ON CONFLICT(auth_index) DO UPDATE SET auth_name=CASE WHEN excluded.auth_name <> '' THEN excluded.auth_name ELSE auth_bindings.auth_name END, slot_id=CASE WHEN excluded.node_id <> 0 AND excluded.node_id <> auth_bindings.node_id THEN 0 ELSE auth_bindings.slot_id END, node_id=CASE WHEN excluded.node_id <> 0 THEN excluded.node_id ELSE auth_bindings.node_id END, proxy_url=CASE WHEN excluded.proxy_url <> '' THEN excluded.proxy_url ELSE auth_bindings.proxy_url END, status=excluded.status, updated_at=excluded.updated_at, last_checked=excluded.last_checked`, authIndex, authName, nodeID, observedProxy, "observed", now, now)
 	if err != nil {
 		return fmt.Errorf("observe auth attempt: %w", err)
 	}
@@ -1498,7 +1725,7 @@ ON CONFLICT(auth_index) DO UPDATE SET auth_name=CASE WHEN excluded.auth_name <> 
 }
 
 func (store *guardianStore) listAuthBindings(inspectionRunID int64) ([]authBinding, error) {
-	rows, err := store.database.Query(`SELECT auth_bindings.auth_index, auth_bindings.auth_name, auth_bindings.node_id, auth_bindings.proxy_url, COALESCE(nodes.exit_ip, ''), auth_bindings.status, auth_bindings.priority, auth_bindings.success_count, auth_bindings.failed_count, auth_bindings.updated_at, auth_bindings.last_checked, auth_bindings.inspection_run_id, auth_bindings.account_type, auth_bindings.schedule_group, auth_bindings.last_inspection FROM auth_bindings LEFT JOIN nodes ON nodes.id = auth_bindings.node_id AND nodes.scope = 'inspection' WHERE auth_bindings.inspection_run_id = ? ORDER BY auth_bindings.priority DESC, auth_bindings.auth_name ASC`, inspectionRunID)
+	rows, err := store.database.Query(`SELECT auth_bindings.auth_index, auth_bindings.auth_name, auth_bindings.slot_id, auth_bindings.node_id, auth_bindings.proxy_url, COALESCE(nodes.exit_ip, ''), auth_bindings.status, auth_bindings.priority, auth_bindings.success_count, auth_bindings.failed_count, auth_bindings.updated_at, auth_bindings.last_checked, auth_bindings.inspection_run_id, auth_bindings.account_type, auth_bindings.schedule_group, auth_bindings.last_inspection, auth_bindings.proxy_write_attempts, auth_bindings.proxy_write_error, auth_bindings.proxy_write_at FROM auth_bindings LEFT JOIN nodes ON nodes.id = auth_bindings.node_id AND nodes.scope IN ('guard', 'inspection') WHERE (? = 0 OR auth_bindings.inspection_run_id = ?) ORDER BY auth_bindings.priority DESC, auth_bindings.auth_name ASC`, inspectionRunID, inspectionRunID)
 	if err != nil {
 		return nil, fmt.Errorf("list auth bindings: %w", err)
 	}
@@ -1507,7 +1734,7 @@ func (store *guardianStore) listAuthBindings(inspectionRunID int64) ([]authBindi
 	for rows.Next() {
 		var item authBinding
 		var scheduleGroup sql.NullInt64
-		if err := rows.Scan(&item.AuthIndex, &item.AuthName, &item.NodeID, &item.ProxyURL, &item.ExitIP, &item.Status, &item.Priority, &item.Success, &item.Failed, &item.UpdatedAt, &item.LastChecked, &item.InspectionRunID, &item.AccountType, &scheduleGroup, &item.LastInspection); err != nil {
+		if err := rows.Scan(&item.AuthIndex, &item.AuthName, &item.SlotID, &item.NodeID, &item.ProxyURL, &item.ExitIP, &item.Status, &item.Priority, &item.Success, &item.Failed, &item.UpdatedAt, &item.LastChecked, &item.InspectionRunID, &item.AccountType, &scheduleGroup, &item.LastInspection, &item.ProxyWriteAttempts, &item.ProxyWriteError, &item.ProxyWriteAt); err != nil {
 			return nil, fmt.Errorf("scan auth binding: %w", err)
 		}
 		if scheduleGroup.Valid {
@@ -1659,7 +1886,9 @@ func (store *guardianStore) summary() (map[string]any, error) {
 	slotCounts["primaryTotal"] = int64(settings.HealthySlotCount)
 	slotCounts["candidateTotal"] = int64(settings.HealthyCandidateSlotCount)
 	var accounts, degraded int64
-	if err := store.database.QueryRow(`SELECT COUNT(*) FROM auth_bindings WHERE inspection_run_id = COALESCE((SELECT id FROM inspection_runs WHERE status = 'completed' ORDER BY id DESC LIMIT 1), 0)`).Scan(&accounts); err != nil {
+	if err := store.database.QueryRow(`SELECT COUNT(DISTINCT auth_bindings.auth_index) FROM auth_bindings
+INNER JOIN healthy_slots ON healthy_slots.slot_id = auth_bindings.slot_id AND healthy_slots.node_id = auth_bindings.node_id AND healthy_slots.slot_kind = 'primary'
+INNER JOIN nodes ON nodes.id = healthy_slots.node_id AND nodes.scope = 'guard' AND nodes.status = 'healthy'`).Scan(&accounts); err != nil {
 		return nil, fmt.Errorf("count auth bindings: %w", err)
 	}
 	if err := store.database.QueryRow(`SELECT COUNT(*) FROM degradation_states`).Scan(&degraded); err != nil {

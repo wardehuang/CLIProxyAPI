@@ -64,6 +64,9 @@ func runInitialProbeRound(ctx context.Context, store *guardianStore, settings pl
 		_ = store.finishProbeRound(roundID, "failed", successCount.Load(), failureCount.Load())
 		return err
 	}
+	if err := refreshHealthyAuthDistribution(store); err != nil {
+		_ = store.appendRoundLog(logCategoryBatchProbe, roundID, logStatusError, logLevelError, "auth.distribution_failed", "初次探测后刷新 auth 分配失败", sanitizeLogText(err.Error()))
+	}
 	if err := store.finishProbeRound(roundID, "completed", successCount.Load(), failureCount.Load()); err != nil {
 		return err
 	}
@@ -136,7 +139,7 @@ func runReviveRound(ctx context.Context, store *guardianStore, settings pluginSe
 		workers.Add(1)
 		go func() {
 			defer workers.Done()
-			runReviveWorker(ctx, store, roundID, settings.ProbeRetryCount, &successCount, &failureCount)
+			runReviveWorker(ctx, store, roundID, settings.ProbeRetryCount, settings.MaxReviveFailureCount, &successCount, &failureCount)
 		}()
 	}
 	workers.Wait()
@@ -152,13 +155,16 @@ func runReviveRound(ctx context.Context, store *guardianStore, settings pluginSe
 		_ = store.finishReviveRound(roundID, "failed", successCount.Load(), failureCount.Load())
 		return err
 	}
+	if err := refreshHealthyAuthDistribution(store); err != nil {
+		_ = store.appendRoundLog(logCategoryRevive, roundID, logStatusError, logLevelError, "auth.distribution_failed", "复活探测后刷新 auth 分配失败", sanitizeLogText(err.Error()))
+	}
 	if err := store.finishReviveRound(roundID, "completed", successCount.Load(), failureCount.Load()); err != nil {
 		return err
 	}
 	return store.appendRoundLog(logCategoryRevive, roundID, logStatusConnected, logLevelInfo, "revive.round_completed", "复活探测轮次完成", fmt.Sprintf("候选 %d，复活 %d，仍异常 %d", candidateCount, successCount.Load(), failureCount.Load()))
 }
 
-func runReviveWorker(ctx context.Context, store *guardianStore, roundID int64, retryCount int, successCount, failureCount *atomic.Int64) {
+func runReviveWorker(ctx context.Context, store *guardianStore, roundID int64, retryCount, maxFailureCount int, successCount, failureCount *atomic.Int64) {
 	for {
 		if ctx.Err() != nil {
 			return
@@ -180,7 +186,7 @@ func runReviveWorker(ctx context.Context, store *guardianStore, roundID int64, r
 		} else {
 			failureCount.Add(1)
 		}
-		if err := store.updateReviveNodeResult(roundID, claim.Node.ID, result); err != nil {
+		if err := store.updateReviveNodeResult(roundID, claim.Node.ID, result, maxFailureCount); err != nil {
 			_ = store.appendRoundLog(logCategoryRevive, roundID, logStatusError, logLevelError, "revive.result_save_failed", "保存复活结果失败", err.Error())
 			return
 		}

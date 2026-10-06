@@ -270,6 +270,29 @@ WHERE id = ? AND scope = 'guard' AND status = ? AND EXISTS (SELECT 1 FROM keepal
 	if count != 1 {
 		return fmt.Errorf("keepalive node %d was not claimed by round %d", nodeID, roundID)
 	}
+	storedStatus := result.Status
+	if result.Status == statusHealthy {
+		var slotKind string
+		if err := tx.QueryRow(`SELECT COALESCE((SELECT slot_kind FROM healthy_slots WHERE node_id = ? LIMIT 1), '')`, nodeID).Scan(&slotKind); err != nil {
+			return fmt.Errorf("read keepalive node slot kind: %w", err)
+		}
+		if slotKind == "candidate" {
+			storedStatus = statusHealthyCandidate
+		}
+	}
+	if storedStatus != result.Status {
+		if _, err := tx.Exec(`UPDATE nodes SET status = ? WHERE id = ? AND scope = 'guard' AND status = ?`, storedStatus, nodeID, result.Status); err != nil {
+			return fmt.Errorf("preserve keepalive node slot status: %w", err)
+		}
+	}
+	if result.Status != statusHealthy {
+		if _, err := tx.Exec(`DELETE FROM healthy_slots WHERE node_id = ?`, nodeID); err != nil {
+			return fmt.Errorf("clear failed keepalive slots: %w", err)
+		}
+		if _, err := tx.Exec(`UPDATE auth_bindings SET slot_id = 0, node_id = 0, proxy_url = '', updated_at = ? WHERE node_id = ?`, time.Now().UnixMilli(), nodeID); err != nil {
+			return fmt.Errorf("clear failed keepalive auth bindings: %w", err)
+		}
+	}
 	marked, err := tx.Exec(`UPDATE keepalive_round_nodes SET completed_at = ? WHERE round_id = ? AND node_id = ? AND completed_at = 0`, result.CheckedAt, roundID, nodeID)
 	if err != nil {
 		return fmt.Errorf("mark keepalive round node completed: %w", err)

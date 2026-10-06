@@ -66,6 +66,9 @@ func (controller *runtimeController) configure(config pluginConfig) error {
 	if err := controller.store.reconcileHealthySlots(settings); err != nil {
 		return err
 	}
+	if err := refreshHealthyAuthDistribution(controller.store); err != nil {
+		_ = controller.store.appendLog(logLevelError, "auth.distribution_failed", "健康槽位 auth 分配失败", sanitizeLogText(err.Error()))
+	}
 	if err := controller.store.reconcileScheduleGroupCounters(settings.ScheduleGroupCount); err != nil {
 		return err
 	}
@@ -111,6 +114,9 @@ func (controller *runtimeController) ensure() error {
 		_ = store.close()
 		controller.store = nil
 		return err
+	}
+	if err := refreshHealthyAuthDistribution(store); err != nil {
+		_ = store.appendLog(logLevelError, "auth.distribution_failed", "健康槽位 auth 分配失败", sanitizeLogText(err.Error()))
 	}
 	controller.runtimeScheduleGroupCount = settings.ScheduleGroupCount
 	if settings.InspectionIntervalSeconds > 0 {
@@ -260,7 +266,7 @@ func (controller *runtimeController) api(method, path string, query url.Values, 
 		return controller.accountsAPI(store)
 	}
 	if method == http.MethodPost && path == "/api/accounts/refresh" {
-		return controller.accountsAPI(store)
+		return controller.refreshAccountsAPI(store)
 	}
 	if method == http.MethodGet && path == "/api/nodes" {
 		nodes, err := store.listNodes()
@@ -362,6 +368,10 @@ func (controller *runtimeController) api(method, path string, query url.Values, 
 			}
 			return http.StatusInternalServerError, nil, err
 		}
+		if err := refreshHealthyAuthDistribution(store); err != nil {
+			_ = store.appendLog(logLevelError, "auth.distribution_failed", "删除节点后刷新 auth 分配失败", sanitizeLogText(err.Error()))
+			return http.StatusBadGateway, nil, err
+		}
 		return jsonAPIResult(map[string]any{"deleted": true}, nil)
 	}
 	return http.StatusNotFound, nil, fmt.Errorf("API path not found")
@@ -378,6 +388,7 @@ func (controller *runtimeController) updateSettings(store *guardianStore, body [
 		KeepaliveIntervalSeconds                     int     `json:"keepaliveIntervalSeconds"`
 		ReviveIntervalSeconds                        int     `json:"reviveIntervalSeconds"`
 		ProbeRetryCount                              int     `json:"probeRetryCount"`
+		MaxReviveFailureCount                        int     `json:"maxReviveFailureCount"`
 		HealthySlotCount                             int     `json:"healthySlotCount"`
 		HealthyCandidateSlotCount                    int     `json:"healthyCandidateSlotCount"`
 		HealthySlotMaxAgeMinutes                     int     `json:"healthySlotMaxAgeMinutes"`
@@ -412,6 +423,7 @@ func (controller *runtimeController) updateSettings(store *guardianStore, body [
 		KeepaliveIntervalSeconds:                     payload.KeepaliveIntervalSeconds,
 		ReviveIntervalSeconds:                        payload.ReviveIntervalSeconds,
 		ProbeRetryCount:                              payload.ProbeRetryCount,
+		MaxReviveFailureCount:                        payload.MaxReviveFailureCount,
 		HealthySlotCount:                             payload.HealthySlotCount,
 		HealthyCandidateSlotCount:                    payload.HealthyCandidateSlotCount,
 		HealthySlotMaxAgeMinutes:                     payload.HealthySlotMaxAgeMinutes,
@@ -441,6 +453,10 @@ func (controller *runtimeController) updateSettings(store *guardianStore, body [
 	if slotSettingsChanged {
 		if err := store.reconcileHealthySlots(settings); err != nil {
 			return http.StatusInternalServerError, nil, err
+		}
+		if err := refreshHealthyAuthDistribution(store); err != nil {
+			_ = store.appendLog(logLevelError, "auth.distribution_failed", "健康槽位配置变更后刷新 auth 分配失败", sanitizeLogText(err.Error()))
+			return http.StatusBadGateway, nil, err
 		}
 	}
 	activeScheduleGroupCount := controller.runtimeScheduleGroupCount
@@ -508,15 +524,16 @@ func mapKeepaliveRound(round keepaliveRound, found bool) any {
 }
 
 func (controller *runtimeController) accountsAPI(store *guardianStore) (int, []byte, error) {
-	run, found, err := store.latestCompletedInspection()
-	if err != nil {
-		return http.StatusInternalServerError, nil, err
-	}
-	if !found {
-		return jsonAPIResult([]map[string]any{}, nil)
-	}
-	bindings, err := store.listAuthBindings(run.ID)
+	bindings, err := store.listAuthBindings(0)
 	return jsonAPIResult(publicAccounts(bindings), err)
+}
+
+func (controller *runtimeController) refreshAccountsAPI(store *guardianStore) (int, []byte, error) {
+	if err := refreshHealthyAuthDistribution(store); err != nil {
+		_ = store.appendLog(logLevelError, "auth.distribution_failed", "手动刷新 auth 分配失败", sanitizeLogText(err.Error()))
+		return http.StatusBadGateway, nil, err
+	}
+	return controller.accountsAPI(store)
 }
 
 func (controller *runtimeController) inspectionAPI(store *guardianStore) (int, []byte, error) {
@@ -615,7 +632,7 @@ func publicSettings(settings pluginSettings) map[string]any {
 		"workerCount": settings.WorkerCount, "scheduleGroupCount": settings.ScheduleGroupCount, "debugEnabled": settings.DebugEnabled, "refreshIntervalSeconds": settings.RefreshIntervalSeconds,
 		"inspectionIntervalSeconds": settings.InspectionIntervalSeconds,
 		"keepaliveWorkerCount":      settings.KeepaliveWorkerCount, "keepaliveIntervalSeconds": settings.KeepaliveIntervalSeconds,
-		"reviveIntervalSeconds": settings.ReviveIntervalSeconds, "probeRetryCount": settings.ProbeRetryCount,
+		"reviveIntervalSeconds": settings.ReviveIntervalSeconds, "probeRetryCount": settings.ProbeRetryCount, "maxReviveFailureCount": settings.MaxReviveFailureCount,
 		"healthySlotCount": settings.HealthySlotCount, "healthyCandidateSlotCount": settings.HealthyCandidateSlotCount, "healthySlotMaxAgeMinutes": settings.HealthySlotMaxAgeMinutes,
 		"realtimeGuardTTFBSeconds": settings.RealtimeGuardTTFBSeconds, "realtimeGuardGenerationSeconds": settings.RealtimeGuardGenerationSeconds,
 		"realtimeGuardTokenThreshold": settings.RealtimeGuardTokenThreshold, "realtimeGuardTimeoutSeconds": settings.RealtimeGuardTimeoutSeconds,
@@ -659,14 +676,18 @@ func publicAccounts(bindings []authBinding) []map[string]any {
 	items := make([]map[string]any, 0, len(bindings))
 	for _, binding := range bindings {
 		items = append(items, map[string]any{
-			"authIndex":      binding.AuthIndex,
-			"authName":       binding.AuthName,
-			"exitIp":         binding.ExitIP,
-			"status":         binding.Status,
-			"priority":       binding.Priority,
-			"accountType":    binding.AccountType,
-			"scheduleGroup":  binding.ScheduleGroup,
-			"lastInspection": binding.LastInspection,
+			"authIndex":          binding.AuthIndex,
+			"authName":           binding.AuthName,
+			"slotId":             binding.SlotID,
+			"exitIp":             binding.ExitIP,
+			"status":             binding.Status,
+			"priority":           binding.Priority,
+			"accountType":        binding.AccountType,
+			"scheduleGroup":      binding.ScheduleGroup,
+			"lastInspection":     binding.LastInspection,
+			"proxyWriteAttempts": binding.ProxyWriteAttempts,
+			"proxyWriteError":    sanitizeLogText(binding.ProxyWriteError),
+			"proxyWriteAt":       binding.ProxyWriteAt,
 		})
 	}
 	return items

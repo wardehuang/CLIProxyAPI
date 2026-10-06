@@ -270,6 +270,10 @@
     .toast.error { border-color: color-mix(in srgb, var(--danger-color) 42%, var(--border-primary)); background: color-mix(in srgb, var(--bg-primary) 94%, var(--danger-color)); color: var(--danger-color); }
     @keyframes toast-in { from { opacity: 0; transform: translateY(-8px); } to { opacity: 1; transform: translateY(0); } }
     .run-summary { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 10px; }
+    .guard-binding-summary { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 10px; margin-bottom: 12px; }
+    .guard-binding-stat { padding: 12px; border: 1px solid var(--border-color); border-radius: 13px; background: var(--bg-tertiary); }
+    .guard-binding-stat small { display: block; color: var(--text-tertiary); font-size: 11px; }
+    .guard-binding-stat strong { display: block; margin-top: 5px; font-size: 18px; }
     .run-stat { padding: 12px; border: 1px solid var(--border-color); border-radius: 13px; background: var(--bg-tertiary); }
     .run-stat small { display: block; color: var(--text-tertiary); font-size: 11px; }
     .run-stat strong { display: block; margin-top: 5px; font-size: 18px; }
@@ -329,7 +333,7 @@
       .segmented-tabs { width: 100%; }
       .segmented-tab { flex: 1 1 0; padding-inline: 10px; }
       .mode-switch-copy { margin: 10px 2px 2px; }
-      .summary-grid, .server-summary-grid, .settings-grid, .probe-settings-grid, .detail-grid, .run-summary { grid-template-columns: 1fr; }
+      .summary-grid, .server-summary-grid, .settings-grid, .probe-settings-grid, .detail-grid, .run-summary, .guard-binding-summary { grid-template-columns: 1fr; }
       .guard-tabs { width: 100%; }
       .guard-tab { flex: 1 1 0; padding-inline: 10px; }
       .account-panel, .server-panel, .guard-panel { padding: 12px; border-radius: 18px; }
@@ -510,6 +514,7 @@
                 <div class="settings-field"><label for="keepalive-worker-count">保活 worker 数（线程）</label><input class="settings-input" id="keepalive-worker-count" type="number" min="1" max="64"></div>
                 <div class="settings-field"><label for="keepalive-interval">保活探测间隔（秒）</label><input class="settings-input" id="keepalive-interval" type="number" min="1" max="86400"></div>
                 <div class="settings-field"><label for="revive-interval">复活探测间隔（秒）</label><input class="settings-input" id="revive-interval" type="number" min="1" max="86400"></div>
+                <div class="settings-field"><label for="max-revive-failure-count">最大复活失败次数</label><input class="settings-input" id="max-revive-failure-count" type="number" min="1" max="100"><span class="settings-help">达到次数后永久删除节点 · 1–100</span></div>
               </div>
             </section>
             <section class="settings-section">
@@ -786,6 +791,7 @@ socks5://203.0.113.11:1080
         'keepalive-worker-count':'keepaliveWorkerCount',
         'keepalive-interval':'keepaliveIntervalSeconds',
         'revive-interval':'reviveIntervalSeconds',
+        'max-revive-failure-count':'maxReviveFailureCount',
         'healthy-slot-count':'healthySlotCount',
         'healthy-candidate-slot-count':'healthyCandidateSlotCount',
         'healthy-slot-max-age-minutes':'healthySlotMaxAgeMinutes',
@@ -807,12 +813,19 @@ socks5://203.0.113.11:1080
     }
 
     function renderGuardRuntimeStatus() {
-      const guard = state.summary && state.summary.guardNodes ? state.summary.guardNodes : {};
-      const slots = state.summary && state.summary.healthySlots ? state.summary.healthySlots : {};
+      const summary = state.summary || {};
+      const guard = summary.guardNodes || {};
+      const slots = summary.healthySlots || {};
       const primaryTotal = slots.primaryTotal || (state.settings && state.settings.healthySlotCount) || 0;
       const candidateTotal = slots.candidateTotal || (state.settings && state.settings.healthyCandidateSlotCount) || 0;
+      const bindingMetrics = [
+        ['数据库健康', guard.healthy || 0],
+        ['主健康槽位', `${slots.primary || 0}/${primaryTotal}`],
+        ['健康候选槽位', `${slots.candidate || 0}/${candidateTotal}`],
+        ['已绑定 auth', summary.accountCount || 0]
+      ];
       const cards = [
-        ['健康', `${guard.healthy || 0}/${primaryTotal}`, 'H', 'green', 'healthy'],
+        ['数据库健康', guard.healthy || 0, 'H', 'green', 'healthy'],
         ['健康备选', `${guard.healthy_candidate || 0}/${candidateTotal}`, 'C', 'blue', 'healthy_candidate'],
         ['已连通', guard.connected || 0, '✓', 'green', 'connected'],
         ['冷却中', guard.cooldown || 0, '⏱', 'amber', 'cooldown'],
@@ -824,7 +837,7 @@ socks5://203.0.113.11:1080
       ];
       const schedule = state.keepalive && state.keepalive.schedule;
       const status = schedule ? (schedule.running ? '保活运行中' : schedule.pending ? '保活等待执行' : '保活等待下一轮') : '保活状态未读取';
-      $('guard-runtime-status').innerHTML = `<div class="panel-header"><div><h3 class="panel-title">运行状态</h3><p class="panel-subtitle">${status}；点击卡片切换 IP 列表筛选。</p></div><span class="muted">${state.guardStatusFilter === 'all' ? '当前：全部' : `当前：${nodeLabel(state.guardStatusFilter)}`}</span></div><div class="summary-grid">${cards.map((card) => `<button class="summary-card tone-${card[3]}${state.guardStatusFilter === card[4] ? ' active' : ''}" type="button" data-guard-status="${card[4]}"><span class="summary-header"><span class="summary-icon">${card[2]}</span><span class="summary-label">${card[0]}</span></span><strong class="summary-value">${card[1]}</strong></button>`).join('')}</div>`;
+      $('guard-runtime-status').innerHTML = `<div class="panel-header"><div><h3 class="panel-title">运行状态</h3><p class="panel-subtitle">${status}；点击卡片切换 IP 列表筛选。</p></div><span class="muted">${state.guardStatusFilter === 'all' ? '当前：全部' : `当前：${nodeLabel(state.guardStatusFilter)}`}</span></div><div class="guard-binding-summary">${bindingMetrics.map((metric) => `<div class="guard-binding-stat"><small>${metric[0]}</small><strong>${metric[1]}</strong></div>`).join('')}</div><div class="summary-grid">${cards.map((card) => `<button class="summary-card tone-${card[3]}${state.guardStatusFilter === card[4] ? ' active' : ''}" type="button" data-guard-status="${card[4]}"><span class="summary-header"><span class="summary-icon">${card[2]}</span><span class="summary-label">${card[0]}</span></span><strong class="summary-value">${card[1]}</strong></button>`).join('')}</div>`;
     }
 
     function renderKeepalive() {
@@ -1052,6 +1065,7 @@ socks5://203.0.113.11:1080
           keepaliveWorkerCount: numberField('keepalive-worker-count'),
           keepaliveIntervalSeconds: numberField('keepalive-interval'),
           reviveIntervalSeconds: numberField('revive-interval'),
+          maxReviveFailureCount: numberField('max-revive-failure-count'),
           healthySlotCount: numberField('healthy-slot-count'),
           healthyCandidateSlotCount: numberField('healthy-candidate-slot-count'),
           healthySlotMaxAgeMinutes: numberField('healthy-slot-max-age-minutes'),

@@ -16,6 +16,13 @@ type probeRound struct {
 	FailureCount   int64
 }
 
+type healthySlot struct {
+	SlotID      int64
+	Kind        string
+	NodeID      int64
+	RefreshedAt int64
+}
+
 func (store *guardianStore) recoverProbeAndReviveState() error {
 	tx, err := store.database.Begin()
 	if err != nil {
@@ -192,25 +199,58 @@ ORDER BY nodes.id LIMIT 1`, roundID, statusUnhealthy).Scan(
 	return claim, true, nil
 }
 
-func (store *guardianStore) updateReviveNodeResult(roundID, nodeID int64, result nodeProbeResult) error {
+func (store *guardianStore) updateReviveNodeResult(roundID, nodeID int64, result nodeProbeResult, maxFailureCount int) error {
 	result.Error = sanitizeLogText(result.Error)
 	var nodeName string
 	if err := store.database.QueryRow(`SELECT address FROM nodes WHERE id = ? AND scope = 'guard'`, nodeID).Scan(&nodeName); err != nil {
 		return fmt.Errorf("read revive node name: %w", err)
 	}
-	updated, err := store.database.Exec(`UPDATE nodes SET status = ?, latency_ms = ?, exit_ip = ?, country = ?, last_checked = ?, last_error = ?
-WHERE id = ? AND scope = 'guard' AND status = ? AND EXISTS (SELECT 1 FROM revive_round_nodes WHERE round_id = ? AND node_id = ?)`, result.Status, result.LatencyMS, result.ExitIP, result.Country, result.CheckedAt, result.Error, nodeID, statusReviveProbing, roundID, nodeID)
+	tx, err := store.database.Begin()
 	if err != nil {
+		return fmt.Errorf("begin revive result update: %w", err)
+	}
+	defer tx.Rollback()
+	var failureCount int
+	if err := tx.QueryRow(`SELECT revive_failure_count FROM nodes WHERE id = ? AND scope = 'guard' AND status = ?`, nodeID, statusReviveProbing).Scan(&failureCount); err != nil {
+		return fmt.Errorf("read revive failure count: %w", err)
+	}
+	if result.Status == statusHealthy {
+		failureCount = 0
+	} else {
+		failureCount++
+	}
+	if _, err := tx.Exec(`UPDATE nodes SET status = ?, latency_ms = ?, exit_ip = ?, country = ?, last_checked = ?, last_error = ?, revive_failure_count = ?
+WHERE id = ? AND scope = 'guard' AND status = ? AND EXISTS (SELECT 1 FROM revive_round_nodes WHERE round_id = ? AND node_id = ?)`, result.Status, result.LatencyMS, result.ExitIP, result.Country, result.CheckedAt, result.Error, failureCount, nodeID, statusReviveProbing, roundID, nodeID); err != nil {
 		return fmt.Errorf("update revive node result: %w", err)
 	}
-	count, err := updated.RowsAffected()
-	if err != nil {
-		return fmt.Errorf("read revive node update result: %w", err)
+	if result.Status != statusHealthy {
+		if _, err := tx.Exec(`DELETE FROM healthy_slots WHERE node_id = ?`, nodeID); err != nil {
+			return fmt.Errorf("clear failed revive slots: %w", err)
+		}
+		if _, err := tx.Exec(`UPDATE auth_bindings SET slot_id = 0, node_id = 0, proxy_url = '', updated_at = ? WHERE node_id = ?`, time.Now().UnixMilli(), nodeID); err != nil {
+			return fmt.Errorf("clear failed revive auth bindings: %w", err)
+		}
 	}
-	if count != 1 {
-		return fmt.Errorf("revive node %d was not claimed by round %d", nodeID, roundID)
+	deleted := result.Status != statusHealthy && failureCount >= maxFailureCount
+	if deleted {
+		if _, err := tx.Exec(`DELETE FROM ip_batch_nodes WHERE node_id = ?`, nodeID); err != nil {
+			return fmt.Errorf("clear deleted revive batch links: %w", err)
+		}
+		if _, err := tx.Exec(`DELETE FROM auth_selection_history WHERE node_id = ?`, nodeID); err != nil {
+			return fmt.Errorf("clear deleted revive auth history: %w", err)
+		}
+		if _, err := tx.Exec(`DELETE FROM nodes WHERE id = ? AND scope = 'guard'`, nodeID); err != nil {
+			return fmt.Errorf("delete revive failure node: %w", err)
+		}
 	}
-	return store.appendRoundNodeLog(logCategoryRevive, roundID, logStatusForNodeResult(result.Status), logLevelInfo, "revive.node_result", nodeID, nodeName, "复活探测节点结果", fmt.Sprintf("状态=%s；延迟=%dms；出口IP=%s；国家=%s；错误=%s", result.Status, result.LatencyMS, result.ExitIP, result.Country, result.Error))
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit revive result update: %w", err)
+	}
+	statusText := result.Status
+	if deleted {
+		statusText = "deleted_after_revive_failures"
+	}
+	return store.appendRoundNodeLog(logCategoryRevive, roundID, logStatusForNodeResult(result.Status), logLevelInfo, "revive.node_result", nodeID, nodeName, "复活探测节点结果", fmt.Sprintf("状态=%s；复活失败次数=%d；延迟=%dms；出口IP=%s；国家=%s；错误=%s", statusText, failureCount, result.LatencyMS, result.ExitIP, result.Country, result.Error))
 }
 
 func (store *guardianStore) resetReviveRound(roundID int64) error {
@@ -236,6 +276,7 @@ func (store *guardianStore) reconcileHealthySlots(settings pluginSettings) error
 		return fmt.Errorf("begin healthy slot reconciliation: %w", err)
 	}
 	defer tx.Rollback()
+	now := time.Now().UnixMilli()
 	cutoff := time.Now().Add(-time.Duration(settings.HealthySlotMaxAgeMinutes) * time.Minute).UnixMilli()
 	rows, err := tx.Query(`SELECT id FROM nodes WHERE scope = 'guard' AND status IN (?, ?, ?) AND last_checked >= ? ORDER BY last_checked DESC, id DESC`, statusHealthy, statusHealthyCandidate, statusHealthyFallback, cutoff)
 	if err != nil {
@@ -255,28 +296,76 @@ func (store *guardianStore) reconcileHealthySlots(settings pluginSettings) error
 		return fmt.Errorf("iterate healthy slot candidates: %w", err)
 	}
 	rows.Close()
+	existingRows, err := tx.Query(`SELECT slot_id, slot_kind, node_id, refreshed_at FROM healthy_slots ORDER BY slot_id`)
+	if err != nil {
+		return fmt.Errorf("list existing healthy slots: %w", err)
+	}
+	existing := make(map[int64]healthySlot)
+	for existingRows.Next() {
+		var slot healthySlot
+		if err := existingRows.Scan(&slot.SlotID, &slot.Kind, &slot.NodeID, &slot.RefreshedAt); err != nil {
+			existingRows.Close()
+			return fmt.Errorf("scan existing healthy slot: %w", err)
+		}
+		existing[slot.SlotID] = slot
+	}
+	if err := existingRows.Err(); err != nil {
+		existingRows.Close()
+		return fmt.Errorf("iterate existing healthy slots: %w", err)
+	}
+	if err := existingRows.Close(); err != nil {
+		return fmt.Errorf("close existing healthy slots: %w", err)
+	}
+	if _, err := tx.Exec(`UPDATE nodes SET status = ? WHERE scope = 'guard' AND status IN (?, ?, ?)`, statusConnected, statusHealthy, statusHealthyCandidate, statusHealthyFallback); err != nil {
+		return fmt.Errorf("reset healthy node slot status: %w", err)
+	}
 	if _, err := tx.Exec(`DELETE FROM healthy_slots`); err != nil {
 		return fmt.Errorf("clear healthy slots: %w", err)
 	}
-	if _, err := tx.Exec(`UPDATE nodes SET status = ? WHERE scope = 'guard' AND status IN (?, ?)`, statusHealthy, statusHealthyCandidate, statusHealthyFallback); err != nil {
-		return fmt.Errorf("reset healthy node slot status: %w", err)
+	if _, err := tx.Exec(`UPDATE auth_bindings SET slot_id = 0, node_id = 0, proxy_url = '', updated_at = ?`, now); err != nil {
+		return fmt.Errorf("clear healthy slot auth bindings: %w", err)
 	}
-	for index, nodeID := range candidateIDs {
+	available := make(map[int64]struct{}, len(candidateIDs))
+	for _, nodeID := range candidateIDs {
+		available[nodeID] = struct{}{}
+	}
+	assignments := make([]healthySlot, 0, settings.HealthySlotCount+settings.HealthyCandidateSlotCount)
+	for slotIndex := 1; slotIndex <= settings.HealthySlotCount+settings.HealthyCandidateSlotCount; slotIndex++ {
+		slotID := int64(slotIndex)
 		kind := "primary"
 		status := statusHealthy
-		if index >= settings.HealthySlotCount {
-			if index >= settings.HealthySlotCount+settings.HealthyCandidateSlotCount {
-				break
-			}
+		if slotIndex > settings.HealthySlotCount {
 			kind = "candidate"
 			status = statusHealthyCandidate
 		}
-		slotID := int64(index + 1)
-		if _, err := tx.Exec(`INSERT INTO healthy_slots(slot_id, slot_kind, node_id, refreshed_at) VALUES (?, ?, ?, ?)`, slotID, kind, nodeID, time.Now().UnixMilli()); err != nil {
+		var assignment healthySlot
+		if previous, exists := existing[slotID]; exists {
+			if _, availableNode := available[previous.NodeID]; availableNode && previous.Kind == kind && previous.RefreshedAt >= cutoff {
+				assignment = previous
+				delete(available, previous.NodeID)
+			}
+		}
+		if assignment.NodeID == 0 {
+			for _, nodeID := range candidateIDs {
+				if _, availableNode := available[nodeID]; !availableNode {
+					continue
+				}
+				assignment = healthySlot{SlotID: slotID, Kind: kind, NodeID: nodeID, RefreshedAt: now}
+				delete(available, nodeID)
+				break
+			}
+		}
+		if assignment.NodeID == 0 {
+			continue
+		}
+		assignment.SlotID = slotID
+		assignment.Kind = kind
+		assignments = append(assignments, assignment)
+		if _, err := tx.Exec(`INSERT INTO healthy_slots(slot_id, slot_kind, node_id, refreshed_at) VALUES (?, ?, ?, ?)`, assignment.SlotID, assignment.Kind, assignment.NodeID, assignment.RefreshedAt); err != nil {
 			return fmt.Errorf("assign healthy slot %d: %w", slotID, err)
 		}
-		if _, err := tx.Exec(`UPDATE nodes SET status = ? WHERE id = ? AND scope = 'guard'`, status, nodeID); err != nil {
-			return fmt.Errorf("mark healthy slot node %d: %w", nodeID, err)
+		if _, err := tx.Exec(`UPDATE nodes SET status = ? WHERE id = ? AND scope = 'guard'`, status, assignment.NodeID); err != nil {
+			return fmt.Errorf("mark healthy slot node %d: %w", assignment.NodeID, err)
 		}
 	}
 	if err := tx.Commit(); err != nil {
@@ -286,7 +375,12 @@ func (store *guardianStore) reconcileHealthySlots(settings pluginSettings) error
 }
 
 func (store *guardianStore) healthySlotSummary() (map[string]int64, error) {
-	rows, err := store.database.Query(`SELECT slot_kind, COUNT(*) FROM healthy_slots GROUP BY slot_kind`)
+	rows, err := store.database.Query(`SELECT healthy_slots.slot_kind, COUNT(*)
+FROM healthy_slots
+INNER JOIN nodes ON nodes.id = healthy_slots.node_id AND nodes.scope = 'guard'
+WHERE (healthy_slots.slot_kind = 'primary' AND nodes.status = ?)
+   OR (healthy_slots.slot_kind = 'candidate' AND nodes.status = ?)
+GROUP BY healthy_slots.slot_kind`, statusHealthy, statusHealthyCandidate)
 	if err != nil {
 		return nil, fmt.Errorf("count healthy slots: %w", err)
 	}

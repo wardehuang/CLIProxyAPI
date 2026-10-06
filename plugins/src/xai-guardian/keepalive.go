@@ -153,6 +153,11 @@ func runKeepaliveRound(ctx context.Context, store *guardianStore, settings plugi
 		_ = store.finishKeepaliveRound(roundID, "failed", 0, 0, 0, 0)
 		return err
 	}
+	if deletedNodes > 0 {
+		if err := refreshHealthyAuthDistribution(store); err != nil {
+			_ = store.appendRoundLog(logCategoryKeepalive, roundID, logStatusError, logLevelError, "auth.distribution_failed", "过期节点清理后刷新 auth 分配失败", sanitizeLogText(err.Error()))
+		}
+	}
 	candidateCount, err := store.snapshotKeepaliveRound(roundID)
 	if err != nil {
 		_ = store.finishKeepaliveRound(roundID, "failed", 0, 0, deletedBatches, deletedNodes)
@@ -184,6 +189,9 @@ func runKeepaliveRound(ctx context.Context, store *guardianStore, settings plugi
 	}
 	if err := store.reconcileHealthySlots(settings); err != nil {
 		return err
+	}
+	if err := refreshHealthyAuthDistribution(store); err != nil {
+		_ = store.appendRoundLog(logCategoryKeepalive, roundID, logStatusError, logLevelError, "auth.distribution_failed", "保活探测后刷新 auth 分配失败", sanitizeLogText(err.Error()))
 	}
 	return store.appendRoundLog(logCategoryKeepalive, roundID, logStatusConnected, logLevelInfo, "keepalive.round_completed", "保活探测轮次完成", fmt.Sprintf("候选 %d，健康 %d，异常 %d，删除批次 %d，删除节点 %d", candidateCount, successCount.Load(), failureCount.Load(), deletedBatches, deletedNodes))
 }
