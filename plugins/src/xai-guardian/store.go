@@ -346,6 +346,7 @@ CREATE TABLE IF NOT EXISTS keepalive_round_nodes (
     round_id INTEGER NOT NULL,
     node_id INTEGER NOT NULL,
     previous_status TEXT NOT NULL DEFAULT '',
+    completed_at INTEGER NOT NULL DEFAULT 0,
     PRIMARY KEY(round_id, node_id),
     FOREIGN KEY(round_id) REFERENCES keepalive_rounds(id) ON DELETE CASCADE,
     FOREIGN KEY(node_id) REFERENCES nodes(id) ON DELETE CASCADE
@@ -472,6 +473,9 @@ WHERE setting_key = 'keepalive_probe_retry_count'
 		return err
 	}
 	if err := store.ensureNodeScopeUniqueIndex(); err != nil {
+		return err
+	}
+	if err := store.ensureKeepaliveRoundNodeColumns(); err != nil {
 		return err
 	}
 	if err := store.ensureScheduleGroupStorage(); err != nil {

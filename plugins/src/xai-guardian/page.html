@@ -187,11 +187,12 @@
     .account-table th:nth-child(7), .account-table td:nth-child(7) { width: 244px; }
     .account-table th:nth-child(8), .account-table td:nth-child(8) { width: 126px; }
     .node-table th:nth-child(1), .node-table td:nth-child(1) { width: 70px; }
-    .node-table th:nth-child(2), .node-table td:nth-child(2) { width: 330px; text-align: left; }
+    .node-table { min-width: 1420px; }
+    .node-table th:nth-child(2), .node-table td:nth-child(2) { width: 520px; text-align: left; }
     .node-table th:nth-child(3), .node-table td:nth-child(3) { width: 128px; }
     .node-table th:nth-child(4), .node-table td:nth-child(4) { width: 120px; }
     .node-table th:nth-child(5), .node-table td:nth-child(5) { width: 150px; }
-    .node-table th:nth-child(6), .node-table td:nth-child(6) { width: 110px; }
+    .node-table th:nth-child(6), .node-table td:nth-child(6) { width: 72px; }
     .node-table th:nth-child(7), .node-table td:nth-child(7) { width: 180px; }
     .node-table th:nth-child(8), .node-table td:nth-child(8) { width: 120px; }
     .guard-table th:nth-child(1), .guard-table td:nth-child(1) { width: 250px; text-align: left; }
@@ -264,6 +265,10 @@
     .help-text { color: var(--text-tertiary); font-size: 12px; }
     .message { min-height: 20px; color: var(--success-color); font-size: 12px; }
     .message.error { color: var(--danger-color); }
+    .toast-stack { position: fixed; top: 18px; right: 18px; z-index: 20; display: grid; width: min(460px, calc(100vw - 36px)); gap: 10px; pointer-events: none; }
+    .toast { padding: 12px 16px; border: 1px solid color-mix(in srgb, var(--success-color) 42%, var(--border-primary)); border-radius: 14px; background: color-mix(in srgb, var(--bg-primary) 94%, var(--success-color)); box-shadow: var(--shadow-lg); color: var(--success-color); font-size: 13px; font-weight: 700; animation: toast-in .18s ease-out; }
+    .toast.error { border-color: color-mix(in srgb, var(--danger-color) 42%, var(--border-primary)); background: color-mix(in srgb, var(--bg-primary) 94%, var(--danger-color)); color: var(--danger-color); }
+    @keyframes toast-in { from { opacity: 0; transform: translateY(-8px); } to { opacity: 1; transform: translateY(0); } }
     .run-summary { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 10px; }
     .run-stat { padding: 12px; border: 1px solid var(--border-color); border-radius: 13px; background: var(--bg-tertiary); }
     .run-stat small { display: block; color: var(--text-tertiary); font-size: 11px; }
@@ -416,7 +421,7 @@
           <div class="data-panel">
             <div class="data-header">
               <div><strong>IP列表</strong><div class="subline">显示通过【增加IP】录入的降智守护 IP；节点探测、保活和复活独立运行。</div></div>
-              <div class="data-actions"><button class="primary-button" id="add-ip" type="button">增加IP</button></div>
+              <div class="data-actions"><button class="refresh-button" id="refresh-guard" type="button">刷新</button><button class="primary-button" id="add-ip" type="button">增加IP</button></div>
             </div>
             <div id="guard-ip-error" class="message error hidden"></div>
             <div class="table-wrap" id="guard-nodes-table"></div>
@@ -508,6 +513,8 @@
     </section>
   </main>
 
+  <div class="toast-stack" id="toast-stack" aria-live="polite" aria-atomic="true"></div>
+
   <div class="modal-layer" id="add-ip-modal" hidden>
     <section class="modal" role="dialog" aria-modal="true" aria-labelledby="add-ip-modal-title">
       <div class="modal-head">
@@ -584,6 +591,14 @@ socks5://203.0.113.11:1080
       node.textContent = text || '';
       node.classList.toggle('error', Boolean(error));
       node.classList.toggle('hidden', !text);
+    };
+    const showToast = (text, error) => {
+      const toast = document.createElement('div');
+      toast.className = `toast${error ? ' error' : ''}`;
+      toast.setAttribute('role', error ? 'alert' : 'status');
+      toast.textContent = text;
+      $('toast-stack').appendChild(toast);
+      window.setTimeout(() => toast.remove(), 4200);
     };
     const statusKey = (item) => {
       const status = String(item.status || '').toLowerCase();
@@ -866,10 +881,12 @@ socks5://203.0.113.11:1080
         renderDegradation();
         renderLogs();
         restartPageRefreshTimer();
+        return true;
       } catch (error) {
         setMessage('guard-ip-error', error.message, true);
         setMessage('batch-message', error.message, true);
         setMessage('guard-error', error.message, true);
+        return false;
       }
     }
     async function refreshAll() { await Promise.all([refreshAccounts(), refreshInspection(), refreshGuard()]); }
@@ -898,8 +915,9 @@ socks5://203.0.113.11:1080
       if (target.dataset.deleteNode) { if (!window.confirm('确认删除这个服务端巡检节点？')) return; setBusy(true, '删除节点中…'); try { await api(`/api/nodes/${target.dataset.deleteNode}/delete`, 'POST', {}); await refreshInspection(); setMessage('node-message', '节点已删除。'); } catch (error) { setMessage('node-message', error.message, true); } finally { setBusy(false); } return; }
       if (target.dataset.clearAuth) { setBusy(true, '清除降智记录中…'); try { await api('/api/degradation/clear', 'POST', {authIndex:target.dataset.clearAuth}); await refreshGuard(); await refreshAccounts(); setMessage('settings-message', '降智记录已清除。'); } catch (error) { setMessage('settings-message', error.message, true); } finally { setBusy(false); } return; }
       if (target.id === 'run-inspection') { setBusy(true, '服务端巡检中…'); try { const text = $('node-input').value.trim(); if (text) { await api('/api/nodes', 'POST', {text}); $('node-input').value = ''; } await api('/api/inspection', 'POST', {}); await refreshInspection(); setMessage('node-message', '巡检完成。'); } catch (error) { setMessage('node-message', error.message, true); } finally { setBusy(false); } return; }
+      if (target.id === 'refresh-guard') { setBusy(true, 'IP列表刷新中…'); try { if (await refreshGuard()) showToast('IP列表已刷新。'); } finally { setBusy(false); } return; }
       if (target.id === 'add-ip') { $('add-ip-message').textContent = ''; $('add-ip-message').classList.add('hidden'); $('add-ip-modal').hidden = false; $('ip-input').focus(); return; }
-      if (target.id === 'submit-add-ip') { const text = $('ip-input').value.trim(); if (!text) { setMessage('add-ip-message', '请输入至少一行 IP。', true); return; } setBusy(true, '增加 IP 中…'); try { const result = await api('/api/batches', 'POST', {text}); const errorCount = Array.isArray(result.errors) ? result.errors.length : 0; $('ip-input').value = ''; $('add-ip-modal').hidden = true; await refreshGuard(); setMessage('guard-ip-error', `已录入 ${result.added} 个 IP，重复 ${result.duplicates} 个${errorCount ? `，${errorCount} 行格式错误` : ''}。`, errorCount > 0); } catch (error) { setMessage('add-ip-message', error.message, true); } finally { setBusy(false); } return; }
+      if (target.id === 'submit-add-ip') { const text = $('ip-input').value.trim(); if (!text) { setMessage('add-ip-message', '请输入至少一行 IP。', true); return; } setBusy(true, '增加 IP 中…'); try { const result = await api('/api/batches', 'POST', {text}); const errorCount = Array.isArray(result.errors) ? result.errors.length : 0; $('ip-input').value = ''; $('add-ip-modal').hidden = true; await refreshGuard(); showToast(`已录入 ${result.added} 个 IP，重复 ${result.duplicates} 个${errorCount ? `，${errorCount} 行格式错误` : ''}。`, errorCount > 0); } catch (error) { setMessage('add-ip-message', error.message, true); } finally { setBusy(false); } return; }
       if (target.id === 'batch-back') { state.selectedBatchID = ''; state.batchNodes = []; renderBatches(); return; }
       if (target.id === 'view-schedule-group-counters') { const counters = $('schedule-group-counters'); if (!counters.hidden) { counters.hidden = true; target.textContent = '查看调用次数'; target.setAttribute('aria-expanded', 'false'); return; } try { renderScheduleGroupCounters(await api('/api/schedule-groups/counters')); } catch (error) { $('schedule-group-counters-summary').textContent = error.message; counters.hidden = false; target.textContent = '隐藏调用次数'; target.setAttribute('aria-expanded', 'true'); } return; }
       if (target.id === 'run-keepalive') { setBusy(true, '保活探测排队中…'); try { await api('/api/keepalive/run', 'POST', {}); await refreshGuard(); setMessage('keepalive-message', '独立保活探测已排队。'); } catch (error) { setMessage('keepalive-message', error.message, true); } finally { setBusy(false); } return; }

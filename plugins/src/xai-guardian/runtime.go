@@ -62,12 +62,15 @@ func (controller *runtimeController) configure(config pluginConfig) error {
 	if err := controller.store.setSettings(settings); err != nil {
 		return err
 	}
+	controller.stopWorkersLocked()
+	if err := controller.store.reconcileHealthySlots(settings); err != nil {
+		return err
+	}
 	if err := controller.store.reconcileScheduleGroupCounters(settings.ScheduleGroupCount); err != nil {
 		return err
 	}
 	controller.runtimeScheduleGroupCount = settings.ScheduleGroupCount
 	controller.config = config
-	controller.stopWorkersLocked()
 	controller.scheduleGroups.resetRuntime()
 	if settings.InspectionIntervalSeconds > 0 {
 		controller.startInspectionWorkerLocked(settings.InspectionIntervalSeconds)
@@ -100,6 +103,11 @@ func (controller *runtimeController) ensure() error {
 		return err
 	}
 	if err := store.reconcileScheduleGroupCounters(settings.ScheduleGroupCount); err != nil {
+		_ = store.close()
+		controller.store = nil
+		return err
+	}
+	if err := store.reconcileHealthySlots(settings); err != nil {
 		_ = store.close()
 		controller.store = nil
 		return err
@@ -411,6 +419,7 @@ func (controller *runtimeController) updateSettings(store *guardianStore, body [
 		RealtimeGuardBurstMaxWindowMS:                payload.RealtimeGuardBurstMaxWindowMS,
 		IPBatchRetentionDays:                         payload.IPBatchRetentionDays,
 	}
+	slotSettingsChanged := currentSettings.HealthySlotCount != settings.HealthySlotCount || currentSettings.HealthyCandidateSlotCount != settings.HealthyCandidateSlotCount || currentSettings.HealthySlotMaxAgeMinutes != settings.HealthySlotMaxAgeMinutes
 	controller.mutex.Lock()
 	defer controller.mutex.Unlock()
 	if settings.ScheduleGroupCount != currentSettings.ScheduleGroupCount && controller.scheduleGroups.hasBusy() {
@@ -418,6 +427,11 @@ func (controller *runtimeController) updateSettings(store *guardianStore, body [
 	}
 	if err := store.setSettings(settings); err != nil {
 		return http.StatusBadRequest, nil, err
+	}
+	if slotSettingsChanged {
+		if err := store.reconcileHealthySlots(settings); err != nil {
+			return http.StatusInternalServerError, nil, err
+		}
 	}
 	activeScheduleGroupCount := controller.runtimeScheduleGroupCount
 	counterGroupCount := settings.ScheduleGroupCount

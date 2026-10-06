@@ -64,6 +64,35 @@ func (store *guardianStore) ensureNodeScopeUniqueIndex() error {
 	return nil
 }
 
+func (store *guardianStore) ensureKeepaliveRoundNodeColumns() error {
+	rows, err := store.database.Query(`PRAGMA table_info(keepalive_round_nodes)`)
+	if err != nil {
+		return fmt.Errorf("inspect keepalive round node schema: %w", err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var columnID, notNull, primaryKey int
+		var columnName, columnType string
+		var defaultValue any
+		if err := rows.Scan(&columnID, &columnName, &columnType, &notNull, &defaultValue, &primaryKey); err != nil {
+			return fmt.Errorf("scan keepalive round node schema: %w", err)
+		}
+		if columnName == "completed_at" {
+			return nil
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return fmt.Errorf("iterate keepalive round node schema: %w", err)
+	}
+	if err := rows.Close(); err != nil {
+		return fmt.Errorf("close keepalive round node schema: %w", err)
+	}
+	if _, err := store.database.Exec(`ALTER TABLE keepalive_round_nodes ADD COLUMN completed_at INTEGER NOT NULL DEFAULT 0`); err != nil {
+		return fmt.Errorf("add keepalive round node column: %w", err)
+	}
+	return nil
+}
+
 func nodeIndexColumns(store *guardianStore, indexName string) ([]string, error) {
 	quotedName := strings.ReplaceAll(indexName, `"`, `""`)
 	rows, err := store.database.Query(`PRAGMA index_info("` + quotedName + `")`)
@@ -186,7 +215,7 @@ func (store *guardianStore) claimNextKeepalive(roundID int64) (keepaliveNodeClai
 	err = tx.QueryRow(`SELECT nodes.id, nodes.address, nodes.protocol, nodes.host, nodes.port, nodes.status, nodes.latency_ms, nodes.exit_ip, nodes.country, nodes.last_checked, nodes.last_error, nodes.created_at, keepalive_round_nodes.previous_status
 FROM keepalive_round_nodes
 INNER JOIN nodes ON nodes.id = keepalive_round_nodes.node_id
-WHERE keepalive_round_nodes.round_id = ? AND nodes.scope = 'guard' AND nodes.status IN (?, ?, ?, ?, ?, ?, ?)
+WHERE keepalive_round_nodes.round_id = ? AND keepalive_round_nodes.completed_at = 0 AND nodes.scope = 'guard' AND nodes.status IN (?, ?, ?, ?, ?, ?, ?)
 ORDER BY nodes.id
 LIMIT 1`, roundID, statusUninspected, statusHealthy, statusUnhealthy, statusHealthyCandidate, statusHealthyFallback, statusConnected, statusCooldown).Scan(
 		&claim.Node.ID,
@@ -220,7 +249,12 @@ LIMIT 1`, roundID, statusUninspected, statusHealthy, statusUnhealthy, statusHeal
 
 func (store *guardianStore) updateKeepaliveNodeResult(roundID int64, nodeID int64, result nodeProbeResult) error {
 	result.Error = sanitizeLogText(result.Error)
-	updated, err := store.database.Exec(`UPDATE nodes SET status = ?, latency_ms = ?, exit_ip = ?, country = ?, last_checked = ?, last_error = ?
+	tx, err := store.database.Begin()
+	if err != nil {
+		return fmt.Errorf("begin keepalive result update: %w", err)
+	}
+	defer tx.Rollback()
+	updated, err := tx.Exec(`UPDATE nodes SET status = ?, latency_ms = ?, exit_ip = ?, country = ?, last_checked = ?, last_error = ?
 WHERE id = ? AND scope = 'guard' AND status = ? AND EXISTS (SELECT 1 FROM keepalive_round_nodes WHERE round_id = ? AND node_id = ?)`, result.Status, result.LatencyMS, result.ExitIP, result.Country, result.CheckedAt, result.Error, nodeID, statusKeepaliveProbing, roundID, nodeID)
 	if err != nil {
 		return fmt.Errorf("update keepalive node result: %w", err)
@@ -231,6 +265,20 @@ WHERE id = ? AND scope = 'guard' AND status = ? AND EXISTS (SELECT 1 FROM keepal
 	}
 	if count != 1 {
 		return fmt.Errorf("keepalive node %d was not claimed by round %d", nodeID, roundID)
+	}
+	marked, err := tx.Exec(`UPDATE keepalive_round_nodes SET completed_at = ? WHERE round_id = ? AND node_id = ? AND completed_at = 0`, result.CheckedAt, roundID, nodeID)
+	if err != nil {
+		return fmt.Errorf("mark keepalive round node completed: %w", err)
+	}
+	markedCount, err := marked.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("read keepalive round node completion: %w", err)
+	}
+	if markedCount != 1 {
+		return fmt.Errorf("keepalive round node %d was not completed in round %d", nodeID, roundID)
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit keepalive node result: %w", err)
 	}
 	return nil
 }
