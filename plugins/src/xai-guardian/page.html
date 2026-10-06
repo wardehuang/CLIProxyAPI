@@ -561,7 +561,7 @@ socks5://203.0.113.11:1080
       accounts: [], nodes: [], inspection: {run: null, results: []}, guardNodes: [], batches: [], batchNodes: [], degradation: [], logs: [], settings: null, keepalive: null,
       summary: null,
       mode: 'accounts', guardTab: 'ips', selectedBatchID: '', filter: 'all', guardStatusFilter: 'all', mask: 'full', page: 1, pageSize: 100,
-      keyword: '', expandedAccount: '', busy: false, pageRefreshTimer: 0
+      keyword: '', expandedAccount: '', busy: false, pageRefreshTimer: 0, settingsDirty: false, settingsRevision: 0
     };
     const $ = (id) => document.getElementById(id);
     const escapeHTML = (value) => String(value ?? '').replace(/[&<>"']/g, (char) => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[char]));
@@ -730,7 +730,7 @@ socks5://203.0.113.11:1080
     }
 
     function renderSettings() {
-      if (!state.settings) return;
+      if (!state.settings || state.settingsDirty) return;
       const fields = {
         'worker-count':'workerCount',
         'schedule-group-count':'scheduleGroupCount',
@@ -800,7 +800,9 @@ socks5://203.0.113.11:1080
     }
 
     function renderScheduleGroupCounters(result) {
-      $('schedule-group-counters-summary').textContent = `共 ${result.groupCount} 个调度组，累计 ${result.totalCalls} 次调用。`;
+      const activeGroupCount = Number(result.activeGroupCount);
+      const activeText = Number.isFinite(activeGroupCount) && activeGroupCount > 0 && activeGroupCount !== result.groupCount ? `当前运行 ${activeGroupCount} 个` : '';
+      $('schedule-group-counters-summary').textContent = `${activeText ? `已配置 ${result.groupCount} 个调度组，${activeText}` : `共 ${result.groupCount} 个调度组`}，累计 ${result.totalCalls} 次调用。`;
       $('schedule-group-counters').innerHTML = `<table class="data-table"><thead><tr><th>调度组</th><th>调用次数</th></tr></thead><tbody>${result.items.map((item) => `<tr><td>${item.groupId}</td><td>${item.callCount}</td></tr>`).join('')}</tbody></table>`;
       $('schedule-group-counters').hidden = false;
       $('view-schedule-group-counters').textContent = '隐藏调用次数';
@@ -842,12 +844,13 @@ socks5://203.0.113.11:1080
     }
 
     async function refreshGuard() {
+      const settingsRevision = state.settingsRevision;
       try {
         const result = await Promise.all([api('/api/batch-nodes'), api('/api/batches'), api('/api/degradation'), api('/api/settings'), api('/api/logs'), api('/api/keepalive'), api('/api/summary')]);
         state.guardNodes = result[0];
         state.batches = result[1].items;
         state.degradation = result[2];
-        state.settings = result[3];
+        if (settingsRevision === state.settingsRevision && !state.settingsDirty) state.settings = result[3];
         state.logs = result[4];
         state.keepalive = result[5];
         state.summary = result[6];
@@ -857,7 +860,7 @@ socks5://203.0.113.11:1080
         setMessage('guard-error', '');
         renderGuardNodes();
         renderBatches();
-        renderSettings();
+        if (settingsRevision === state.settingsRevision && !state.settingsDirty) renderSettings();
         renderGuardRuntimeStatus();
         renderKeepalive();
         renderDegradation();
@@ -930,11 +933,17 @@ socks5://203.0.113.11:1080
           realtimeGuardBurstMaxWindowMs: numberField('realtime-guard-burst-max-window-ms')
         };
         setBusy(true, '保存策略中…');
-        try { state.settings = await api('/api/settings', 'PUT', body); renderSettings(); restartPageRefreshTimer(); await refreshGuard(); setMessage('settings-message', '配置已保存。'); }
+        state.settingsRevision += 1;
+        try { await api('/api/settings', 'PUT', body); state.settings = await api('/api/settings'); state.settingsDirty = false; renderSettings(); restartPageRefreshTimer(); await refreshGuard(); setMessage('settings-message', '配置已保存并从 SQLite 读取确认。'); }
         catch (error) { setMessage('settings-message', error.message, true); }
         finally { setBusy(false); }
         return;
       }    });
+
+    document.querySelectorAll('.settings-input, #debug-enabled').forEach((input) => {
+      input.addEventListener('input', () => { state.settingsDirty = true; });
+      input.addEventListener('change', () => { state.settingsDirty = true; });
+    });
 
     $('account-search').addEventListener('input', (event) => { state.keyword = event.target.value; state.page = 1; renderAccountTable(); });
     $('account-page-size').addEventListener('change', (event) => { state.pageSize = Number(event.target.value); state.page = 1; renderAccountTable(); });

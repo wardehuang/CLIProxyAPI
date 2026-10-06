@@ -263,9 +263,14 @@ WHERE group_id = ?`, time.Now().UnixMilli(), groupID)
 }
 
 func (controller *runtimeController) scheduleGroupCountersAPI(store *guardianStore) (int, []byte, error) {
+	settings, err := store.settings()
+	if err != nil {
+		return http.StatusInternalServerError, nil, err
+	}
 	controller.mutex.RLock()
-	groupCount := controller.runtimeScheduleGroupCount
+	activeGroupCount := controller.runtimeScheduleGroupCount
 	controller.mutex.RUnlock()
+	groupCount := settings.ScheduleGroupCount
 	if groupCount < 1 {
 		return http.StatusInternalServerError, nil, fmt.Errorf("schedule groups are not configured")
 	}
@@ -280,5 +285,5 @@ func (controller *runtimeController) scheduleGroupCountersAPI(store *guardianSto
 		total += count
 		items = append(items, map[string]any{"groupId": groupID, "callCount": count})
 	}
-	return jsonAPIResult(map[string]any{"groupCount": groupCount, "totalCalls": total, "items": items}, nil)
+	return jsonAPIResult(map[string]any{"groupCount": groupCount, "activeGroupCount": activeGroupCount, "totalCalls": total, "items": items}, nil)
 }

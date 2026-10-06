@@ -419,8 +419,20 @@ func (controller *runtimeController) updateSettings(store *guardianStore, body [
 	if err := store.setSettings(settings); err != nil {
 		return http.StatusBadRequest, nil, err
 	}
+	activeScheduleGroupCount := controller.runtimeScheduleGroupCount
+	counterGroupCount := settings.ScheduleGroupCount
+	if activeScheduleGroupCount > counterGroupCount {
+		counterGroupCount = activeScheduleGroupCount
+	}
+	if err := store.reconcileScheduleGroupCounters(counterGroupCount); err != nil {
+		return http.StatusInternalServerError, nil, err
+	}
+	persistedSettings, err := store.settings()
+	if err != nil {
+		return http.StatusInternalServerError, nil, err
+	}
 	_ = store.appendLog(logLevelInfo, "settings.updated", "插件配置已保存", "")
-	return jsonAPIResult(publicSettings(settings), nil)
+	return jsonAPIResult(publicSettings(persistedSettings), nil)
 }
 
 func (controller *runtimeController) keepaliveAPI(store *guardianStore) (int, []byte, error) {
