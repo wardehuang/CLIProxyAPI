@@ -158,6 +158,7 @@ func runKeepaliveRound(ctx context.Context, store *guardianStore, settings plugi
 		_ = store.finishKeepaliveRound(roundID, "failed", 0, 0, deletedBatches, deletedNodes)
 		return err
 	}
+	_ = store.appendRoundLog(logCategoryKeepalive, roundID, logStatusProbing, logLevelInfo, "keepalive.round_started", "保活探测轮次开始", fmt.Sprintf("轮次 %d，保活线程数 %d，候选节点 %d", roundID, settings.KeepaliveWorkerCount, candidateCount))
 
 	var workerGroup sync.WaitGroup
 	var successCount atomic.Int64
@@ -184,7 +185,7 @@ func runKeepaliveRound(ctx context.Context, store *guardianStore, settings plugi
 	if err := store.reconcileHealthySlots(settings); err != nil {
 		return err
 	}
-	return store.appendLog(logLevelInfo, "keepalive.round_completed", "保活探测轮次完成", fmt.Sprintf("候选 %d，健康 %d，异常 %d，删除批次 %d，删除节点 %d", candidateCount, successCount.Load(), failureCount.Load(), deletedBatches, deletedNodes))
+	return store.appendRoundLog(logCategoryKeepalive, roundID, logStatusConnected, logLevelInfo, "keepalive.round_completed", "保活探测轮次完成", fmt.Sprintf("候选 %d，健康 %d，异常 %d，删除批次 %d，删除节点 %d", candidateCount, successCount.Load(), failureCount.Load(), deletedBatches, deletedNodes))
 }
 
 func runKeepaliveWorker(ctx context.Context, store *guardianStore, roundID int64, retryCount int, successCount, failureCount *atomic.Int64) {
@@ -194,7 +195,7 @@ func runKeepaliveWorker(ctx context.Context, store *guardianStore, roundID int64
 		}
 		claim, found, err := store.claimNextKeepalive(roundID)
 		if err != nil {
-			_ = store.appendLog(logLevelError, "keepalive.claim_failed", "领取保活节点失败", err.Error())
+			_ = store.appendRoundLog(logCategoryKeepalive, roundID, logStatusError, logLevelError, "keepalive.claim_failed", "领取保活节点失败", err.Error())
 			return
 		}
 		if !found {
@@ -210,7 +211,7 @@ func runKeepaliveWorker(ctx context.Context, store *guardianStore, roundID int64
 			failureCount.Add(1)
 		}
 		if err := store.updateKeepaliveNodeResult(roundID, claim.Node.ID, result); err != nil {
-			_ = store.appendLog(logLevelError, "keepalive.result_save_failed", "保存保活节点结果失败", err.Error())
+			_ = store.appendRoundLog(logCategoryKeepalive, roundID, logStatusError, logLevelError, "keepalive.result_save_failed", "保存保活节点结果失败", err.Error())
 			return
 		}
 	}

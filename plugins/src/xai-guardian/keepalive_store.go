@@ -254,6 +254,10 @@ func (store *guardianStore) updateKeepaliveNodeResult(roundID int64, nodeID int6
 		return fmt.Errorf("begin keepalive result update: %w", err)
 	}
 	defer tx.Rollback()
+	var nodeName string
+	if err := tx.QueryRow(`SELECT address FROM nodes WHERE id = ? AND scope = 'guard'`, nodeID).Scan(&nodeName); err != nil {
+		return fmt.Errorf("read keepalive node name: %w", err)
+	}
 	updated, err := tx.Exec(`UPDATE nodes SET status = ?, latency_ms = ?, exit_ip = ?, country = ?, last_checked = ?, last_error = ?
 WHERE id = ? AND scope = 'guard' AND status = ? AND EXISTS (SELECT 1 FROM keepalive_round_nodes WHERE round_id = ? AND node_id = ?)`, result.Status, result.LatencyMS, result.ExitIP, result.Country, result.CheckedAt, result.Error, nodeID, statusKeepaliveProbing, roundID, nodeID)
 	if err != nil {
@@ -280,7 +284,7 @@ WHERE id = ? AND scope = 'guard' AND status = ? AND EXISTS (SELECT 1 FROM keepal
 	if err := tx.Commit(); err != nil {
 		return fmt.Errorf("commit keepalive node result: %w", err)
 	}
-	return nil
+	return store.appendRoundNodeLog(logCategoryKeepalive, roundID, logStatusForNodeResult(result.Status), logLevelInfo, "keepalive.node_result", nodeID, nodeName, "保活探测节点结果", fmt.Sprintf("状态=%s；延迟=%dms；出口IP=%s；国家=%s；错误=%s", result.Status, result.LatencyMS, result.ExitIP, result.Country, result.Error))
 }
 
 func (store *guardianStore) resetKeepaliveRound(roundID int64) error {

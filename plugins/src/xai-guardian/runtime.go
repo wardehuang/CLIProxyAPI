@@ -331,13 +331,23 @@ func (controller *runtimeController) api(method, path string, query url.Values, 
 		}
 		return jsonAPIResult(map[string]any{"cleared": true}, nil)
 	}
+	if method == http.MethodGet && path == "/api/logs/groups" {
+		category := strings.TrimSpace(query.Get("category"))
+		groups, err := store.listLogGroups(category)
+		return jsonAPIResult(map[string]any{"items": groups, "total": len(groups), "category": category}, err)
+	}
 	if method == http.MethodGet && path == "/api/logs" {
 		limit, _ := strconv.Atoi(query.Get("limit"))
 		settings, err := store.settings()
 		if err != nil {
 			return http.StatusInternalServerError, nil, err
 		}
-		logs, err := store.listLogs(limit, settings.DebugEnabled)
+		category := strings.TrimSpace(query.Get("category"))
+		search := strings.TrimSpace(query.Get("search"))
+		if search == "" {
+			search = strings.TrimSpace(query.Get("q"))
+		}
+		logs, err := store.listLogs(limit, settings.DebugEnabled, category, search, strings.TrimSpace(query.Get("groupId")), strings.TrimSpace(query.Get("status")))
 		return jsonAPIResult(logs, err)
 	}
 	if len(strings.Split(strings.Trim(path, "/"), "/")) == 4 && strings.HasPrefix(path, "/api/nodes/") && strings.HasSuffix(path, "/delete") && method == http.MethodPost {

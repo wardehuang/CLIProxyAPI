@@ -74,6 +74,20 @@ const (
 	logLevelInfo  = "info"
 	logLevelWarn  = "warn"
 	logLevelError = "error"
+
+	logCategoryRealtimeGuard = "realtime_guard"
+	logCategoryGeneral       = "general"
+	logCategoryBatchProbe    = "batch_probe"
+	logCategoryKeepalive     = "keepalive_probe"
+	logCategoryRevive        = "revive_probe"
+
+	logStatusConnected = "connected"
+	logStatusProbing   = "probing"
+	logStatusError     = "error"
+
+	maxRealtimeGuardLogs = 100
+	maxPluginLogs        = 1000
+	maxGroupedLogSets    = 10
 )
 
 var logURLPattern = regexp.MustCompile(`(?i)\bhttps?://[^\s"'<>]+`)
@@ -219,6 +233,35 @@ type pluginLog struct {
 	Event     string `json:"event"`
 	Message   string `json:"message"`
 	Detail    string `json:"detail"`
+	Category  string `json:"category"`
+	GroupID   string `json:"groupId"`
+	Status    string `json:"status"`
+	NodeID    int64  `json:"nodeId"`
+	NodeName  string `json:"nodeName"`
+}
+
+type pluginLogGroup struct {
+	ID             string `json:"id"`
+	SequenceNumber int64  `json:"sequenceNumber"`
+	Category       string `json:"category"`
+	Status         string `json:"status"`
+	StartedAt      int64  `json:"startedAt"`
+	CompletedAt    int64  `json:"completedAt"`
+	UpdatedAt      int64  `json:"updatedAt"`
+	LogCount       int64  `json:"logCount"`
+	CandidateCount int64  `json:"candidateCount"`
+	SuccessCount   int64  `json:"successCount"`
+	FailureCount   int64  `json:"failureCount"`
+}
+
+type pluginLogList struct {
+	Items    []pluginLog `json:"items"`
+	Total    int         `json:"total"`
+	Max      int         `json:"max"`
+	Search   string      `json:"search"`
+	Category string      `json:"category"`
+	GroupID  string      `json:"groupId"`
+	Status   string      `json:"status"`
 }
 
 type guardianStore struct {
@@ -423,7 +466,12 @@ CREATE TABLE IF NOT EXISTS plugin_logs (
     level TEXT NOT NULL,
     event TEXT NOT NULL,
     message TEXT NOT NULL,
-    detail TEXT NOT NULL DEFAULT ''
+    detail TEXT NOT NULL DEFAULT '',
+    category TEXT NOT NULL DEFAULT 'general',
+    group_id TEXT NOT NULL DEFAULT '',
+    log_status TEXT NOT NULL DEFAULT '',
+    node_id INTEGER NOT NULL DEFAULT 0,
+    node_name TEXT NOT NULL DEFAULT ''
 );
 CREATE INDEX IF NOT EXISTS idx_plugin_logs_created ON plugin_logs(created_at DESC, id DESC);
 INSERT OR IGNORE INTO plugin_settings(setting_key, setting_value) VALUES
@@ -459,6 +507,9 @@ INSERT OR IGNORE INTO plugin_settings(setting_key, setting_value) VALUES
 	if _, err := store.database.Exec(`DELETE FROM plugin_settings WHERE setting_key IN ('quality_worker_count', 'quality_probe_timeout_seconds', 'quality_probe_model', 'quality_soft_tps', 'quality_hard_tps', 'quality_llm_probe_enabled')`); err != nil {
 		return fmt.Errorf("remove obsolete quality settings: %w", err)
 	}
+	if err := store.ensurePluginLogColumns(); err != nil {
+		return err
+	}
 	if _, err := store.database.Exec(`
 INSERT INTO plugin_settings(setting_key, setting_value)
 SELECT 'probe_retry_count', setting_value FROM plugin_settings
@@ -489,6 +540,72 @@ WHERE setting_key = 'keepalive_probe_retry_count'
 	}
 	if err := store.recoverProbeAndReviveState(); err != nil {
 		return err
+	}
+	return nil
+}
+
+func (store *guardianStore) ensurePluginLogColumns() error {
+	rows, err := store.database.Query(`PRAGMA table_info(plugin_logs)`)
+	if err != nil {
+		return fmt.Errorf("inspect plugin log schema: %w", err)
+	}
+	columns := make(map[string]bool)
+	for rows.Next() {
+		var columnID, notNull, primaryKey int
+		var columnName, columnType string
+		var defaultValue any
+		if err := rows.Scan(&columnID, &columnName, &columnType, &notNull, &defaultValue, &primaryKey); err != nil {
+			rows.Close()
+			return fmt.Errorf("scan plugin log schema: %w", err)
+		}
+		columns[columnName] = true
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return fmt.Errorf("iterate plugin log schema: %w", err)
+	}
+	if err := rows.Close(); err != nil {
+		return fmt.Errorf("close plugin log schema: %w", err)
+	}
+	for _, column := range []struct {
+		name string
+		sql  string
+	}{
+		{name: "category", sql: `ALTER TABLE plugin_logs ADD COLUMN category TEXT NOT NULL DEFAULT 'general'`},
+		{name: "group_id", sql: `ALTER TABLE plugin_logs ADD COLUMN group_id TEXT NOT NULL DEFAULT ''`},
+		{name: "log_status", sql: `ALTER TABLE plugin_logs ADD COLUMN log_status TEXT NOT NULL DEFAULT ''`},
+		{name: "node_id", sql: `ALTER TABLE plugin_logs ADD COLUMN node_id INTEGER NOT NULL DEFAULT 0`},
+		{name: "node_name", sql: `ALTER TABLE plugin_logs ADD COLUMN node_name TEXT NOT NULL DEFAULT ''`},
+	} {
+		if columns[column.name] {
+			continue
+		}
+		if _, err := store.database.Exec(column.sql); err != nil {
+			return fmt.Errorf("add plugin log column %s: %w", column.name, err)
+		}
+	}
+	if _, err := store.database.Exec(`
+UPDATE plugin_logs
+SET category = CASE
+    WHEN event LIKE 'guard.%' THEN 'realtime_guard'
+    WHEN event LIKE 'probe.%' AND event NOT IN ('probe.scheduler_started', 'probe.round_failed') THEN 'batch_probe'
+    WHEN event LIKE 'keepalive.%' AND event NOT IN ('keepalive.scheduler_started', 'keepalive.manual_triggered', 'keepalive.round_failed') THEN 'keepalive_probe'
+    WHEN event LIKE 'revive.%' AND event NOT IN ('revive.scheduler_started', 'revive.round_failed') THEN 'revive_probe'
+    ELSE 'general'
+END,
+log_status = CASE
+    WHEN level = 'error' OR event LIKE '%failed%' THEN 'error'
+    WHEN event LIKE '%completed%' THEN 'connected'
+    WHEN event LIKE '%started%' OR event LIKE '%triggered%' THEN 'probing'
+    ELSE ''
+END`); err != nil {
+		return fmt.Errorf("classify existing plugin logs: %w", err)
+	}
+	if _, err := store.database.Exec(`CREATE INDEX IF NOT EXISTS idx_plugin_logs_category ON plugin_logs(category, id DESC)`); err != nil {
+		return fmt.Errorf("index plugin log category: %w", err)
+	}
+	if _, err := store.database.Exec(`CREATE INDEX IF NOT EXISTS idx_plugin_logs_group ON plugin_logs(category, group_id, id DESC)`); err != nil {
+		return fmt.Errorf("index plugin log group: %w", err)
 	}
 	return nil
 }
@@ -751,15 +868,71 @@ func validateSettings(settings pluginSettings) error {
 }
 
 func (store *guardianStore) appendLog(level, event, message, detail string) error {
-	_, err := store.database.Exec(`INSERT INTO plugin_logs(created_at, level, event, message, detail) VALUES (?, ?, ?, ?, ?)`, time.Now().UnixMilli(), level, event, sanitizeLogText(message), sanitizeLogText(detail))
+	category, status := classifyLogEvent(event, level)
+	return store.appendCategorizedLog(category, "", status, level, event, 0, "", message, detail)
+}
+
+func (store *guardianStore) appendRoundLog(category string, roundID int64, status, level, event, message, detail string) error {
+	return store.appendCategorizedLog(category, strconv.FormatInt(roundID, 10), status, level, event, 0, "", message, detail)
+}
+
+func (store *guardianStore) appendRoundNodeLog(category string, roundID int64, status, level, event string, nodeID int64, nodeName, message, detail string) error {
+	return store.appendCategorizedLog(category, strconv.FormatInt(roundID, 10), status, level, event, nodeID, nodeName, message, detail)
+}
+
+func (store *guardianStore) appendCategorizedLog(category, groupID, status, level, event string, nodeID int64, nodeName, message, detail string) error {
+	_, err := store.database.Exec(`INSERT INTO plugin_logs(created_at, level, event, message, detail, category, group_id, log_status, node_id, node_name) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, time.Now().UnixMilli(), level, event, sanitizeLogText(message), sanitizeLogText(detail), category, groupID, status, nodeID, sanitizeLogText(nodeName))
 	if err != nil {
 		return fmt.Errorf("append plugin log: %w", err)
 	}
-	_, err = store.database.Exec(`DELETE FROM plugin_logs WHERE id NOT IN (SELECT id FROM plugin_logs ORDER BY id DESC LIMIT 1000)`)
-	if err != nil {
+	if _, err := store.database.Exec(`DELETE FROM plugin_logs WHERE category = ? AND id NOT IN (SELECT id FROM plugin_logs WHERE category = ? ORDER BY id DESC LIMIT ?)`, logCategoryRealtimeGuard, logCategoryRealtimeGuard, maxRealtimeGuardLogs); err != nil {
+		return fmt.Errorf("prune realtime guard logs: %w", err)
+	}
+	if _, err := store.database.Exec(`DELETE FROM plugin_logs WHERE category = ? AND group_id <> '' AND group_id NOT IN (SELECT group_id FROM plugin_logs WHERE category = ? AND group_id <> '' GROUP BY group_id ORDER BY MAX(id) DESC LIMIT ?)`, logCategoryBatchProbe, logCategoryBatchProbe, maxIPBatches); err != nil {
+		return fmt.Errorf("prune batch probe logs: %w", err)
+	}
+	for _, groupedCategory := range []string{logCategoryKeepalive, logCategoryRevive} {
+		if _, err := store.database.Exec(`DELETE FROM plugin_logs WHERE category = ? AND group_id <> '' AND group_id NOT IN (SELECT group_id FROM plugin_logs WHERE category = ? AND group_id <> '' GROUP BY group_id ORDER BY MAX(id) DESC LIMIT ?)`, groupedCategory, groupedCategory, maxGroupedLogSets); err != nil {
+			return fmt.Errorf("prune %s logs: %w", groupedCategory, err)
+		}
+	}
+	if _, err := store.database.Exec(`DELETE FROM plugin_logs WHERE id NOT IN (SELECT id FROM plugin_logs ORDER BY id DESC LIMIT ?)`, maxPluginLogs); err != nil {
 		return fmt.Errorf("prune plugin logs: %w", err)
 	}
 	return nil
+}
+
+func classifyLogEvent(event, level string) (string, string) {
+	category := logCategoryGeneral
+	switch {
+	case strings.HasPrefix(event, "guard."):
+		category = logCategoryRealtimeGuard
+	case strings.HasPrefix(event, "probe.") && event != "probe.scheduler_started" && event != "probe.round_failed":
+		category = logCategoryBatchProbe
+	case strings.HasPrefix(event, "keepalive.") && event != "keepalive.scheduler_started" && event != "keepalive.manual_triggered" && event != "keepalive.round_failed":
+		category = logCategoryKeepalive
+	case strings.HasPrefix(event, "revive.") && event != "revive.scheduler_started" && event != "revive.round_failed":
+		category = logCategoryRevive
+	}
+	status := ""
+	if level == logLevelError || strings.Contains(event, "failed") {
+		status = logStatusError
+	} else if strings.Contains(event, "completed") {
+		status = logStatusConnected
+	} else if strings.Contains(event, "started") || strings.Contains(event, "triggered") {
+		status = logStatusProbing
+	}
+	return category, status
+}
+
+func logStatusForNodeResult(status string) string {
+	if status == statusHealthy || status == statusHealthyCandidate || status == statusHealthyFallback || status == statusConnected {
+		return logStatusConnected
+	}
+	if status == statusProbing || status == statusKeepaliveProbing || status == statusReviveProbing {
+		return logStatusProbing
+	}
+	return logStatusError
 }
 
 func sanitizeLogText(value string) string {
@@ -813,30 +986,128 @@ func redactLogURL(value string) string {
 	return parsed.Scheme + "://" + parsed.Host
 }
 
-func (store *guardianStore) listLogs(limit int, debugEnabled bool) ([]pluginLog, error) {
-	if limit <= 0 || limit > 1000 {
-		limit = 200
+func (store *guardianStore) listLogs(limit int, debugEnabled bool, category, search, groupID, status string) (pluginLogList, error) {
+	if category == "" {
+		category = logCategoryRealtimeGuard
 	}
-	query := `SELECT id, created_at, level, event, message, detail FROM plugin_logs ORDER BY id DESC LIMIT ?`
-	if !debugEnabled {
-		query = `SELECT id, created_at, level, event, message, detail FROM plugin_logs WHERE event LIKE 'guard.%' ORDER BY id DESC LIMIT ?`
+	if !isLogCategory(category) {
+		return pluginLogList{}, fmt.Errorf("unsupported log category")
 	}
-	rows, err := store.database.Query(query, limit)
+	max := maxPluginLogs
+	if category == logCategoryRealtimeGuard {
+		max = maxRealtimeGuardLogs
+	}
+	if !debugEnabled && category != logCategoryRealtimeGuard {
+		return pluginLogList{Items: []pluginLog{}, Max: max, Search: search, Category: category, GroupID: groupID, Status: status}, nil
+	}
+	if isGroupedLogCategory(category) && groupID == "" {
+		return pluginLogList{}, fmt.Errorf("group id is required for grouped logs")
+	}
+	if limit <= 0 || limit > max {
+		limit = max
+	}
+	conditions := []string{"category = ?"}
+	args := []any{category}
+	if groupID != "" {
+		conditions = append(conditions, "group_id = ?")
+		args = append(args, groupID)
+	}
+	if status != "" {
+		if status != logStatusConnected && status != logStatusProbing && status != logStatusError {
+			return pluginLogList{}, fmt.Errorf("unsupported log status")
+		}
+		conditions = append(conditions, "log_status = ?")
+		args = append(args, status)
+	}
+	if search != "" {
+		pattern := "%" + strings.ToLower(search) + "%"
+		conditions = append(conditions, `(CAST(id AS TEXT) LIKE ? OR lower(level) LIKE ? OR lower(event) LIKE ? OR lower(node_name) LIKE ? OR lower(message) LIKE ? OR lower(detail) LIKE ?)`)
+		for index := 0; index < 6; index++ {
+			args = append(args, pattern)
+		}
+	}
+	args = append(args, limit)
+	query := `SELECT id, created_at, level, event, message, detail, category, group_id, log_status, node_id, node_name FROM plugin_logs WHERE ` + strings.Join(conditions, " AND ") + ` ORDER BY id DESC LIMIT ?`
+	rows, err := store.database.Query(query, args...)
 	if err != nil {
-		return nil, fmt.Errorf("list plugin logs: %w", err)
+		return pluginLogList{}, fmt.Errorf("list plugin logs: %w", err)
 	}
 	defer rows.Close()
 	items := make([]pluginLog, 0)
 	for rows.Next() {
 		var item pluginLog
-		if err := rows.Scan(&item.ID, &item.CreatedAt, &item.Level, &item.Event, &item.Message, &item.Detail); err != nil {
-			return nil, fmt.Errorf("scan plugin log: %w", err)
+		if err := rows.Scan(&item.ID, &item.CreatedAt, &item.Level, &item.Event, &item.Message, &item.Detail, &item.Category, &item.GroupID, &item.Status, &item.NodeID, &item.NodeName); err != nil {
+			return pluginLogList{}, fmt.Errorf("scan plugin log: %w", err)
 		}
 		item.Message = sanitizeLogText(item.Message)
 		item.Detail = sanitizeLogText(item.Detail)
+		item.NodeName = sanitizeLogText(item.NodeName)
 		items = append(items, item)
 	}
-	return items, rows.Err()
+	if err := rows.Err(); err != nil {
+		return pluginLogList{}, fmt.Errorf("iterate plugin logs: %w", err)
+	}
+	return pluginLogList{Items: items, Total: len(items), Max: max, Search: search, Category: category, GroupID: groupID, Status: status}, nil
+}
+
+func (store *guardianStore) listLogGroups(category string) ([]pluginLogGroup, error) {
+	if !isGroupedLogCategory(category) {
+		return nil, fmt.Errorf("log category does not support groups")
+	}
+	limit := maxGroupedLogSets
+	if category == logCategoryBatchProbe {
+		limit = maxIPBatches
+	}
+	roundTable := map[string]string{
+		logCategoryBatchProbe: "probe_rounds",
+		logCategoryKeepalive:  "keepalive_rounds",
+		logCategoryRevive:     "revive_rounds",
+	}[category]
+	query := fmt.Sprintf(`SELECT logs.group_id, MAX(logs.created_at), COALESCE(NULLIF(rounds.completed_at, 0), MAX(logs.created_at)), COUNT(*),
+COALESCE(rounds.started_at, MIN(logs.created_at)),
+COALESCE(rounds.status, CASE WHEN MAX(CASE WHEN logs.level = 'error' OR logs.log_status = 'error' THEN 1 ELSE 0 END) = 1 THEN 'failed' ELSE 'running' END),
+COALESCE(rounds.candidate_count, 0), COALESCE(rounds.success_count, 0), COALESCE(rounds.failure_count, 0)
+FROM plugin_logs AS logs
+LEFT JOIN %s AS rounds ON CAST(rounds.id AS TEXT) = logs.group_id
+WHERE logs.category = ? AND logs.group_id <> ''
+GROUP BY logs.group_id
+ORDER BY MAX(logs.id) DESC LIMIT ?`, roundTable)
+	rows, err := store.database.Query(query, category, limit)
+	if err != nil {
+		return nil, fmt.Errorf("list plugin log groups: %w", err)
+	}
+	defer rows.Close()
+	groups := make([]pluginLogGroup, 0)
+	for rows.Next() {
+		var groupID string
+		var startedAt, completedAt, updatedAt, logCount, candidateCount, successCount, failureCount int64
+		var groupStatus string
+		if err := rows.Scan(&groupID, &updatedAt, &completedAt, &logCount, &startedAt, &groupStatus, &candidateCount, &successCount, &failureCount); err != nil {
+			return nil, fmt.Errorf("scan plugin log group: %w", err)
+		}
+		sequenceNumber, parseErr := strconv.ParseInt(groupID, 10, 64)
+		if parseErr != nil {
+			sequenceNumber = int64(len(groups) + 1)
+		}
+		groups = append(groups, pluginLogGroup{ID: groupID, SequenceNumber: sequenceNumber, Category: category, Status: groupStatus, StartedAt: startedAt, CompletedAt: completedAt, UpdatedAt: updatedAt, LogCount: logCount, CandidateCount: candidateCount, SuccessCount: successCount, FailureCount: failureCount})
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate plugin log groups: %w", err)
+	}
+	return groups, nil
+}
+
+func isLogCategory(category string) bool {
+	switch category {
+	case logCategoryRealtimeGuard, logCategoryGeneral, logCategoryBatchProbe, logCategoryKeepalive, logCategoryRevive:
+		return true
+	default:
+		return false
+	}
+}
+
+func isGroupedLogCategory(category string) bool {
+	return category == logCategoryBatchProbe || category == logCategoryKeepalive || category == logCategoryRevive
 }
 
 func (store *guardianStore) insertNodes(nodes []proxyNode) (int, int, error) {

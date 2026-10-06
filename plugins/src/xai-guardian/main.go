@@ -416,7 +416,7 @@ func isAllowedUIPath(method, path string) bool {
 	switch method {
 	case http.MethodGet:
 		switch path {
-		case "/api/summary", "/api/schedule-groups/counters", "/api/settings", "/api/accounts", "/api/nodes", "/api/batch-nodes", "/api/batches", "/api/inspection", "/api/keepalive", "/api/degradation", "/api/logs":
+		case "/api/summary", "/api/schedule-groups/counters", "/api/settings", "/api/accounts", "/api/nodes", "/api/batch-nodes", "/api/batches", "/api/inspection", "/api/keepalive", "/api/degradation", "/api/logs", "/api/logs/groups":
 			return true
 		default:
 			return strings.HasPrefix(path, "/api/batches/") && strings.HasSuffix(path, "/nodes")

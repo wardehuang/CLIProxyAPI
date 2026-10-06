@@ -35,6 +35,7 @@ func runInitialProbeRound(ctx context.Context, store *guardianStore, settings pl
 	if err != nil {
 		return err
 	}
+	_ = store.appendRoundLog(logCategoryBatchProbe, roundID, logStatusProbing, logLevelInfo, "probe.round_started", "初次探测轮次开始", fmt.Sprintf("轮次 %d，探测线程数 %d", roundID, settings.WorkerCount))
 	candidateCount, err := store.snapshotProbeRound(roundID)
 	if err != nil {
 		_ = store.finishProbeRound(roundID, "failed", 0, 0)
@@ -66,7 +67,7 @@ func runInitialProbeRound(ctx context.Context, store *guardianStore, settings pl
 	if err := store.finishProbeRound(roundID, "completed", successCount.Load(), failureCount.Load()); err != nil {
 		return err
 	}
-	return store.appendLog(logLevelInfo, "probe.round_completed", "初次探测轮次完成", fmt.Sprintf("候选 %d，健康 %d，异常 %d", candidateCount, successCount.Load(), failureCount.Load()))
+	return store.appendRoundLog(logCategoryBatchProbe, roundID, logStatusConnected, logLevelInfo, "probe.round_completed", "初次探测轮次完成", fmt.Sprintf("候选 %d，健康 %d，异常 %d", candidateCount, successCount.Load(), failureCount.Load()))
 }
 
 func runInitialProbeWorker(ctx context.Context, store *guardianStore, roundID int64, retryCount int, successCount, failureCount *atomic.Int64) {
@@ -76,7 +77,7 @@ func runInitialProbeWorker(ctx context.Context, store *guardianStore, roundID in
 		}
 		claim, found, err := store.claimNextProbe(roundID)
 		if err != nil {
-			_ = store.appendLog(logLevelError, "probe.claim_failed", "领取初次探测节点失败", err.Error())
+			_ = store.appendRoundLog(logCategoryBatchProbe, roundID, logStatusError, logLevelError, "probe.claim_failed", "领取初次探测节点失败", err.Error())
 			return
 		}
 		if !found {
@@ -92,7 +93,7 @@ func runInitialProbeWorker(ctx context.Context, store *guardianStore, roundID in
 			failureCount.Add(1)
 		}
 		if err := store.updateProbeNodeResult(roundID, claim.Node.ID, result); err != nil {
-			_ = store.appendLog(logLevelError, "probe.result_save_failed", "保存初次探测结果失败", err.Error())
+			_ = store.appendRoundLog(logCategoryBatchProbe, roundID, logStatusError, logLevelError, "probe.result_save_failed", "保存初次探测结果失败", err.Error())
 			return
 		}
 	}
@@ -122,6 +123,7 @@ func runReviveRound(ctx context.Context, store *guardianStore, settings pluginSe
 	if err != nil {
 		return err
 	}
+	_ = store.appendRoundLog(logCategoryRevive, roundID, logStatusProbing, logLevelInfo, "revive.round_started", "复活探测轮次开始", fmt.Sprintf("轮次 %d，探测线程数 %d", roundID, settings.WorkerCount))
 	candidateCount, err := store.snapshotReviveRound(roundID)
 	if err != nil {
 		_ = store.finishReviveRound(roundID, "failed", 0, 0)
@@ -153,7 +155,7 @@ func runReviveRound(ctx context.Context, store *guardianStore, settings pluginSe
 	if err := store.finishReviveRound(roundID, "completed", successCount.Load(), failureCount.Load()); err != nil {
 		return err
 	}
-	return store.appendLog(logLevelInfo, "revive.round_completed", "复活探测轮次完成", fmt.Sprintf("候选 %d，复活 %d，仍异常 %d", candidateCount, successCount.Load(), failureCount.Load()))
+	return store.appendRoundLog(logCategoryRevive, roundID, logStatusConnected, logLevelInfo, "revive.round_completed", "复活探测轮次完成", fmt.Sprintf("候选 %d，复活 %d，仍异常 %d", candidateCount, successCount.Load(), failureCount.Load()))
 }
 
 func runReviveWorker(ctx context.Context, store *guardianStore, roundID int64, retryCount int, successCount, failureCount *atomic.Int64) {
@@ -163,7 +165,7 @@ func runReviveWorker(ctx context.Context, store *guardianStore, roundID int64, r
 		}
 		claim, found, err := store.claimNextRevive(roundID)
 		if err != nil {
-			_ = store.appendLog(logLevelError, "revive.claim_failed", "领取复活节点失败", err.Error())
+			_ = store.appendRoundLog(logCategoryRevive, roundID, logStatusError, logLevelError, "revive.claim_failed", "领取复活节点失败", err.Error())
 			return
 		}
 		if !found {
@@ -179,7 +181,7 @@ func runReviveWorker(ctx context.Context, store *guardianStore, roundID int64, r
 			failureCount.Add(1)
 		}
 		if err := store.updateReviveNodeResult(roundID, claim.Node.ID, result); err != nil {
-			_ = store.appendLog(logLevelError, "revive.result_save_failed", "保存复活结果失败", err.Error())
+			_ = store.appendRoundLog(logCategoryRevive, roundID, logStatusError, logLevelError, "revive.result_save_failed", "保存复活结果失败", err.Error())
 			return
 		}
 	}

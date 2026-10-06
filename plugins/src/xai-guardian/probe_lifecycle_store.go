@@ -101,6 +101,10 @@ ORDER BY nodes.id LIMIT 1`, roundID, statusUninspected).Scan(
 
 func (store *guardianStore) updateProbeNodeResult(roundID, nodeID int64, result nodeProbeResult) error {
 	result.Error = sanitizeLogText(result.Error)
+	var nodeName string
+	if err := store.database.QueryRow(`SELECT address FROM nodes WHERE id = ? AND scope = 'guard'`, nodeID).Scan(&nodeName); err != nil {
+		return fmt.Errorf("read probe node name: %w", err)
+	}
 	updated, err := store.database.Exec(`UPDATE nodes SET status = ?, latency_ms = ?, exit_ip = ?, country = ?, last_checked = ?, last_error = ?
 WHERE id = ? AND scope = 'guard' AND status = ? AND EXISTS (SELECT 1 FROM probe_round_nodes WHERE round_id = ? AND node_id = ?)`, result.Status, result.LatencyMS, result.ExitIP, result.Country, result.CheckedAt, result.Error, nodeID, statusProbing, roundID, nodeID)
 	if err != nil {
@@ -113,7 +117,7 @@ WHERE id = ? AND scope = 'guard' AND status = ? AND EXISTS (SELECT 1 FROM probe_
 	if count != 1 {
 		return fmt.Errorf("probe node %d was not claimed by round %d", nodeID, roundID)
 	}
-	return nil
+	return store.appendRoundNodeLog(logCategoryBatchProbe, roundID, logStatusForNodeResult(result.Status), logLevelInfo, "probe.node_result", nodeID, nodeName, "初次探测节点结果", fmt.Sprintf("状态=%s；延迟=%dms；出口IP=%s；国家=%s；错误=%s", result.Status, result.LatencyMS, result.ExitIP, result.Country, result.Error))
 }
 
 func (store *guardianStore) resetProbeRound(roundID int64) error {
@@ -190,6 +194,10 @@ ORDER BY nodes.id LIMIT 1`, roundID, statusUnhealthy).Scan(
 
 func (store *guardianStore) updateReviveNodeResult(roundID, nodeID int64, result nodeProbeResult) error {
 	result.Error = sanitizeLogText(result.Error)
+	var nodeName string
+	if err := store.database.QueryRow(`SELECT address FROM nodes WHERE id = ? AND scope = 'guard'`, nodeID).Scan(&nodeName); err != nil {
+		return fmt.Errorf("read revive node name: %w", err)
+	}
 	updated, err := store.database.Exec(`UPDATE nodes SET status = ?, latency_ms = ?, exit_ip = ?, country = ?, last_checked = ?, last_error = ?
 WHERE id = ? AND scope = 'guard' AND status = ? AND EXISTS (SELECT 1 FROM revive_round_nodes WHERE round_id = ? AND node_id = ?)`, result.Status, result.LatencyMS, result.ExitIP, result.Country, result.CheckedAt, result.Error, nodeID, statusReviveProbing, roundID, nodeID)
 	if err != nil {
@@ -202,7 +210,7 @@ WHERE id = ? AND scope = 'guard' AND status = ? AND EXISTS (SELECT 1 FROM revive
 	if count != 1 {
 		return fmt.Errorf("revive node %d was not claimed by round %d", nodeID, roundID)
 	}
-	return nil
+	return store.appendRoundNodeLog(logCategoryRevive, roundID, logStatusForNodeResult(result.Status), logLevelInfo, "revive.node_result", nodeID, nodeName, "复活探测节点结果", fmt.Sprintf("状态=%s；延迟=%dms；出口IP=%s；国家=%s；错误=%s", result.Status, result.LatencyMS, result.ExitIP, result.Country, result.Error))
 }
 
 func (store *guardianStore) resetReviveRound(roundID int64) error {

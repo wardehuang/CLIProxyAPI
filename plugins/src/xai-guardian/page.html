@@ -283,10 +283,19 @@
     .page-refresh-field { width: min(100%, 360px); }
     .settings-input { width: 100%; min-height: 38px; padding: 0 10px; border: 1px solid var(--border-color); border-radius: 10px; outline: none; background: var(--bg-tertiary); color: var(--text-primary); }
     .log-table { min-width: 850px; }
-    .log-table th:nth-child(1), .log-table td:nth-child(1) { width: 170px; }
-    .log-table th:nth-child(2), .log-table td:nth-child(2) { width: 80px; }
-    .log-table th:nth-child(3), .log-table td:nth-child(3) { width: 240px; text-align: left; }
-    .log-table th:nth-child(4), .log-table td:nth-child(4) { text-align: left; }
+    .log-table th:nth-child(1), .log-table td:nth-child(1) { width: 70px; }
+    .log-table th:nth-child(2), .log-table td:nth-child(2) { width: 170px; }
+    .log-table th:nth-child(3), .log-table td:nth-child(3) { width: 80px; text-align: left; }
+    .log-table th:nth-child(4), .log-table td:nth-child(4) { width: 240px; text-align: left; }
+    .log-table th:nth-child(5), .log-table td:nth-child(5), .log-table th:nth-child(6), .log-table td:nth-child(6), .log-table th:nth-child(7), .log-table td:nth-child(7) { text-align: left; }
+    .log-navigation { display: grid; gap: 10px; }
+    .log-category-tabs, .log-group-tabs, .log-status-tabs { display: flex; flex-wrap: wrap; gap: 6px; }
+    .log-tab { min-height: 36px; padding: 0 14px; border: 1px solid var(--border-color); border-radius: 10px; color: var(--text-secondary); background: var(--bg-tertiary); font-size: 12px; font-weight: 700; cursor: pointer; }
+    .log-tab:hover, .log-tab.active { border-color: color-mix(in srgb, var(--primary-color) 36%, var(--border-color)); color: var(--primary-color); background: color-mix(in srgb, var(--primary-color) 12%, var(--bg-primary)); }
+    .log-tab:disabled { cursor: default; opacity: .6; }
+    .log-toolbar { display: flex; flex-wrap: wrap; align-items: center; justify-content: flex-end; gap: 8px; }
+    .log-search { width: min(100%, 420px); min-height: 38px; padding: 0 12px; border: 1px solid var(--border-color); border-radius: 10px; outline: none; background: var(--bg-tertiary); color: var(--text-primary); }
+    .log-summary { color: var(--text-secondary); font-size: 12px; }
     .level-info { color: var(--primary-color); }
     .level-warn { color: var(--warning-color); }
     .level-error { color: var(--danger-color); }
@@ -446,7 +455,30 @@
             <div class="table-wrap" id="guard-table"></div>
           </div>
           <div class="logs-panel">
-            <div class="panel-header"><div><h2 class="panel-title">日志</h2><p class="panel-subtitle">日志内容经过脱敏处理。</p></div></div>
+            <div class="panel-header">
+              <div><h2 class="panel-title">日志</h2><p class="panel-subtitle">日志按用途、探测轮次和节点状态分组；关闭调试时仅显示守护日志。</p></div>
+              <div class="log-toolbar"><input class="log-search" id="log-search" type="search" placeholder="搜索 ID、级别、事件、节点、消息或详情" aria-label="搜索日志"><button class="secondary-button" id="search-logs" type="button">搜索</button></div>
+            </div>
+            <div class="log-navigation">
+              <nav class="log-category-tabs" aria-label="日志分类页签">
+                <button class="log-tab active" type="button" data-log-category="realtime_guard">守护日志</button>
+                <button class="log-tab" type="button" data-log-category="general">通用</button>
+                <button class="log-tab" type="button" data-log-category="batch_probe">批次探测</button>
+                <button class="log-tab" type="button" data-log-category="keepalive_probe">保活探测</button>
+                <button class="log-tab" type="button" data-log-category="revive_probe">复活探测</button>
+              </nav>
+              <div id="log-group-panel" hidden>
+                <div class="help-text">探测轮次</div>
+                <nav class="log-group-tabs" id="log-group-tabs" aria-label="探测轮次页签"></nav>
+                <nav class="log-status-tabs" id="log-status-tabs" aria-label="日志状态页签">
+                  <button class="log-tab active" type="button" data-log-status="connected">已连通</button>
+                  <button class="log-tab" type="button" data-log-status="probing">探测中</button>
+                  <button class="log-tab" type="button" data-log-status="error">账号异常</button>
+                </nav>
+              </div>
+            </div>
+            <div id="log-summary" class="log-summary" role="status"></div>
+            <div id="logs-error" class="message error hidden"></div>
             <div class="table-wrap" id="logs-table"></div>
           </div>
         </section>
@@ -565,9 +597,9 @@ socks5://203.0.113.11:1080
       window.parent.postMessage({type:'cpa-plugin-api-request', requestId, endpoint:apiEndpoint, method:'POST', body:payload}, '*');
     });
     const state = {
-      accounts: [], nodes: [], inspection: {run: null, results: []}, guardNodes: [], batches: [], batchNodes: [], degradation: [], logs: [], settings: null, keepalive: null,
+      accounts: [], nodes: [], inspection: {run: null, results: []}, guardNodes: [], batches: [], batchNodes: [], degradation: [], logs: [], logGroups: {batch_probe: [], keepalive_probe: [], revive_probe: []}, settings: null, keepalive: null,
       summary: null,
-      mode: 'accounts', guardTab: 'ips', selectedBatchID: '', filter: 'all', guardStatusFilter: 'all', mask: 'full', page: 1, pageSize: 100,
+      mode: 'accounts', guardTab: 'ips', logCategory: 'realtime_guard', logStatus: 'connected', selectedLogGroupIDs: {batch_probe: '', keepalive_probe: '', revive_probe: ''}, logSearch: '', logMax: 0, selectedBatchID: '', filter: 'all', guardStatusFilter: 'all', mask: 'full', page: 1, pageSize: 100,
       keyword: '', expandedAccount: '', busy: false, pageRefreshTimer: 0, settingsDirty: false, settingsRevision: 0
     };
     const $ = (id) => document.getElementById(id);
@@ -809,9 +841,48 @@ socks5://203.0.113.11:1080
       $('guard-table').innerHTML = `<table class="data-table guard-table"><thead><tr><th>账号</th><th>Auth Index</th><th>次数</th><th>最近原因</th><th>最近发生</th><th>操作</th></tr></thead><tbody>${rows || '<tr><td class="empty-cell" colspan="6">没有降智记录。</td></tr>'}</tbody></table>`;
     }
 
+    const logCategoryLabels = {realtime_guard:'守护日志', general:'通用', batch_probe:'批次探测', keepalive_probe:'保活探测', revive_probe:'复活探测'};
+    const logStatusLabels = {connected:'已连通', probing:'探测中', error:'账号异常'};
+    const logLevelLabels = {info:'信息', warn:'警告', error:'错误'};
+    const isGroupedLogCategory = (category) => ['batch_probe', 'keepalive_probe', 'revive_probe'].includes(category);
+    const groupStatusLabel = (status) => ({running:'运行中', completed:'已完成', failed:'异常'}[status] || '运行中');
+
+    function renderLogNavigation() {
+      document.querySelectorAll('[data-log-category]').forEach((tab) => tab.classList.toggle('active', tab.dataset.logCategory === state.logCategory));
+      const grouped = isGroupedLogCategory(state.logCategory);
+      $('log-group-panel').hidden = !grouped;
+      if (!grouped) return;
+      const groups = state.logGroups[state.logCategory] || [];
+      const selectedGroupID = state.selectedLogGroupIDs[state.logCategory];
+      $('log-group-tabs').innerHTML = groups.length ? groups.map((group) => `<button class="log-tab${group.id === selectedGroupID ? ' active' : ''}" type="button" data-log-group-id="${escapeHTML(group.id)}">#${escapeHTML(group.sequenceNumber)} ${escapeHTML(groupStatusLabel(group.status))} <span>${escapeHTML(group.logCount)}</span></button>`).join('') : '<span class="help-text">暂无探测轮次。</span>';
+      $('log-status-tabs').hidden = groups.length === 0;
+      $('log-status-tabs').querySelectorAll('[data-log-status]').forEach((tab) => tab.classList.toggle('active', tab.dataset.logStatus === state.logStatus));
+    }
+
     function renderLogs() {
-      const rows = state.logs.map((item) => `<tr><td>${formatDate(item.createdAt)}</td><td><span class="level-badge level-${escapeHTML(item.level)}">${escapeHTML(item.level)}</span></td><td class="mono">${escapeHTML(item.event)}</td><td><div class="log-cell"><strong>${escapeHTML(item.message)}</strong>${item.detail ? `<span class="subline">${escapeHTML(item.detail)}</span>` : ''}</div></td></tr>`).join('');
-      $('logs-table').innerHTML = `<table class="data-table log-table"><thead><tr><th>时间</th><th>级别</th><th>事件</th><th>消息</th></tr></thead><tbody>${rows || '<tr><td class="empty-cell" colspan="4">没有日志。</td></tr>'}</tbody></table>`;
+      renderLogNavigation();
+      const debugLocked = Boolean(state.settings) && !state.settings.debugEnabled && state.logCategory !== 'realtime_guard';
+      if (debugLocked) {
+        $('log-summary').textContent = '需要打开调试才显示日志。';
+        $('logs-table').innerHTML = '<div class="help-text">需要打开调试才显示日志。</div>';
+        return;
+      }
+      const grouped = isGroupedLogCategory(state.logCategory);
+      if (grouped && !state.selectedLogGroupIDs[state.logCategory]) {
+        $('log-summary').textContent = `暂无${logCategoryLabels[state.logCategory]}轮次。`;
+        $('logs-table').innerHTML = '<div class="help-text">暂无匹配日志。</div>';
+        return;
+      }
+      const group = grouped ? (state.logGroups[state.logCategory] || []).find((item) => item.id === state.selectedLogGroupIDs[state.logCategory]) : null;
+      const searchSuffix = state.logSearch ? `，搜索：${state.logSearch}` : '';
+      const prefix = grouped ? `${group ? `#${group.sequenceNumber}` : '当前轮次'}【${logStatusLabels[state.logStatus]}】` : logCategoryLabels[state.logCategory];
+      const roundSummary = group && (state.logCategory === 'keepalive_probe' || state.logCategory === 'revive_probe') ? `；候选 ${group.candidateCount}，成功 ${group.successCount}，失败 ${group.failureCount}` : '';
+      $('log-summary').textContent = state.logs.length ? `显示 ${state.logs.length} 条${prefix}日志，最多保存 ${state.logMax || (state.logCategory === 'realtime_guard' ? 100 : 1000)} 条${searchSuffix}${roundSummary}。` : `暂无${prefix}日志${searchSuffix}${roundSummary}。`;
+      const rows = state.logs.map((item) => {
+        const node = item.nodeId ? `#${item.nodeId} ${item.nodeName || '节点'}` : '插件';
+        return `<tr><td class="mono">${escapeHTML(item.id)}</td><td>${formatDate(item.createdAt)}</td><td><span class="level-badge level-${escapeHTML(item.level)}">${escapeHTML(logLevelLabels[item.level] || item.level || '未知')}</span></td><td class="mono">${escapeHTML(item.event)}</td><td class="mono">${escapeHTML(node)}</td><td><div class="log-cell"><strong>${escapeHTML(item.message)}</strong></div></td><td><div class="log-cell">${escapeHTML(item.detail || '—')}</div></td></tr>`;
+      }).join('');
+      $('logs-table').innerHTML = `<table class="data-table log-table"><thead><tr><th>ID</th><th>时间</th><th>级别</th><th>事件</th><th>节点</th><th>消息</th><th>详情</th></tr></thead><tbody>${rows || '<tr><td class="empty-cell" colspan="7">没有日志。</td></tr>'}</tbody></table>`;
     }
 
     function renderScheduleGroupCounters(result) {
@@ -858,18 +929,62 @@ socks5://203.0.113.11:1080
       }
     }
 
+    async function refreshLogs() {
+      try {
+      if (!state.settings) return;
+      const category = state.logCategory;
+      if (!state.settings.debugEnabled && category !== 'realtime_guard') {
+        state.logs = [];
+        state.logMax = 0;
+        setMessage('logs-error', '');
+        renderLogs();
+        return;
+      }
+      const parameters = new URLSearchParams();
+      parameters.set('category', category);
+      state.logSearch = $('log-search').value.trim();
+      if (state.logSearch) parameters.set('search', state.logSearch);
+      if (isGroupedLogCategory(category)) {
+        const groupsResult = await api(`/api/logs/groups?category=${encodeURIComponent(category)}`);
+        state.logGroups[category] = groupsResult.items;
+        const groups = state.logGroups[category];
+        const selectedGroupID = state.selectedLogGroupIDs[category];
+        if (!groups.some((group) => group.id === selectedGroupID)) state.selectedLogGroupIDs[category] = groups.length ? groups[0].id : '';
+        if (!state.selectedLogGroupIDs[category]) {
+          state.logs = [];
+          state.logMax = 0;
+          setMessage('logs-error', '');
+          renderLogs();
+          return;
+        }
+        parameters.set('groupId', state.selectedLogGroupIDs[category]);
+        parameters.set('status', state.logStatus);
+      }
+      const result = await api(`/api/logs?${parameters.toString()}`);
+      state.logs = result.items;
+      state.logMax = result.max;
+      setMessage('logs-error', '');
+      renderLogs();
+      } catch (error) {
+        setMessage('logs-error', error.message, true);
+        $('log-summary').textContent = `日志加载失败：${error.message}`;
+        $('logs-table').innerHTML = '<div class="help-text">日志加载失败。</div>';
+        throw error;
+      }
+    }
+
     async function refreshGuard() {
       const settingsRevision = state.settingsRevision;
       try {
-        const result = await Promise.all([api('/api/batch-nodes'), api('/api/batches'), api('/api/degradation'), api('/api/settings'), api('/api/logs'), api('/api/keepalive'), api('/api/summary')]);
+        const result = await Promise.all([api('/api/batch-nodes'), api('/api/batches'), api('/api/degradation'), api('/api/settings'), api('/api/keepalive'), api('/api/summary')]);
         state.guardNodes = result[0];
         state.batches = result[1].items;
         state.degradation = result[2];
         if (settingsRevision === state.settingsRevision && !state.settingsDirty) state.settings = result[3];
-        state.logs = result[4];
-        state.keepalive = result[5];
-        state.summary = result[6];
+        state.keepalive = result[4];
+        state.summary = result[5];
         state.batchNodes = state.selectedBatchID ? (await api(`/api/batches/${encodeURIComponent(state.selectedBatchID)}/nodes`)).items : [];
+        await refreshLogs();
         setMessage('guard-ip-error', '');
         setMessage('batch-message', '');
         setMessage('guard-error', '');
@@ -879,7 +994,6 @@ socks5://203.0.113.11:1080
         renderGuardRuntimeStatus();
         renderKeepalive();
         renderDegradation();
-        renderLogs();
         restartPageRefreshTimer();
         return true;
       } catch (error) {
@@ -908,6 +1022,9 @@ socks5://203.0.113.11:1080
       if (target.dataset.closeModal) { $(target.dataset.closeModal).hidden = true; return; }
       if (target.dataset.guardTab) { state.guardTab = target.dataset.guardTab; renderGuardTab(); return; }
       if (target.dataset.mode) { state.mode = target.dataset.mode; renderMode(); renderGuardTab(); return; }
+      if (target.dataset.logCategory) { state.logCategory = target.dataset.logCategory; state.logStatus = 'connected'; state.logs = []; renderLogs(); refreshLogs().catch((error) => { setMessage('logs-error', error.message, true); }); return; }
+      if (target.dataset.logGroupId) { state.selectedLogGroupIDs[state.logCategory] = target.dataset.logGroupId; state.logs = []; renderLogs(); refreshLogs().catch((error) => { setMessage('logs-error', error.message, true); }); return; }
+      if (target.dataset.logStatus) { state.logStatus = target.dataset.logStatus; renderLogs(); refreshLogs().catch((error) => { setMessage('logs-error', error.message, true); }); return; }
       if (target.dataset.guardStatus) { state.guardStatusFilter = state.guardStatusFilter === target.dataset.guardStatus ? 'all' : target.dataset.guardStatus; renderGuardNodes(); renderGuardRuntimeStatus(); return; }
       if (target.dataset.batchId) { state.selectedBatchID = target.dataset.batchId; state.batchNodes = (await api(`/api/batches/${encodeURIComponent(state.selectedBatchID)}/nodes`)).items; renderBatches(); return; }
       if (target.dataset.filter) { state.filter = target.dataset.filter; state.page = 1; document.querySelectorAll('[data-filter]').forEach((item) => item.classList.toggle('active', item.dataset.filter === state.filter)); renderAccountTable(); return; }
@@ -916,6 +1033,7 @@ socks5://203.0.113.11:1080
       if (target.dataset.clearAuth) { setBusy(true, '清除降智记录中…'); try { await api('/api/degradation/clear', 'POST', {authIndex:target.dataset.clearAuth}); await refreshGuard(); await refreshAccounts(); setMessage('settings-message', '降智记录已清除。'); } catch (error) { setMessage('settings-message', error.message, true); } finally { setBusy(false); } return; }
       if (target.id === 'run-inspection') { setBusy(true, '服务端巡检中…'); try { const text = $('node-input').value.trim(); if (text) { await api('/api/nodes', 'POST', {text}); $('node-input').value = ''; } await api('/api/inspection', 'POST', {}); await refreshInspection(); setMessage('node-message', '巡检完成。'); } catch (error) { setMessage('node-message', error.message, true); } finally { setBusy(false); } return; }
       if (target.id === 'refresh-guard') { setBusy(true, 'IP列表刷新中…'); try { if (await refreshGuard()) showToast('IP列表已刷新。'); } finally { setBusy(false); } return; }
+      if (target.id === 'search-logs') { refreshLogs().catch((error) => { setMessage('logs-error', error.message, true); }); return; }
       if (target.id === 'add-ip') { $('add-ip-message').textContent = ''; $('add-ip-message').classList.add('hidden'); $('add-ip-modal').hidden = false; $('ip-input').focus(); return; }
       if (target.id === 'submit-add-ip') { const text = $('ip-input').value.trim(); if (!text) { setMessage('add-ip-message', '请输入至少一行 IP。', true); return; } setBusy(true, '增加 IP 中…'); try { const result = await api('/api/batches', 'POST', {text}); const errorCount = Array.isArray(result.errors) ? result.errors.length : 0; $('ip-input').value = ''; $('add-ip-modal').hidden = true; await refreshGuard(); showToast(`已录入 ${result.added} 个 IP，重复 ${result.duplicates} 个${errorCount ? `，${errorCount} 行格式错误` : ''}。`, errorCount > 0); } catch (error) { setMessage('add-ip-message', error.message, true); } finally { setBusy(false); } return; }
       if (target.id === 'batch-back') { state.selectedBatchID = ''; state.batchNodes = []; renderBatches(); return; }
@@ -968,6 +1086,7 @@ socks5://203.0.113.11:1080
     $('account-page-prev').addEventListener('click', () => { if (state.page > 1) { state.page -= 1; renderAccountTable(); } });
     $('account-page-next').addEventListener('click', () => { state.page += 1; renderAccountTable(); });
     $('accounts-table').addEventListener('click', (event) => { const row = event.target.closest('tr[data-account]'); if (row && !event.target.closest('button')) { state.expandedAccount = state.expandedAccount === row.dataset.account ? '' : row.dataset.account; renderAccountTable(); } });
+    $('log-search').addEventListener('keydown', (event) => { if (event.key === 'Enter') refreshLogs().catch((error) => { setMessage('logs-error', error.message, true); }); });
     renderMode();
     renderGuardTab();
     refreshAll();
