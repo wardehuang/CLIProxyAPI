@@ -363,12 +363,6 @@ func (controller *runtimeController) updateSettings(store *guardianStore, body [
 		HealthySlotCount                             int     `json:"healthySlotCount"`
 		HealthyCandidateSlotCount                    int     `json:"healthyCandidateSlotCount"`
 		HealthySlotMaxAgeMinutes                     int     `json:"healthySlotMaxAgeMinutes"`
-		QualityWorkerCount                           int     `json:"qualityWorkerCount"`
-		QualityProbeTimeoutSeconds                   int     `json:"qualityProbeTimeoutSeconds"`
-		QualityProbeModel                            string  `json:"qualityProbeModel"`
-		QualitySoftTPS                               float64 `json:"qualitySoftTPS"`
-		QualityHardTPS                               float64 `json:"qualityHardTPS"`
-		QualityLLMProbeEnabled                       bool    `json:"qualityLLMProbeEnabled"`
 		RealtimeGuardTTFBSeconds                     float64 `json:"realtimeGuardTTFBSeconds"`
 		RealtimeGuardGenerationSeconds               float64 `json:"realtimeGuardGenerationSeconds"`
 		RealtimeGuardTokenThreshold                  int     `json:"realtimeGuardTokenThreshold"`
@@ -403,12 +397,6 @@ func (controller *runtimeController) updateSettings(store *guardianStore, body [
 		HealthySlotCount:                             payload.HealthySlotCount,
 		HealthyCandidateSlotCount:                    payload.HealthyCandidateSlotCount,
 		HealthySlotMaxAgeMinutes:                     payload.HealthySlotMaxAgeMinutes,
-		QualityWorkerCount:                           payload.QualityWorkerCount,
-		QualityProbeTimeoutSeconds:                   payload.QualityProbeTimeoutSeconds,
-		QualityProbeModel:                            strings.TrimSpace(payload.QualityProbeModel),
-		QualitySoftTPS:                               payload.QualitySoftTPS,
-		QualityHardTPS:                               payload.QualityHardTPS,
-		QualityLLMProbeEnabled:                       payload.QualityLLMProbeEnabled,
 		RealtimeGuardTTFBSeconds:                     payload.RealtimeGuardTTFBSeconds,
 		RealtimeGuardGenerationSeconds:               payload.RealtimeGuardGenerationSeconds,
 		RealtimeGuardTokenThreshold:                  payload.RealtimeGuardTokenThreshold,
@@ -575,8 +563,6 @@ func publicSettings(settings pluginSettings) map[string]any {
 		"keepaliveWorkerCount":      settings.KeepaliveWorkerCount, "keepaliveIntervalSeconds": settings.KeepaliveIntervalSeconds,
 		"reviveIntervalSeconds": settings.ReviveIntervalSeconds, "probeRetryCount": settings.ProbeRetryCount,
 		"healthySlotCount": settings.HealthySlotCount, "healthyCandidateSlotCount": settings.HealthyCandidateSlotCount, "healthySlotMaxAgeMinutes": settings.HealthySlotMaxAgeMinutes,
-		"qualityWorkerCount": settings.QualityWorkerCount, "qualityProbeTimeoutSeconds": settings.QualityProbeTimeoutSeconds, "qualityProbeModel": settings.QualityProbeModel,
-		"qualitySoftTPS": settings.QualitySoftTPS, "qualityHardTPS": settings.QualityHardTPS, "qualityLLMProbeEnabled": settings.QualityLLMProbeEnabled,
 		"realtimeGuardTTFBSeconds": settings.RealtimeGuardTTFBSeconds, "realtimeGuardGenerationSeconds": settings.RealtimeGuardGenerationSeconds,
 		"realtimeGuardTokenThreshold": settings.RealtimeGuardTokenThreshold, "realtimeGuardTimeoutSeconds": settings.RealtimeGuardTimeoutSeconds,
 		"realtimeGuardIdleTimeoutSeconds": settings.RealtimeGuardIdleTimeoutSeconds, "realtimeGuardMinSummaryChars": settings.RealtimeGuardMinSummaryChars,

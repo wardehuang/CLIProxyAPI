@@ -30,12 +30,6 @@ const (
 	defaultHealthySlotCount                             = 50
 	defaultHealthyCandidateCount                        = 20
 	defaultHealthySlotMaxAgeMinutes                     = 350
-	defaultQualityWorkerCount                           = 8
-	defaultQualityProbeTimeout                          = 25
-	defaultQualityProbeModel                            = "grok-4.5"
-	defaultQualitySoftTPS                               = 500.0
-	defaultQualityHardTPS                               = 1000.0
-	defaultQualityLLMProbeEnabled                       = false
 	defaultRealtimeGuardTTFBSeconds                     = 5.0
 	defaultRealtimeGuardGenerationSeconds               = 1.25
 	defaultRealtimeGuardTokenThreshold                  = 300
@@ -59,8 +53,6 @@ const (
 	maxKeepaliveProbeRetryCount                         = 10
 	maxSlotCount                                        = 1000
 	maxHealthySlotMaxAgeMinutes                         = 10080
-	maxQualityProbeTimeoutSeconds                       = 600
-	maxQualityProbeModelLength                          = 128
 	degradationFirstCooling                             = 24 * time.Hour
 	degradationSecondCooling                            = 48 * time.Hour
 	degradationPermanentCoolingUntil                    = int64(-1)
@@ -99,12 +91,6 @@ type pluginSettings struct {
 	HealthySlotCount                             int
 	HealthyCandidateSlotCount                    int
 	HealthySlotMaxAgeMinutes                     int
-	QualityWorkerCount                           int
-	QualityProbeTimeoutSeconds                   int
-	QualityProbeModel                            string
-	QualitySoftTPS                               float64
-	QualityHardTPS                               float64
-	QualityLLMProbeEnabled                       bool
 	RealtimeGuardTTFBSeconds                     float64
 	RealtimeGuardGenerationSeconds               float64
 	RealtimeGuardTokenThreshold                  int
@@ -452,12 +438,6 @@ INSERT OR IGNORE INTO plugin_settings(setting_key, setting_value) VALUES
     ('healthy_slot_count', '50'),
     ('healthy_candidate_slot_count', '20'),
     ('healthy_slot_max_age_minutes', '350'),
-    ('quality_worker_count', '8'),
-    ('quality_probe_timeout_seconds', '25'),
-    ('quality_probe_model', 'grok-4.5'),
-    ('quality_soft_tps', '500'),
-    ('quality_hard_tps', '1000'),
-    ('quality_llm_probe_enabled', '0'),
     ('realtime_guard_ttfb_seconds', '5'),
     ('realtime_guard_generation_seconds', '1.25'),
     ('realtime_guard_token_threshold', '300'),
@@ -474,6 +454,9 @@ INSERT OR IGNORE INTO plugin_settings(setting_key, setting_value) VALUES
 `)
 	if err != nil {
 		return fmt.Errorf("initialize sqlite database: %w", err)
+	}
+	if _, err := store.database.Exec(`DELETE FROM plugin_settings WHERE setting_key IN ('quality_worker_count', 'quality_probe_timeout_seconds', 'quality_probe_model', 'quality_soft_tps', 'quality_hard_tps', 'quality_llm_probe_enabled')`); err != nil {
+		return fmt.Errorf("remove obsolete quality settings: %w", err)
 	}
 	if _, err := store.database.Exec(`
 INSERT INTO plugin_settings(setting_key, setting_value)
@@ -598,20 +581,6 @@ func (store *guardianStore) settings() (pluginSettings, error) {
 			return pluginSettings{}, fmt.Errorf("scan plugin settings: %w", err)
 		}
 		switch key {
-		case "quality_probe_model":
-			settings.QualityProbeModel = strings.TrimSpace(value)
-		case "quality_llm_probe_enabled":
-			settings.QualityLLMProbeEnabled = strings.TrimSpace(value) == "1" || strings.EqualFold(strings.TrimSpace(value), "true")
-		case "quality_soft_tps":
-			parsed, parseErr := strconv.ParseFloat(strings.TrimSpace(value), 64)
-			if parseErr == nil {
-				settings.QualitySoftTPS = parsed
-			}
-		case "quality_hard_tps":
-			parsed, parseErr := strconv.ParseFloat(strings.TrimSpace(value), 64)
-			if parseErr == nil {
-				settings.QualityHardTPS = parsed
-			}
 		case "debug_enabled":
 			settings.DebugEnabled = strings.TrimSpace(value) == "1" || strings.EqualFold(strings.TrimSpace(value), "true")
 		case "realtime_guard_ttfb_seconds":
@@ -652,10 +621,6 @@ func (store *guardianStore) settings() (pluginSettings, error) {
 				settings.HealthyCandidateSlotCount = parsed
 			case "healthy_slot_max_age_minutes":
 				settings.HealthySlotMaxAgeMinutes = parsed
-			case "quality_worker_count":
-				settings.QualityWorkerCount = parsed
-			case "quality_probe_timeout_seconds":
-				settings.QualityProbeTimeoutSeconds = parsed
 			case "realtime_guard_token_threshold":
 				settings.RealtimeGuardTokenThreshold = parsed
 			case "realtime_guard_timeout_seconds":
@@ -707,12 +672,6 @@ func (store *guardianStore) setSettings(settings pluginSettings) error {
 		"healthy_slot_count":                                 strconv.Itoa(settings.HealthySlotCount),
 		"healthy_candidate_slot_count":                       strconv.Itoa(settings.HealthyCandidateSlotCount),
 		"healthy_slot_max_age_minutes":                       strconv.Itoa(settings.HealthySlotMaxAgeMinutes),
-		"quality_worker_count":                               strconv.Itoa(settings.QualityWorkerCount),
-		"quality_probe_timeout_seconds":                      strconv.Itoa(settings.QualityProbeTimeoutSeconds),
-		"quality_probe_model":                                strings.TrimSpace(settings.QualityProbeModel),
-		"quality_soft_tps":                                   strconv.FormatFloat(settings.QualitySoftTPS, 'f', -1, 64),
-		"quality_hard_tps":                                   strconv.FormatFloat(settings.QualityHardTPS, 'f', -1, 64),
-		"quality_llm_probe_enabled":                          strconv.FormatBool(settings.QualityLLMProbeEnabled),
 		"realtime_guard_ttfb_seconds":                        strconv.FormatFloat(settings.RealtimeGuardTTFBSeconds, 'f', -1, 64),
 		"realtime_guard_generation_seconds":                  strconv.FormatFloat(settings.RealtimeGuardGenerationSeconds, 'f', -1, 64),
 		"realtime_guard_token_threshold":                     strconv.Itoa(settings.RealtimeGuardTokenThreshold),
@@ -774,15 +733,6 @@ func validateSettings(settings pluginSettings) error {
 	}
 	if settings.HealthySlotMaxAgeMinutes < 1 || settings.HealthySlotMaxAgeMinutes > maxHealthySlotMaxAgeMinutes {
 		return fmt.Errorf("healthy slot max age is out of range")
-	}
-	if settings.QualityWorkerCount < 1 || settings.QualityWorkerCount > maxProbeWorkers || settings.QualityProbeTimeoutSeconds < 1 || settings.QualityProbeTimeoutSeconds > maxQualityProbeTimeoutSeconds {
-		return fmt.Errorf("quality probe settings are out of range")
-	}
-	if strings.TrimSpace(settings.QualityProbeModel) == "" || len(settings.QualityProbeModel) > maxQualityProbeModelLength {
-		return fmt.Errorf("quality probe model is invalid")
-	}
-	if settings.QualitySoftTPS <= 0 || settings.QualityHardTPS <= settings.QualitySoftTPS {
-		return fmt.Errorf("quality hard TPS must be greater than quality soft TPS")
 	}
 	if math.IsNaN(settings.RealtimeGuardTTFBSeconds) || math.IsInf(settings.RealtimeGuardTTFBSeconds, 0) || settings.RealtimeGuardTTFBSeconds <= 0 || math.IsNaN(settings.RealtimeGuardGenerationSeconds) || math.IsInf(settings.RealtimeGuardGenerationSeconds, 0) || settings.RealtimeGuardGenerationSeconds <= 0 {
 		return fmt.Errorf("realtime guard thresholds must be positive")

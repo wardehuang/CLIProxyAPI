@@ -169,9 +169,6 @@ func classifyStream(evidence streamEvidence, mutation completedMutationEvidence,
 	if evidence.BurstDump {
 		return "burst_dump_disabled", false
 	}
-	if hardTPSExceeded(evidence, completion, settings.QualityHardTPS) {
-		return "hard_tps", true
-	}
 	if isBurstDump(evidence, completion, settings) {
 		return "burst_dump_disabled", false
 	}
@@ -221,18 +218,6 @@ func isBurstDump(evidence streamEvidence, completion pluginapi.XAIStreamCompleti
 		visibleFlushMS = completion.FinishedAt.Sub(completion.FirstVisibleAt).Milliseconds()
 	}
 	return evidence.ReasoningTokens >= settings.RealtimeGuardBurstMinReasoningTokens && visibleTokens < settings.RealtimeGuardBurstMaxVisibleTokens && visibleFlushMS >= 0 && visibleFlushMS < int64(settings.RealtimeGuardBurstMaxWindowMS)
-}
-
-func hardTPSExceeded(evidence streamEvidence, completion pluginapi.XAIStreamCompletionRequest, threshold float64) bool {
-	if threshold <= 0 || evidence.OutputTokens+evidence.ReasoningTokens <= 0 || completion.FirstPayloadAt.IsZero() || completion.FinishedAt.IsZero() {
-		return false
-	}
-	duration := completion.FinishedAt.Sub(completion.FirstPayloadAt)
-	if duration <= 0 {
-		return false
-	}
-	tps := float64(evidence.OutputTokens+evidence.ReasoningTokens) / duration.Seconds()
-	return tps >= threshold
 }
 
 func parseStreamEvidence(body []byte) streamEvidence {
