@@ -20,15 +20,17 @@ const (
 var errScheduleGroupCountBusy = fmt.Errorf("schedule group count cannot change while requests are busy")
 
 type scheduleGroupState struct {
-	mutex       sync.Mutex
-	busyByGroup map[int]string
-	groupByAuth map[string]int
+	mutex            sync.Mutex
+	busyByGroup      map[int]string
+	groupByAuth      map[string]int
+	requestIDByGroup map[int]string
 }
 
 func newScheduleGroupState() *scheduleGroupState {
 	return &scheduleGroupState{
-		busyByGroup: make(map[int]string),
-		groupByAuth: make(map[string]int),
+		busyByGroup:      make(map[int]string),
+		groupByAuth:      make(map[string]int),
+		requestIDByGroup: make(map[int]string),
 	}
 }
 
@@ -43,25 +45,44 @@ func (state *scheduleGroupState) resetRuntime() {
 	defer state.mutex.Unlock()
 	clear(state.busyByGroup)
 	clear(state.groupByAuth)
+	clear(state.requestIDByGroup)
 }
 
-func (state *scheduleGroupState) release(completion pluginapi.RequestCompletion) {
+func (state *scheduleGroupState) release(store *guardianStore, completion pluginapi.RequestCompletion) {
 	authID := selectedAuthID(completion.Metadata)
-	if authID == "" {
-		return
-	}
 	state.mutex.Lock()
-	defer state.mutex.Unlock()
 	groupID, ok := state.groupByAuth[authID]
-	if !ok {
+	if authID == "" || !ok {
+		trackedGroupID := 0
+		for busyGroupID, ownerRequestID := range state.requestIDByGroup {
+			if completion.RequestID != "" && ownerRequestID == completion.RequestID {
+				trackedGroupID = busyGroupID
+				break
+			}
+		}
+		state.mutex.Unlock()
+		if trackedGroupID != 0 {
+			reason := "selected_auth_id_not_tracked"
+			if authID == "" {
+				reason = "selected_auth_id_missing"
+			}
+			detail := fmt.Sprintf("request_id=%q group_id=%d outcome=%q status_code=%d reason=%s", completion.RequestID, trackedGroupID, completion.Outcome, completion.StatusCode, reason)
+			_ = store.appendLog(logLevelWarn, "schedule.group_release_mismatch", "xAI scheduler could not match completion to its selected auth", detail)
+		}
 		return
 	}
+	ownerRequestID := state.requestIDByGroup[groupID]
 	for candidateID, candidateGroupID := range state.groupByAuth {
 		if candidateGroupID == groupID {
 			delete(state.groupByAuth, candidateID)
 		}
 	}
 	delete(state.busyByGroup, groupID)
+	delete(state.requestIDByGroup, groupID)
+	state.mutex.Unlock()
+
+	detail := fmt.Sprintf("request_id=%q owner_request_id=%q group_id=%d outcome=%q status_code=%d request_id_match=%t", completion.RequestID, ownerRequestID, groupID, completion.Outcome, completion.StatusCode, completion.RequestID == ownerRequestID)
+	_ = store.appendLog(logLevelInfo, "schedule.group_released", "xAI scheduler released a schedule group", detail)
 }
 
 func selectedAuthID(metadata map[string]any) string {
@@ -76,21 +97,35 @@ func (state *scheduleGroupState) pick(store *guardianStore, settings pluginSetti
 	if !schedulerRequestIncludesXAI(request) {
 		return pluginapi.SchedulerPickResponse{}, nil
 	}
-	candidatesByGroup := scheduleCandidatesByGroup(request.Candidates, settings.ScheduleGroupCount)
+	candidatesByGroup, candidateSummary := scheduleCandidatesByGroup(request.Candidates, settings.ScheduleGroupCount)
 
 	state.mutex.Lock()
-	defer state.mutex.Unlock()
+	var logLevel, logEvent, logMessage, logDetail string
+	defer func() {
+		state.mutex.Unlock()
+		if logEvent != "" {
+			_ = store.appendLog(logLevel, logEvent, logMessage, logDetail)
+		}
+	}()
 
 	previousAuthID := selectedAuthID(request.Options.Metadata)
 	if previousAuthID != "" {
 		if groupID, ok := state.groupByAuth[previousAuthID]; ok {
 			candidates := candidatesByGroup[groupID]
 			if len(candidates) == 0 {
+				logLevel = logLevelWarn
+				logEvent = "schedule.group_rejected"
+				logMessage = "xAI scheduler rejected a retry without a group candidate"
+				logDetail = schedulePickLogDetail(request, settings, candidateSummary, state.busyByGroup, state.requestIDByGroup, "retry_group_has_no_candidate", 0)
 				return scheduleGroupRejection("xai_schedule_group_exhausted", fmt.Sprintf("xAI schedule group %d has no remaining auth", groupID)), nil
 			}
 			selectedID := strings.TrimSpace(candidates[0].ID)
 			state.groupByAuth[selectedID] = groupID
 			state.busyByGroup[groupID] = selectedID
+			logLevel = logLevelInfo
+			logEvent = "schedule.group_selected"
+			logMessage = "xAI scheduler reused a schedule group for retry"
+			logDetail = schedulePickLogDetail(request, settings, candidateSummary, state.busyByGroup, state.requestIDByGroup, "retry_same_group", groupID)
 			return pluginapi.SchedulerPickResponse{Handled: true, AuthID: selectedID}, nil
 		}
 	}
@@ -112,14 +147,27 @@ func (state *scheduleGroupState) pick(store *guardianStore, settings pluginSetti
 		}
 	}
 	if selectedGroup == 0 {
+		decision := "no_candidate_in_any_configured_group"
+		if len(candidatesByGroup) > 0 {
+			decision = "all_candidate_groups_busy"
+		}
+		logLevel = logLevelWarn
+		logEvent = "schedule.group_rejected"
+		logMessage = "xAI scheduler found no selectable schedule group"
+		logDetail = schedulePickLogDetail(request, settings, candidateSummary, state.busyByGroup, state.requestIDByGroup, decision, 0)
 		return scheduleGroupRejection("xai_schedule_groups_busy", "no idle xAI schedule group is available"), nil
 	}
 	selectedID := strings.TrimSpace(candidatesByGroup[selectedGroup][0].ID)
 	if err := store.incrementScheduleGroupCounter(selectedGroup); err != nil {
 		return pluginapi.SchedulerPickResponse{}, err
 	}
+	logDetail = schedulePickLogDetail(request, settings, candidateSummary, state.busyByGroup, state.requestIDByGroup, "selected", selectedGroup)
 	state.busyByGroup[selectedGroup] = selectedID
 	state.groupByAuth[selectedID] = selectedGroup
+	state.requestIDByGroup[selectedGroup] = request.RequestID
+	logLevel = logLevelInfo
+	logEvent = "schedule.group_selected"
+	logMessage = "xAI scheduler selected and occupied a schedule group"
 	return pluginapi.SchedulerPickResponse{Handled: true, AuthID: selectedID}, nil
 }
 
@@ -154,17 +202,44 @@ func schedulerRequestIncludesXAI(request pluginapi.SchedulerPickRequest) bool {
 	return false
 }
 
-func scheduleCandidatesByGroup(candidates []pluginapi.SchedulerAuthCandidate, groupCount int) map[int][]pluginapi.SchedulerAuthCandidate {
+type scheduleCandidateSummary struct {
+	total                   int
+	xai                     int
+	otherProvider           int
+	missingScheduleGroup    int
+	invalidScheduleGroup    int
+	outOfRangeScheduleGroup int
+	countByGroup            map[int]int
+}
+
+func scheduleCandidatesByGroup(candidates []pluginapi.SchedulerAuthCandidate, groupCount int) (map[int][]pluginapi.SchedulerAuthCandidate, scheduleCandidateSummary) {
 	grouped := make(map[int][]pluginapi.SchedulerAuthCandidate, groupCount)
+	summary := scheduleCandidateSummary{
+		total:        len(candidates),
+		countByGroup: make(map[int]int, groupCount),
+	}
 	for _, candidate := range candidates {
 		if !strings.EqualFold(strings.TrimSpace(candidate.Provider), "xai") {
+			summary.otherProvider++
 			continue
 		}
-		groupID, err := strconv.Atoi(strings.TrimSpace(candidate.Attributes[scheduleGroupAttribute]))
-		if err != nil || groupID < 1 || groupID > groupCount {
+		summary.xai++
+		rawGroupID, hasGroup := candidate.Attributes[scheduleGroupAttribute]
+		if !hasGroup || strings.TrimSpace(rawGroupID) == "" {
+			summary.missingScheduleGroup++
+			continue
+		}
+		groupID, err := strconv.Atoi(strings.TrimSpace(rawGroupID))
+		if err != nil {
+			summary.invalidScheduleGroup++
+			continue
+		}
+		if groupID < 1 || groupID > groupCount {
+			summary.outOfRangeScheduleGroup++
 			continue
 		}
 		grouped[groupID] = append(grouped[groupID], candidate)
+		summary.countByGroup[groupID]++
 	}
 	for groupID := range grouped {
 		sort.SliceStable(grouped[groupID], func(i, j int) bool {
@@ -176,7 +251,34 @@ func scheduleCandidatesByGroup(candidates []pluginapi.SchedulerAuthCandidate, gr
 			return strings.TrimSpace(left.ID) < strings.TrimSpace(right.ID)
 		})
 	}
-	return grouped
+	return grouped, summary
+}
+
+func scheduleBusyGroupIDs(busyByGroup map[int]string) []int {
+	groupIDs := make([]int, 0, len(busyByGroup))
+	for groupID := range busyByGroup {
+		groupIDs = append(groupIDs, groupID)
+	}
+	sort.Ints(groupIDs)
+	return groupIDs
+}
+
+func schedulePickLogDetail(request pluginapi.SchedulerPickRequest, settings pluginSettings, summary scheduleCandidateSummary, busyByGroup, busyRequestIDs map[int]string, decision string, selectedGroup int) string {
+	groupIDs := make([]int, 0, len(summary.countByGroup))
+	for groupID := range summary.countByGroup {
+		groupIDs = append(groupIDs, groupID)
+	}
+	sort.Ints(groupIDs)
+	groupCounts := make([]string, 0, len(groupIDs))
+	for _, groupID := range groupIDs {
+		groupCounts = append(groupCounts, fmt.Sprintf("%d:%d", groupID, summary.countByGroup[groupID]))
+	}
+	busyGroupIDs := scheduleBusyGroupIDs(busyByGroup)
+	busyGroupValues := make([]string, 0, len(busyGroupIDs))
+	for _, groupID := range busyGroupIDs {
+		busyGroupValues = append(busyGroupValues, fmt.Sprintf("%d:%q", groupID, busyRequestIDs[groupID]))
+	}
+	return fmt.Sprintf("request_id=%q model=%q provider=%q providers=%q stream=%t configured_group_count=%d candidates_total=%d candidates_xai=%d candidates_other_provider=%d candidates_missing_schedule_group=%d candidates_invalid_schedule_group=%d candidates_out_of_range_schedule_group=%d candidates_by_group=%s busy_groups=%s decision=%s selected_group=%d", request.RequestID, request.Model, request.Provider, strings.Join(request.Providers, ","), request.Stream, settings.ScheduleGroupCount, summary.total, summary.xai, summary.otherProvider, summary.missingScheduleGroup, summary.invalidScheduleGroup, summary.outOfRangeScheduleGroup, strings.Join(groupCounts, ","), strings.Join(busyGroupValues, ","), decision, selectedGroup)
 }
 
 func (store *guardianStore) ensureScheduleGroupStorage() error {

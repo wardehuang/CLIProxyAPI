@@ -960,6 +960,7 @@ func (m *Manager) pickViaPluginScheduler(ctx context.Context, scheduler PluginSc
 		Provider:   requestProvider,
 		Providers:  schedulerProviders(providerKey, providers),
 		Model:      model,
+		RequestID:  opts.RequestID,
 		Stream:     opts.Stream,
 		Options:    schedulerOptions(opts),
 		Candidates: schedulerAuthCandidates(candidates),

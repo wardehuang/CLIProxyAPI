@@ -301,7 +301,7 @@ func handleMethod(method string, request []byte) ([]byte, error) {
 				return nil, fmt.Errorf("decode request completion: %w", err)
 			}
 		}
-		guardianRuntime.scheduleGroups.release(completion)
+		guardianRuntime.scheduleGroups.release(guardianRuntime.currentStore(), completion)
 		return okEnvelope(map[string]any{})
 	default:
 		return errorEnvelope("unknown_method", "unknown method: "+method), nil

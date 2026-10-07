@@ -498,6 +498,8 @@ type SchedulerPickRequest struct {
 	Providers []string
 	// Model is the requested model identifier.
 	Model string
+	// RequestID uniquely identifies this model execution for lifecycle correlation.
+	RequestID string
 	// Stream reports whether the request expects streaming output.
 	Stream bool
 	// Options contains request-scoped scheduler inputs.
