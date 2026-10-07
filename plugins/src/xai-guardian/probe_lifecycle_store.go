@@ -278,7 +278,7 @@ func (store *guardianStore) reconcileHealthySlots(settings pluginSettings) error
 	defer tx.Rollback()
 	now := time.Now().UnixMilli()
 	cutoff := time.Now().Add(-time.Duration(settings.HealthySlotMaxAgeMinutes) * time.Minute).UnixMilli()
-	rows, err := tx.Query(`SELECT id FROM nodes WHERE scope = 'guard' AND status IN (?, ?, ?) AND last_checked >= ? ORDER BY last_checked DESC, id DESC`, statusHealthy, statusHealthyCandidate, statusHealthyFallback, cutoff)
+	rows, err := tx.Query(`SELECT id FROM nodes WHERE scope = 'guard' AND status IN (?, ?, ?) AND last_checked >= ? ORDER BY CASE WHEN latency_ms <= 0 THEN 1 ELSE 0 END, latency_ms ASC, id ASC`, statusHealthy, statusHealthyCandidate, statusHealthyFallback, cutoff)
 	if err != nil {
 		return fmt.Errorf("list healthy slot candidates: %w", err)
 	}
@@ -380,7 +380,16 @@ FROM healthy_slots
 INNER JOIN nodes ON nodes.id = healthy_slots.node_id AND nodes.scope = 'guard'
 WHERE (healthy_slots.slot_kind = 'primary' AND nodes.status = ?)
    OR (healthy_slots.slot_kind = 'candidate' AND nodes.status = ?)
-GROUP BY healthy_slots.slot_kind`, statusHealthy, statusHealthyCandidate)
+   OR (nodes.status = ? AND EXISTS (
+       SELECT 1 FROM keepalive_round_nodes AS round_nodes
+       INNER JOIN keepalive_rounds AS rounds ON rounds.id = round_nodes.round_id
+       WHERE round_nodes.node_id = nodes.id
+         AND round_nodes.completed_at = 0
+         AND rounds.status = 'running'
+         AND ((healthy_slots.slot_kind = 'primary' AND round_nodes.previous_status = ?)
+           OR (healthy_slots.slot_kind = 'candidate' AND round_nodes.previous_status = ?))
+   ))
+GROUP BY healthy_slots.slot_kind`, statusHealthy, statusHealthyCandidate, statusKeepaliveProbing, statusHealthy, statusHealthyCandidate)
 	if err != nil {
 		return nil, fmt.Errorf("count healthy slots: %w", err)
 	}

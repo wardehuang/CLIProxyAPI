@@ -1901,7 +1901,15 @@ func (store *guardianStore) summary() (map[string]any, error) {
 	var accounts, degraded int64
 	if err := store.database.QueryRow(`SELECT COUNT(DISTINCT auth_bindings.auth_index) FROM auth_bindings
 INNER JOIN healthy_slots ON healthy_slots.slot_id = auth_bindings.slot_id AND healthy_slots.node_id = auth_bindings.node_id AND healthy_slots.slot_kind = 'primary'
-INNER JOIN nodes ON nodes.id = healthy_slots.node_id AND nodes.scope = 'guard' AND nodes.status = 'healthy'`).Scan(&accounts); err != nil {
+INNER JOIN nodes ON nodes.id = healthy_slots.node_id AND nodes.scope = 'guard'
+WHERE nodes.status = 'healthy' OR (nodes.status = 'keepalive_probing' AND EXISTS (
+    SELECT 1 FROM keepalive_round_nodes AS round_nodes
+    INNER JOIN keepalive_rounds AS rounds ON rounds.id = round_nodes.round_id
+    WHERE round_nodes.node_id = nodes.id
+      AND round_nodes.completed_at = 0
+      AND rounds.status = 'running'
+      AND round_nodes.previous_status = 'healthy'
+))`).Scan(&accounts); err != nil {
 		return nil, fmt.Errorf("count auth bindings: %w", err)
 	}
 	if err := store.database.QueryRow(`SELECT COUNT(*) FROM degradation_states`).Scan(&degraded); err != nil {
