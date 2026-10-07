@@ -10,19 +10,11 @@ import (
 
 func runInitialProbeScheduler(ctx context.Context, store *guardianStore, settings pluginSettings, trigger <-chan struct{}) {
 	_ = store.appendLog(logLevelInfo, "probe.scheduler_started", "初次探测 worker 已启动", fmt.Sprintf("线程数 %d", settings.WorkerCount))
-	firstRound := true
 	for {
-		if ctx.Err() != nil {
+		select {
+		case <-ctx.Done():
 			return
-		}
-		if firstRound {
-			firstRound = false
-		} else {
-			select {
-			case <-ctx.Done():
-				return
-			case <-trigger:
-			}
+		case <-trigger:
 		}
 		if err := runInitialProbeRound(ctx, store, settings); err != nil && ctx.Err() == nil {
 			_ = store.appendLog(logLevelError, "probe.round_failed", "初次探测轮次失败", err.Error())

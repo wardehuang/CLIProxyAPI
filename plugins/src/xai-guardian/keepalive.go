@@ -125,14 +125,6 @@ func runKeepaliveScheduler(ctx context.Context, store *guardianStore, state *kee
 		if ctx.Err() != nil {
 			return
 		}
-		state.markStarted(time.Now())
-		if err := runKeepaliveRound(ctx, store, settings); err != nil && ctx.Err() == nil {
-			_ = store.appendLog(logLevelError, "keepalive.round_failed", "保活探测轮次失败", err.Error())
-		}
-		state.markCompleted(time.Now())
-		if ctx.Err() != nil {
-			return
-		}
 		triggered, cancelled := state.waitForNext(ctx.Done(), settings.KeepaliveIntervalSeconds)
 		if cancelled {
 			return
@@ -140,6 +132,11 @@ func runKeepaliveScheduler(ctx context.Context, store *guardianStore, state *kee
 		if triggered {
 			_ = store.appendLog(logLevelInfo, "keepalive.manual_triggered", "立即保活探测已接入调度", "")
 		}
+		state.markStarted(time.Now())
+		if err := runKeepaliveRound(ctx, store, settings); err != nil && ctx.Err() == nil {
+			_ = store.appendLog(logLevelError, "keepalive.round_failed", "保活探测轮次失败", err.Error())
+		}
+		state.markCompleted(time.Now())
 	}
 }
 
