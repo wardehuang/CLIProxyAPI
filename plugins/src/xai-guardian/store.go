@@ -1730,6 +1730,19 @@ func (store *guardianStore) listAuthBindings(inspectionRunID int64) ([]authBindi
 		return nil, fmt.Errorf("list auth bindings: %w", err)
 	}
 	defer rows.Close()
+	return scanAuthBindings(rows)
+}
+
+func (store *guardianStore) listAuthBindingsByNode(nodeID int64) ([]authBinding, error) {
+	rows, err := store.database.Query(`SELECT auth_bindings.auth_index, auth_bindings.auth_name, auth_bindings.slot_id, auth_bindings.node_id, auth_bindings.proxy_url, COALESCE(nodes.exit_ip, ''), auth_bindings.status, auth_bindings.priority, auth_bindings.success_count, auth_bindings.failed_count, auth_bindings.updated_at, auth_bindings.last_checked, auth_bindings.inspection_run_id, auth_bindings.account_type, auth_bindings.schedule_group, auth_bindings.last_inspection, auth_bindings.proxy_write_attempts, auth_bindings.proxy_write_error, auth_bindings.proxy_write_at FROM auth_bindings INNER JOIN nodes ON nodes.id = auth_bindings.node_id AND nodes.scope = 'guard' WHERE auth_bindings.node_id = ? ORDER BY auth_bindings.slot_id, auth_bindings.priority DESC, auth_bindings.auth_name ASC`, nodeID)
+	if err != nil {
+		return nil, fmt.Errorf("list node auth bindings: %w", err)
+	}
+	defer rows.Close()
+	return scanAuthBindings(rows)
+}
+
+func scanAuthBindings(rows *sql.Rows) ([]authBinding, error) {
 	items := make([]authBinding, 0)
 	for rows.Next() {
 		var item authBinding

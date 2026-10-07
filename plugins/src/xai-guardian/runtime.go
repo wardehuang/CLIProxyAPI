@@ -302,6 +302,32 @@ func (controller *runtimeController) api(method, path string, query url.Values, 
 		nodes, err := store.listIPBatchNodes(batchID)
 		return jsonAPIResult(map[string]any{"batchId": batchID, "items": publicNodes(nodes), "total": len(nodes)}, err)
 	}
+	if method == http.MethodGet && len(parts) == 4 && parts[0] == "api" && parts[1] == "nodes" && parts[3] == "auth-bindings" {
+		nodeID, err := strconv.ParseInt(parts[2], 10, 64)
+		if err != nil || nodeID <= 0 {
+			return http.StatusBadRequest, nil, fmt.Errorf("invalid node id")
+		}
+		bindings, err := store.listAuthBindingsByNode(nodeID)
+		if err != nil {
+			return http.StatusInternalServerError, nil, err
+		}
+		verifiedCount := 0
+		syncFailureCount := 0
+		for _, binding := range bindings {
+			if binding.Status == "write_failed" {
+				syncFailureCount++
+			} else {
+				verifiedCount++
+			}
+		}
+		return jsonAPIResult(map[string]any{
+			"nodeId":           nodeID,
+			"items":            publicAuthBindings(bindings),
+			"total":            len(bindings),
+			"verifiedCount":    verifiedCount,
+			"syncFailureCount": syncFailureCount,
+		}, nil)
+	}
 	if method == http.MethodGet && path == "/api/inspection" {
 		return controller.inspectionAPI(store)
 	}
@@ -688,6 +714,20 @@ func publicAccounts(bindings []authBinding) []map[string]any {
 			"proxyWriteAttempts": binding.ProxyWriteAttempts,
 			"proxyWriteError":    sanitizeLogText(binding.ProxyWriteError),
 			"proxyWriteAt":       binding.ProxyWriteAt,
+		})
+	}
+	return items
+}
+
+func publicAuthBindings(bindings []authBinding) []map[string]any {
+	items := make([]map[string]any, 0, len(bindings))
+	for _, binding := range bindings {
+		items = append(items, map[string]any{
+			"authIndex": binding.AuthIndex,
+			"authName":  binding.AuthName,
+			"slotId":    binding.SlotID,
+			"proxyUrl":  binding.ProxyURL,
+			"status":    binding.Status,
 		})
 	}
 	return items

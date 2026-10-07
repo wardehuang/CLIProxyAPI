@@ -419,7 +419,7 @@ func isAllowedUIPath(method, path string) bool {
 		case "/api/summary", "/api/schedule-groups/counters", "/api/settings", "/api/accounts", "/api/nodes", "/api/batch-nodes", "/api/batches", "/api/inspection", "/api/keepalive", "/api/degradation", "/api/logs", "/api/logs/groups":
 			return true
 		default:
-			return strings.HasPrefix(path, "/api/batches/") && strings.HasSuffix(path, "/nodes")
+			return (strings.HasPrefix(path, "/api/batches/") && strings.HasSuffix(path, "/nodes")) || (strings.HasPrefix(path, "/api/nodes/") && strings.HasSuffix(path, "/auth-bindings"))
 		}
 	case http.MethodPut:
 		return path == "/api/settings"

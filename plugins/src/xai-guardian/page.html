@@ -178,6 +178,9 @@
     .data-table tbody td:first-child { border-left: 1px solid color-mix(in srgb, var(--border-color) 88%, transparent); border-radius: 14px 0 0 14px; text-align: left; }
     .data-table tbody td:last-child { border-right: 1px solid color-mix(in srgb, var(--border-color) 88%, transparent); border-radius: 0 14px 14px 0; }
     .data-table .empty-cell { min-height: 180px; padding: 64px 16px; color: var(--text-secondary); text-align: center; cursor: default; }
+    .sort-button { min-height: 28px; padding: 0 6px; border: 0; border-radius: 8px; background: transparent; color: inherit; font: inherit; font-weight: 700; cursor: pointer; white-space: nowrap; }
+    .sort-button:hover, .sort-button.active { color: var(--primary-color); background: color-mix(in srgb, var(--primary-color) 12%, transparent); }
+    .sort-indicator { display: inline-block; min-width: 12px; margin-left: 2px; color: var(--primary-color); }
     .account-table th:nth-child(1), .account-table td:nth-child(1) { width: 230px; }
     .account-table th:nth-child(2), .account-table td:nth-child(2) { width: 142px; }
     .account-table th:nth-child(3), .account-table td:nth-child(3) { width: 100px; }
@@ -195,6 +198,14 @@
     .node-table th:nth-child(6), .node-table td:nth-child(6) { width: 72px; }
     .node-table th:nth-child(7), .node-table td:nth-child(7) { width: 180px; }
     .node-table th:nth-child(8), .node-table td:nth-child(8) { width: 120px; }
+    .guard-node-table th:nth-child(1), .guard-node-table td:nth-child(1) { width: 520px; text-align: left; }
+    .guard-node-table th:nth-child(2), .guard-node-table td:nth-child(2) { width: 90px; }
+    .guard-node-table th:nth-child(3), .guard-node-table td:nth-child(3) { width: 120px; }
+    .guard-node-table th:nth-child(4), .guard-node-table td:nth-child(4) { width: 150px; }
+    .guard-node-table th:nth-child(5), .guard-node-table td:nth-child(5) { width: 180px; }
+    .guard-node-table th:nth-child(6), .guard-node-table td:nth-child(6) { width: 90px; }
+    .guard-node-table th:nth-child(7), .guard-node-table td:nth-child(7) { width: 180px; }
+    .guard-node-table th:nth-child(8), .guard-node-table td:nth-child(8) { width: 160px; }
     .guard-table th:nth-child(1), .guard-table td:nth-child(1) { width: 250px; text-align: left; }
     .guard-table th:nth-child(2), .guard-table td:nth-child(2) { width: 150px; }
     .guard-table th:nth-child(3), .guard-table td:nth-child(3) { width: 90px; }
@@ -270,10 +281,7 @@
     .toast.error { border-color: color-mix(in srgb, var(--danger-color) 42%, var(--border-primary)); background: color-mix(in srgb, var(--bg-primary) 94%, var(--danger-color)); color: var(--danger-color); }
     @keyframes toast-in { from { opacity: 0; transform: translateY(-8px); } to { opacity: 1; transform: translateY(0); } }
     .run-summary { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 10px; }
-    .guard-binding-summary { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 10px; margin-bottom: 12px; }
-    .guard-binding-stat { padding: 12px; border: 1px solid var(--border-color); border-radius: 13px; background: var(--bg-tertiary); }
-    .guard-binding-stat small { display: block; color: var(--text-tertiary); font-size: 11px; }
-    .guard-binding-stat strong { display: block; margin-top: 5px; font-size: 18px; }
+
     .run-stat { padding: 12px; border: 1px solid var(--border-color); border-radius: 13px; background: var(--bg-tertiary); }
     .run-stat small { display: block; color: var(--text-tertiary); font-size: 11px; }
     .run-stat strong { display: block; margin-top: 5px; font-size: 18px; }
@@ -313,6 +321,14 @@
     .modal-input { width: 100%; min-height: 180px; resize: vertical; padding: 12px 14px; border: 1px solid var(--border-color); border-radius: 12px; outline: none; background: var(--bg-tertiary); color: var(--text-primary); line-height: 1.6; }
     .modal-input:focus { border-color: var(--primary-color); box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--primary-color) 24%, transparent); }
     .modal-actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 8px; }
+    .binding-modal { width: min(1120px, 100%); max-height: calc(100vh - 40px); overflow: hidden; }
+    .binding-modal-body { min-width: 0; overflow: auto; }
+    .binding-summary { padding: 12px 14px; border: 1px solid var(--border-color); border-radius: 12px; color: var(--text-secondary); background: var(--bg-tertiary); }
+    .binding-table { min-width: 780px; }
+    .binding-table th:nth-child(1), .binding-table td:nth-child(1) { width: 330px; text-align: left; }
+    .binding-table th:nth-child(2), .binding-table td:nth-child(2) { width: 190px; text-align: left; }
+    .binding-table th:nth-child(3), .binding-table td:nth-child(3) { width: 90px; }
+    .binding-table th:nth-child(4), .binding-table td:nth-child(4) { width: 360px; text-align: left; }
     .overlay { position: fixed; inset: 0; z-index: 10; display: grid; place-items: center; padding: 20px; background: rgba(2, 6, 23, .68); backdrop-filter: blur(4px); }
     .operation-card { display: grid; width: min(460px, 100%); gap: 8px; padding: 22px; border: 1px solid var(--border-primary); border-radius: 18px; background: var(--bg-primary); box-shadow: var(--shadow-lg); text-align: center; }
     .operation-card strong { font-size: 15px; }
@@ -333,7 +349,7 @@
       .segmented-tabs { width: 100%; }
       .segmented-tab { flex: 1 1 0; padding-inline: 10px; }
       .mode-switch-copy { margin: 10px 2px 2px; }
-      .summary-grid, .server-summary-grid, .settings-grid, .probe-settings-grid, .detail-grid, .run-summary, .guard-binding-summary { grid-template-columns: 1fr; }
+      .summary-grid, .server-summary-grid, .settings-grid, .probe-settings-grid, .detail-grid, .run-summary { grid-template-columns: 1fr; }
       .guard-tabs { width: 100%; }
       .guard-tab { flex: 1 1 0; padding-inline: 10px; }
       .account-panel, .server-panel, .guard-panel { padding: 12px; border-radius: 18px; }
@@ -575,6 +591,22 @@ socks5://203.0.113.11:1080
     </section>
   </div>
 
+  <div class="modal-layer" id="auth-binding-modal" hidden>
+    <section class="modal binding-modal" role="dialog" aria-modal="true" aria-labelledby="auth-binding-modal-title">
+      <div class="modal-head">
+        <div>
+          <h2 id="auth-binding-modal-title">绑定 auth 文件</h2>
+          <p id="auth-binding-node"></p>
+        </div>
+        <button class="secondary-button" type="button" data-close-modal="auth-binding-modal" aria-label="关闭">关闭</button>
+      </div>
+      <div class="modal-body binding-modal-body">
+        <div class="binding-summary" id="auth-binding-summary">正在读取绑定记录…</div>
+        <div class="table-wrap" id="auth-bindings-table"></div>
+      </div>
+    </section>
+  </div>
+
   <script>
   (() => {
     const apiEndpoint = '/v0/management/xai-guardian/api';
@@ -605,7 +637,7 @@ socks5://203.0.113.11:1080
       accounts: [], nodes: [], inspection: {run: null, results: []}, guardNodes: [], batches: [], batchNodes: [], degradation: [], logs: [], logGroups: {batch_probe: [], keepalive_probe: [], revive_probe: []}, settings: null, keepalive: null,
       summary: null,
       mode: 'accounts', guardTab: 'ips', logCategory: 'realtime_guard', logStatus: 'connected', selectedLogGroupIDs: {batch_probe: '', keepalive_probe: '', revive_probe: ''}, logSearch: '', logMax: 0, selectedBatchID: '', filter: 'all', guardStatusFilter: 'all', mask: 'full', page: 1, pageSize: 100,
-      keyword: '', expandedAccount: '', busy: false, pageRefreshTimer: 0, settingsDirty: false, settingsRevision: 0
+      keyword: '', expandedAccount: '', guardSortKey: 'latency', guardSortDirection: 'asc', authBindingDetail: null, busy: false, pageRefreshTimer: 0, settingsDirty: false, settingsRevision: 0
     };
     const $ = (id) => document.getElementById(id);
     const escapeHTML = (value) => String(value ?? '').replace(/[&<>"']/g, (char) => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[char]));
@@ -651,6 +683,10 @@ socks5://203.0.113.11:1080
     const nodeLabel = (status) => ({healthy:'健康', healthy_candidate:'健康备选', healthy_fallback:'健康保底', connected:'已连通', cooldown:'冷却中', unhealthy:'异常', inspecting:'探测中', probing:'探测中', keepalive_probing:'保活探测中', revive_probing:'复活探测中', disabled:'已停用', uninspected:'未探测'}[status] || status || '未探测');
     const accountName = (item) => item.authName || item.authIndex || '未命名账号';
     const accountDisplayName = (item) => state.mask === 'masked' ? maskAccount(accountName(item)) : accountName(item);
+    const nodeSortValue = (node, key) => {
+      const value = key === 'slot' ? Number(node.slotId || 0) : Number(node.latencyMs || 0);
+      return Number.isFinite(value) && value > 0 ? value : Number.POSITIVE_INFINITY;
+    };
 
     async function api(path, method = 'GET', body) {
       const payload = {method, path};
@@ -761,8 +797,55 @@ socks5://203.0.113.11:1080
 
     function renderGuardNodes() {
       const visibleNodes = state.guardStatusFilter === 'all' ? state.guardNodes : state.guardNodes.filter((node) => node.status === state.guardStatusFilter);
-      const rows = visibleNodes.map((node) => `<tr><td><span class="number-badge">#${node.id}</span></td><td><div class="node-cell"><strong class="mono">${escapeHTML(node.address || '—')}</strong>${node.lastError ? `<span class="subline">${escapeHTML(node.lastError)}</span>` : ''}</div></td><td><span class="node-status ${nodeTone(node.status)}">${nodeLabel(node.status)}</span></td><td><span class="type-badge">${node.slotKind ? `${escapeHTML(node.slotKind)} #${node.slotId}` : '未分配'}</span></td><td>${node.latencyMs ? escapeHTML(node.latencyMs) + ' ms' : '—'}</td><td class="mono">${escapeHTML(node.exitIp || '—')}</td><td>${escapeHTML(node.country || '—')}</td><td>${formatDate(node.createdAt)}</td></tr>`).join('');
-      $('guard-nodes-table').innerHTML = `<table class="data-table node-table"><thead><tr><th>ID</th><th>节点地址</th><th>状态</th><th>健康槽位</th><th>延迟</th><th>出口 IP</th><th>国家</th><th>录入时间</th></tr></thead><tbody>${rows || '<tr><td class="empty-cell" colspan="8">暂无通过【增加IP】录入的 IP。</td></tr>'}</tbody></table>`;
+      const sortedNodes = [...visibleNodes].sort((left, right) => {
+        const leftValue = nodeSortValue(left, state.guardSortKey);
+        const rightValue = nodeSortValue(right, state.guardSortKey);
+        if (leftValue !== rightValue) {
+          if (leftValue === Number.POSITIVE_INFINITY) return 1;
+          if (rightValue === Number.POSITIVE_INFINITY) return -1;
+          return (leftValue - rightValue) * (state.guardSortDirection === 'asc' ? 1 : -1);
+        }
+        return Number(left.id) - Number(right.id);
+      });
+      const sortButton = (key, label) => {
+        const active = state.guardSortKey === key;
+        const indicator = active ? (state.guardSortDirection === 'asc' ? '↑' : '↓') : '↕';
+        return `<button class="sort-button${active ? ' active' : ''}" type="button" data-guard-sort="${key}" aria-label="按${label}排序">${label}<span class="sort-indicator">${indicator}</span></button>`;
+      };
+      const rows = sortedNodes.map((node) => `<tr><td><div class="node-cell"><strong class="mono">${escapeHTML(node.address || '—')}</strong><span class="subline">#${escapeHTML(node.id)}</span></div></td><td>${escapeHTML(node.country || '—')}</td><td>${node.latencyMs ? escapeHTML(node.latencyMs) + ' ms' : '—'}</td><td><span class="type-badge">${node.slotKind ? `${escapeHTML(node.slotKind)} #${node.slotId}` : '未分配'}</span></td><td class="mono">${escapeHTML(node.exitIp || '—')}</td><td>${escapeHTML(node.country || '—')}</td><td>${formatDate(node.lastChecked)}</td><td><button class="secondary-button" type="button" data-view-auth-node="${escapeHTML(node.id)}">查看绑定Auth</button></td></tr>`).join('');
+      $('guard-nodes-table').innerHTML = `<table class="data-table node-table guard-node-table"><thead><tr><th>节点</th><th>国家</th><th>${sortButton('latency', '延迟')}</th><th>${sortButton('slot', '槽位')}</th><th>出口IP</th><th>国家</th><th>探测时间</th><th>操作</th></tr></thead><tbody>${rows || '<tr><td class="empty-cell" colspan="8">暂无通过【增加IP】录入的 IP。</td></tr>'}</tbody></table>`;
+    }
+
+    function renderAuthBindingModal() {
+      const detail = state.authBindingDetail;
+      const node = detail && state.guardNodes.find((item) => String(item.id) === String(detail.nodeId));
+      $('auth-binding-node').textContent = node ? String(node.address || '—') : '节点信息不可用';
+      if (!detail || detail.loading) {
+        $('auth-binding-summary').textContent = '正在读取绑定记录…';
+        $('auth-bindings-table').innerHTML = '<div class="help-text">正在读取绑定记录。</div>';
+        return;
+      }
+      if (detail.error) {
+        $('auth-binding-summary').textContent = detail.error;
+        $('auth-bindings-table').innerHTML = '<div class="help-text">绑定记录加载失败。</div>';
+        return;
+      }
+      $('auth-binding-summary').textContent = `当前绑定记录 ${detail.total} 个：已验证 ${detail.verifiedCount} 个，同步失败 ${detail.syncFailureCount} 个。`;
+      const rows = detail.items.map((item) => `<tr><td><strong>${escapeHTML(item.authName || '—')}</strong></td><td class="mono">${escapeHTML(item.authIndex || '—')}</td><td>${item.slotId ? escapeHTML(item.slotId) : '—'}</td><td class="mono">${escapeHTML(item.proxyUrl || '—')}</td></tr>`).join('');
+      $('auth-bindings-table').innerHTML = `<table class="data-table binding-table"><thead><tr><th>文件名</th><th>auth index</th><th>槽位</th><th>proxy url</th></tr></thead><tbody>${rows || '<tr><td class="empty-cell" colspan="4">当前节点没有绑定 Auth。</td></tr>'}</tbody></table>`;
+    }
+
+    async function openAuthBindings(nodeID) {
+      state.authBindingDetail = {nodeId: String(nodeID), loading: true, items: [], total: 0, verifiedCount: 0, syncFailureCount: 0};
+      $('auth-binding-modal').hidden = false;
+      renderAuthBindingModal();
+      try {
+        const result = await api(`/api/nodes/${encodeURIComponent(nodeID)}/auth-bindings`);
+        state.authBindingDetail = {nodeId: String(nodeID), loading: false, items: result.items || [], total: result.total || 0, verifiedCount: result.verifiedCount || 0, syncFailureCount: result.syncFailureCount || 0};
+      } catch (error) {
+        state.authBindingDetail = {nodeId: String(nodeID), loading: false, error: error.message, items: [], total: 0, verifiedCount: 0, syncFailureCount: 0};
+      }
+      renderAuthBindingModal();
     }
 
     function renderBatches() {
@@ -818,15 +901,9 @@ socks5://203.0.113.11:1080
       const slots = summary.healthySlots || {};
       const primaryTotal = slots.primaryTotal || (state.settings && state.settings.healthySlotCount) || 0;
       const candidateTotal = slots.candidateTotal || (state.settings && state.settings.healthyCandidateSlotCount) || 0;
-      const bindingMetrics = [
-        ['数据库健康', guard.healthy || 0],
-        ['主健康槽位', `${slots.primary || 0}/${primaryTotal}`],
-        ['健康候选槽位', `${slots.candidate || 0}/${candidateTotal}`],
-        ['已绑定 auth', summary.accountCount || 0]
-      ];
       const cards = [
-        ['数据库健康', guard.healthy || 0, 'H', 'green', 'healthy'],
-        ['健康备选', `${guard.healthy_candidate || 0}/${candidateTotal}`, 'C', 'blue', 'healthy_candidate'],
+        ['健康', `${slots.primary || 0}/${primaryTotal}`, 'H', 'green', 'healthy'],
+        ['健康备选', `${slots.candidate || 0}/${candidateTotal}`, 'C', 'blue', 'healthy_candidate'],
         ['已连通', guard.connected || 0, '✓', 'green', 'connected'],
         ['冷却中', guard.cooldown || 0, '⏱', 'amber', 'cooldown'],
         ['探测中', guard.probing || 0, 'P', 'violet', 'probing'],
@@ -837,7 +914,7 @@ socks5://203.0.113.11:1080
       ];
       const schedule = state.keepalive && state.keepalive.schedule;
       const status = schedule ? (schedule.running ? '保活运行中' : schedule.pending ? '保活等待执行' : '保活等待下一轮') : '保活状态未读取';
-      $('guard-runtime-status').innerHTML = `<div class="panel-header"><div><h3 class="panel-title">运行状态</h3><p class="panel-subtitle">${status}；点击卡片切换 IP 列表筛选。</p></div><span class="muted">${state.guardStatusFilter === 'all' ? '当前：全部' : `当前：${nodeLabel(state.guardStatusFilter)}`}</span></div><div class="guard-binding-summary">${bindingMetrics.map((metric) => `<div class="guard-binding-stat"><small>${metric[0]}</small><strong>${metric[1]}</strong></div>`).join('')}</div><div class="summary-grid">${cards.map((card) => `<button class="summary-card tone-${card[3]}${state.guardStatusFilter === card[4] ? ' active' : ''}" type="button" data-guard-status="${card[4]}"><span class="summary-header"><span class="summary-icon">${card[2]}</span><span class="summary-label">${card[0]}</span></span><strong class="summary-value">${card[1]}</strong></button>`).join('')}</div>`;
+      $('guard-runtime-status').innerHTML = `<div class="panel-header"><div><h3 class="panel-title">运行状态</h3><p class="panel-subtitle">${status}；点击卡片切换 IP 列表筛选。</p></div><span class="muted">${state.guardStatusFilter === 'all' ? '当前：全部' : `当前：${nodeLabel(state.guardStatusFilter)}`}</span></div><div class="summary-grid">${cards.map((card) => `<button class="summary-card tone-${card[3]}${state.guardStatusFilter === card[4] ? ' active' : ''}" type="button" data-guard-status="${card[4]}"><span class="summary-header"><span class="summary-icon">${card[2]}</span><span class="summary-label">${card[0]}</span></span><strong class="summary-value">${card[1]}</strong></button>`).join('')}</div>`;
     }
 
     function renderKeepalive() {
@@ -1039,6 +1116,8 @@ socks5://203.0.113.11:1080
       if (target.dataset.logGroupId) { state.selectedLogGroupIDs[state.logCategory] = target.dataset.logGroupId; state.logs = []; renderLogs(); refreshLogs().catch((error) => { setMessage('logs-error', error.message, true); }); return; }
       if (target.dataset.logStatus) { state.logStatus = target.dataset.logStatus; renderLogs(); refreshLogs().catch((error) => { setMessage('logs-error', error.message, true); }); return; }
       if (target.dataset.guardStatus) { state.guardStatusFilter = state.guardStatusFilter === target.dataset.guardStatus ? 'all' : target.dataset.guardStatus; renderGuardNodes(); renderGuardRuntimeStatus(); return; }
+      if (target.dataset.guardSort) { if (state.guardSortKey === target.dataset.guardSort) state.guardSortDirection = state.guardSortDirection === 'asc' ? 'desc' : 'asc'; else { state.guardSortKey = target.dataset.guardSort; state.guardSortDirection = 'asc'; } renderGuardNodes(); return; }
+      if (target.dataset.viewAuthNode) { await openAuthBindings(target.dataset.viewAuthNode); return; }
       if (target.dataset.batchId) { state.selectedBatchID = target.dataset.batchId; state.batchNodes = (await api(`/api/batches/${encodeURIComponent(state.selectedBatchID)}/nodes`)).items; renderBatches(); return; }
       if (target.dataset.filter) { state.filter = target.dataset.filter; state.page = 1; document.querySelectorAll('[data-filter]').forEach((item) => item.classList.toggle('active', item.dataset.filter === state.filter)); renderAccountTable(); return; }
       if (target.dataset.mask) { state.mask = target.dataset.mask; document.querySelectorAll('[data-mask]').forEach((item) => item.classList.toggle('active', item.dataset.mask === state.mask)); renderAccountTable(); renderDegradation(); return; }
