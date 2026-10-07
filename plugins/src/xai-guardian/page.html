@@ -617,8 +617,8 @@ socks5://203.0.113.11:1080
       const requestId = `xai-guardian-${++bridgeRequestSequence}`;
       const timeoutId = window.setTimeout(() => {
         window.removeEventListener('message', receiveResponse);
-        reject(new Error('管理请求超时'));
-      }, 15000);
+        reject(new Error(`管理请求超时：${payload.path}`));
+      }, 45000);
       const receiveResponse = (event) => {
         if (event.source !== window.parent) return;
         const data = event.data;
