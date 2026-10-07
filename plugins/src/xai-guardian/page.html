@@ -329,6 +329,7 @@
     .binding-table th:nth-child(2), .binding-table td:nth-child(2) { width: 190px; text-align: left; }
     .binding-table th:nth-child(3), .binding-table td:nth-child(3) { width: 90px; }
     .binding-table th:nth-child(4), .binding-table td:nth-child(4) { width: 360px; text-align: left; }
+    .keepalive-countdown { color: var(--primary-color); font-size: 12px; font-weight: 700; white-space: nowrap; }
     .overlay { position: fixed; inset: 0; z-index: 10; display: grid; place-items: center; padding: 20px; background: rgba(2, 6, 23, .68); backdrop-filter: blur(4px); }
     .operation-card { display: grid; width: min(460px, 100%); gap: 8px; padding: 22px; border: 1px solid var(--border-primary); border-radius: 18px; background: var(--bg-primary); box-shadow: var(--shadow-lg); text-align: center; }
     .operation-card strong { font-size: 15px; }
@@ -797,9 +798,12 @@ socks5://203.0.113.11:1080
 
     function renderGuardNodes() {
       const visibleNodes = state.guardStatusFilter === 'all' ? state.guardNodes : state.guardNodes.filter((node) => node.status === state.guardStatusFilter);
+      const showSlotColumn = state.guardStatusFilter === 'healthy' || state.guardStatusFilter === 'healthy_candidate';
+      const showActionColumn = state.guardStatusFilter === 'healthy';
+      const activeSortKey = showSlotColumn ? state.guardSortKey : 'latency';
       const sortedNodes = [...visibleNodes].sort((left, right) => {
-        const leftValue = nodeSortValue(left, state.guardSortKey);
-        const rightValue = nodeSortValue(right, state.guardSortKey);
+        const leftValue = nodeSortValue(left, activeSortKey);
+        const rightValue = nodeSortValue(right, activeSortKey);
         if (leftValue !== rightValue) {
           if (leftValue === Number.POSITIVE_INFINITY) return 1;
           if (rightValue === Number.POSITIVE_INFINITY) return -1;
@@ -812,8 +816,11 @@ socks5://203.0.113.11:1080
         const indicator = active ? (state.guardSortDirection === 'asc' ? '↑' : '↓') : '↕';
         return `<button class="sort-button${active ? ' active' : ''}" type="button" data-guard-sort="${key}" aria-label="按${label}排序">${label}<span class="sort-indicator">${indicator}</span></button>`;
       };
-      const rows = sortedNodes.map((node) => `<tr><td><div class="node-cell"><strong class="mono">${escapeHTML(node.address || '—')}</strong><span class="subline">#${escapeHTML(node.id)}</span></div></td><td>${escapeHTML(node.country || '—')}</td><td>${node.latencyMs ? escapeHTML(node.latencyMs) + ' ms' : '—'}</td><td><span class="type-badge">${node.slotKind ? `${escapeHTML(node.slotKind)} #${node.slotId}` : '未分配'}</span></td><td class="mono">${escapeHTML(node.exitIp || '—')}</td><td>${escapeHTML(node.country || '—')}</td><td>${formatDate(node.lastChecked)}</td><td><button class="secondary-button" type="button" data-view-auth-node="${escapeHTML(node.id)}">查看绑定Auth</button></td></tr>`).join('');
-      $('guard-nodes-table').innerHTML = `<table class="data-table node-table guard-node-table"><thead><tr><th>节点</th><th>国家</th><th>${sortButton('latency', '延迟')}</th><th>${sortButton('slot', '槽位')}</th><th>出口IP</th><th>国家</th><th>探测时间</th><th>操作</th></tr></thead><tbody>${rows || '<tr><td class="empty-cell" colspan="8">暂无通过【增加IP】录入的 IP。</td></tr>'}</tbody></table>`;
+      const slotHeader = showSlotColumn ? `<th>${sortButton('slot', '槽位')}</th>` : '';
+      const actionHeader = showActionColumn ? '<th>操作</th>' : '';
+      const rows = sortedNodes.map((node) => `<tr><td><div class="node-cell"><strong class="mono">${escapeHTML(node.address || '—')}</strong><span class="subline">#${escapeHTML(node.id)}</span></div></td><td>${escapeHTML(node.country || '—')}</td><td>${node.latencyMs ? escapeHTML(node.latencyMs) + ' ms' : '—'}</td>${showSlotColumn ? `<td><span class="type-badge">${node.slotKind ? `${escapeHTML(node.slotKind)} #${node.slotId}` : '未分配'}</span></td>` : ''}<td class="mono">${escapeHTML(node.exitIp || '—')}</td><td>${escapeHTML(node.country || '—')}</td><td>${formatDate(node.lastChecked)}</td>${showActionColumn ? `<td><button class="secondary-button" type="button" data-view-auth-node="${escapeHTML(node.id)}">查看绑定Auth</button></td>` : ''}</tr>`).join('');
+      const columnCount = 6 + Number(showSlotColumn) + Number(showActionColumn);
+      $('guard-nodes-table').innerHTML = `<table class="data-table node-table guard-node-table"><thead><tr><th>节点</th><th>国家</th><th>${sortButton('latency', '延迟')}</th>${slotHeader}<th>出口IP</th><th>国家</th><th>探测时间</th>${actionHeader}</tr></thead><tbody>${rows || `<tr><td class="empty-cell" colspan="${columnCount}">暂无通过【增加IP】录入的 IP。</td></tr>`}</tbody></table>`;
     }
 
     function renderAuthBindingModal() {
@@ -832,7 +839,7 @@ socks5://203.0.113.11:1080
       }
       $('auth-binding-summary').textContent = `当前绑定记录 ${detail.total} 个：已验证 ${detail.verifiedCount} 个，同步失败 ${detail.syncFailureCount} 个。`;
       const rows = detail.items.map((item) => `<tr><td><strong>${escapeHTML(item.authName || '—')}</strong></td><td class="mono">${escapeHTML(item.authIndex || '—')}</td><td>${item.slotId ? escapeHTML(item.slotId) : '—'}</td><td class="mono">${escapeHTML(item.proxyUrl || '—')}</td></tr>`).join('');
-      $('auth-bindings-table').innerHTML = `<table class="data-table binding-table"><thead><tr><th>文件名</th><th>auth index</th><th>槽位</th><th>proxy url</th></tr></thead><tbody>${rows || '<tr><td class="empty-cell" colspan="4">当前节点没有绑定 Auth。</td></tr>'}</tbody></table>`;
+      $('auth-bindings-table').innerHTML = `<table class="data-table binding-table"><thead><tr><th>文件名</th><th>auth index</th><th>槽位</th><th>proxy url</th></tr></thead><tbody>${rows || '<tr><td class="empty-cell" colspan="4">当前节点没有绑定 Auth。保活轮次完成后会自动刷新分配；仍为空时请检查可用账号池和 auth 同步失败记录。</td></tr>'}</tbody></table>`;
     }
 
     async function openAuthBindings(nodeID) {
@@ -914,7 +921,35 @@ socks5://203.0.113.11:1080
       ];
       const schedule = state.keepalive && state.keepalive.schedule;
       const status = schedule ? (schedule.running ? '保活运行中' : schedule.pending ? '保活等待执行' : '保活等待下一轮') : '保活状态未读取';
-      $('guard-runtime-status').innerHTML = `<div class="panel-header"><div><h3 class="panel-title">运行状态</h3><p class="panel-subtitle">${status}；点击卡片切换 IP 列表筛选。</p></div><span class="muted">${state.guardStatusFilter === 'all' ? '当前：全部' : `当前：${nodeLabel(state.guardStatusFilter)}`}</span></div><div class="summary-grid">${cards.map((card) => `<button class="summary-card tone-${card[3]}${state.guardStatusFilter === card[4] ? ' active' : ''}" type="button" data-guard-status="${card[4]}"><span class="summary-header"><span class="summary-icon">${card[2]}</span><span class="summary-label">${card[0]}</span></span><strong class="summary-value">${card[1]}</strong></button>`).join('')}</div>`;
+      $('guard-runtime-status').innerHTML = `<div class="panel-header"><div><h3 class="panel-title">运行状态</h3><p class="panel-subtitle">${status}；点击卡片切换 IP 列表筛选。</p></div><div class="panel-extra"><span class="keepalive-countdown" id="keepalive-countdown"></span><span class="muted">${state.guardStatusFilter === 'all' ? '当前：全部' : `当前：${nodeLabel(state.guardStatusFilter)}`}</span></div></div><div class="summary-grid">${cards.map((card) => `<button class="summary-card tone-${card[3]}${state.guardStatusFilter === card[4] ? ' active' : ''}" type="button" data-guard-status="${card[4]}"><span class="summary-header"><span class="summary-icon">${card[2]}</span><span class="summary-label">${card[0]}</span></span><strong class="summary-value">${card[1]}</strong></button>`).join('')}</div>`;
+      updateKeepaliveCountdown();
+    }
+
+    function updateKeepaliveCountdown() {
+      const output = $('keepalive-countdown');
+      if (!output || !state.keepalive) return;
+      const schedule = state.keepalive.schedule;
+      if (schedule.running) {
+        output.textContent = '保活探测中...';
+        return;
+      }
+      if (schedule.pending) {
+        output.textContent = '保活探测排队中...';
+        return;
+      }
+      if (Number(schedule.nextAt) <= 0) {
+        output.textContent = '下次保活探测待安排';
+        return;
+      }
+      const seconds = Math.max(0, Math.ceil((Number(schedule.nextAt) - Date.now()) / 1000));
+      if (seconds === 0) {
+        output.textContent = '下次保活探测即将开始';
+        return;
+      }
+      const hours = Math.floor(seconds / 3600);
+      const minutes = Math.floor((seconds % 3600) / 60);
+      const remainingSeconds = seconds % 60;
+      output.textContent = `下次保活探测：${String(hours).padStart(2, '0')}:${String(minutes).padStart(2, '0')}:${String(remainingSeconds).padStart(2, '0')}`;
     }
 
     function renderKeepalive() {
@@ -1183,6 +1218,7 @@ socks5://203.0.113.11:1080
     renderMode();
     renderGuardTab();
     refreshAll();
+    window.setInterval(updateKeepaliveCountdown, 1000);
   })();
   </script>
 </body>

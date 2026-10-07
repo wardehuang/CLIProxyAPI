@@ -348,7 +348,7 @@ ready=0
 root_http=000
 healthz_http=000
 status=unknown
-for _ in $(seq 1 180); do
+for _ in $(seq 1 300); do
   status="$(sudo docker inspect --format '{{{{.State.Status}}}}' "$CONTAINER" 2>/dev/null || true)"
   root_http="$(curl -sS -o /dev/null -w '%{{http_code}}' --max-time 3 "http://127.0.0.1:$SERVICE_PORT/" 2>/dev/null || true)"
   healthz_http="$(curl -sS -o /dev/null -w '%{{http_code}}' --max-time 3 "http://127.0.0.1:$SERVICE_PORT/healthz" 2>/dev/null || true)"
