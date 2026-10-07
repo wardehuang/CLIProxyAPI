@@ -270,6 +270,17 @@ func (s *FileTokenStore) readAuthFiles(path, baseDir string) ([]*cliproxyauth.Au
 					continue
 				}
 				cliproxyauth.NormalizeCredentialMetadata(auth.Metadata)
+				if refreshProxyURL, ok := metadata["refresh_proxy_url"]; ok {
+					if auth.Metadata == nil {
+						auth.Metadata = make(map[string]any)
+					}
+					if _, exists := auth.Metadata["refresh_proxy_url"]; !exists {
+						auth.Metadata["refresh_proxy_url"] = refreshProxyURL
+					}
+					if setter, ok := auth.Storage.(interface{ SetMetadata(map[string]any) }); ok {
+						setter.SetMetadata(auth.Metadata)
+					}
+				}
 				if len(auths) > 1 {
 					cliproxyauth.MarkPluginVirtualAuth(auth, path, index)
 				}

@@ -689,10 +689,9 @@ func publicIPBatches(batches []ipBatch, retentionDays int) []map[string]any {
 			"totalCount":             batch.TotalCount,
 			"duplicateCount":         batch.DuplicateCount,
 			"inputErrorCount":        batch.InputErrorCount,
-			"completedCount":         batch.CompletedCount,
-			"pendingCount":           batch.TotalCount - batch.CompletedCount,
-			"initialConnectedCount":  batch.InitialConnectedCount,
-			"realtimeConnectedCount": batch.RealtimeConnectedCount,
+			"completedCount":      batch.CompletedCount,
+			"pendingCount":        batch.TotalCount - batch.CompletedCount,
+			"currentHealthyCount": batch.CurrentHealthyCount,
 		})
 	}
 	return items

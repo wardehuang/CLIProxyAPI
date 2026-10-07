@@ -892,6 +892,8 @@ func (a *executorAdapter) Refresh(ctx context.Context, auth *coreauth.Auth) (ref
 		}
 	}()
 
+	refreshAuth := auth.Clone()
+	refreshAuth.ProxyURL = auth.TokenRefreshProxyURL()
 	pluginResp, errRefresh := record.plugin.Capabilities.AuthProvider.RefreshAuth(ctx, pluginapi.AuthRefreshRequest{
 		AuthID:       authID(auth),
 		AuthProvider: authProvider(auth),
@@ -899,7 +901,7 @@ func (a *executorAdapter) Refresh(ctx context.Context, auth *coreauth.Auth) (ref
 		Metadata:     cloneAnyMap(authMetadata(auth)),
 		Attributes:   authAttributes(auth),
 		Host:         a.host.hostConfigSummary(),
-		HTTPClient:   a.host.newHTTPClient(auth),
+		HTTPClient:   a.host.newHTTPClient(refreshAuth),
 	})
 	if errRefresh != nil {
 		return nil, errRefresh
@@ -926,6 +928,7 @@ func (a *executorAdapter) Refresh(ctx context.Context, auth *coreauth.Auth) (ref
 	if len(data.Metadata) == 0 && auth != nil {
 		data.Metadata = cloneAnyMap(auth.Metadata)
 	}
+	preserveRefreshProxyURL(&data, auth)
 	if len(data.Attributes) == 0 {
 		if auth != nil {
 			data.Attributes = cloneStringMap(auth.Attributes)

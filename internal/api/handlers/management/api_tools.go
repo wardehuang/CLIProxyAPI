@@ -310,8 +310,11 @@ func (h *Handler) resolveXAIToken(ctx context.Context, auth *coreauth.Auth, requ
 		return current, nil
 	}
 
+	refreshProxyURL := auth.RefreshProxyURL()
 	proxyURL := strings.TrimSpace(requestProxyURL)
-	if proxyURL == "" {
+	if refreshProxyURL != "" {
+		proxyURL = refreshProxyURL
+	} else if proxyURL == "" {
 		proxyURL = strings.TrimSpace(auth.ProxyURL)
 	}
 	var cfg *config.Config
@@ -565,6 +568,10 @@ func (h *Handler) refreshAntigravityOAuthAccessToken(ctx context.Context, auth *
 	}
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 
+	refreshProxyURL := auth.RefreshProxyURL()
+	if refreshProxyURL != "" {
+		requestProxyURL = refreshProxyURL
+	}
 	httpClient := &http.Client{
 		Timeout:   defaultAPICallTimeout,
 		Transport: h.apiCallTransport(auth, requestProxyURL),
@@ -661,7 +668,9 @@ func (p metaManagementPreparer) ShouldPrepareRequestAuth(auth *coreauth.Auth) bo
 
 func (p metaManagementPreparer) PrepareRequestAuth(ctx context.Context, auth *coreauth.Auth) (*coreauth.Auth, error) {
 	proxyURL := auth.ProxyURL
-	if strings.TrimSpace(p.proxyURL) != "" {
+	if refreshProxyURL := auth.RefreshProxyURL(); refreshProxyURL != "" {
+		auth.ProxyURL = refreshProxyURL
+	} else if strings.TrimSpace(p.proxyURL) != "" {
 		auth.ProxyURL = p.proxyURL
 	}
 	updated, err := p.executor.PrepareRequestAuth(ctx, auth)

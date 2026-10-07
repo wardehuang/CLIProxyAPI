@@ -105,7 +105,7 @@ func (e *MetaExecutor) Refresh(ctx context.Context, auth *cliproxyauth.Auth) (*c
 	}
 
 	mintRes, err, _ := metaRefreshGroup.Do(dcaToken, func() (any, error) {
-		authSvc := metaauth.NewMetaAuthWithProxyURL(e.cfg, auth.ProxyURL)
+		authSvc := metaauth.NewMetaAuthWithProxyURL(e.cfg, auth.TokenRefreshProxyURL())
 		return authSvc.MintAPIKey(ctx, dcaToken)
 	})
 	if err != nil {

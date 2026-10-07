@@ -353,6 +353,8 @@ func (h *Host) RefreshAuth(ctx context.Context, auth *coreauth.Auth) (refreshed 
 		}
 	}()
 
+	refreshAuth := auth.Clone()
+	refreshAuth.ProxyURL = auth.TokenRefreshProxyURL()
 	pluginResp, errRefresh := record.plugin.Capabilities.AuthProvider.RefreshAuth(ctx, pluginapi.AuthRefreshRequest{
 		AuthID:       authID(auth),
 		AuthProvider: authProvider(auth),
@@ -360,7 +362,7 @@ func (h *Host) RefreshAuth(ctx context.Context, auth *coreauth.Auth) (refreshed 
 		Metadata:     cloneAnyMap(authMetadata(auth)),
 		Attributes:   authAttributes(auth),
 		Host:         h.hostConfigSummary(),
-		HTTPClient:   h.newHTTPClient(auth),
+		HTTPClient:   h.newHTTPClient(refreshAuth),
 	})
 	if errRefresh != nil {
 		return nil, true, errRefresh
@@ -387,6 +389,7 @@ func (h *Host) RefreshAuth(ctx context.Context, auth *coreauth.Auth) (refreshed 
 	if len(data.Metadata) == 0 {
 		data.Metadata = cloneAnyMap(auth.Metadata)
 	}
+	preserveRefreshProxyURL(&data, auth)
 	if len(data.Attributes) == 0 {
 		if auth != nil {
 			data.Attributes = cloneStringMap(auth.Attributes)
@@ -421,6 +424,22 @@ func (h *Host) RefreshAuth(ctx context.Context, auth *coreauth.Auth) (refreshed 
 	next.CreatedAt = auth.CreatedAt
 	next.UpdatedAt = auth.UpdatedAt
 	return next, true, nil
+}
+
+func preserveRefreshProxyURL(data *pluginapi.AuthData, auth *coreauth.Auth) {
+	if data == nil || auth == nil || auth.Metadata == nil {
+		return
+	}
+	refreshProxyURL, ok := auth.Metadata["refresh_proxy_url"]
+	if !ok {
+		return
+	}
+	if data.Metadata == nil {
+		data.Metadata = make(map[string]any)
+	}
+	if _, exists := data.Metadata["refresh_proxy_url"]; !exists {
+		data.Metadata["refresh_proxy_url"] = refreshProxyURL
+	}
 }
 
 func preserveFileAuthPriority(data *pluginapi.AuthData, auth *coreauth.Auth) {

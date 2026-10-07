@@ -198,6 +198,17 @@
     .node-table th:nth-child(6), .node-table td:nth-child(6) { width: 72px; }
     .node-table th:nth-child(7), .node-table td:nth-child(7) { width: 180px; }
     .node-table th:nth-child(8), .node-table td:nth-child(8) { width: 120px; }
+    .batch-list-table { min-width: 1420px; }
+    .batch-list-table th:nth-child(1), .batch-list-table td:nth-child(1) { width: 260px; text-align: left; }
+    .batch-list-table th:nth-child(2), .batch-list-table td:nth-child(2) { width: 165px; }
+    .batch-list-table th:nth-child(3), .batch-list-table td:nth-child(3) { width: 165px; }
+    .batch-list-table th:nth-child(4), .batch-list-table td:nth-child(4) { width: 110px; }
+    .batch-list-table th:nth-child(5), .batch-list-table td:nth-child(5) { width: 110px; }
+    .batch-list-table th:nth-child(6), .batch-list-table td:nth-child(6) { width: 130px; }
+    .batch-list-table th:nth-child(7), .batch-list-table td:nth-child(7) { width: 130px; }
+    .batch-list-table th:nth-child(8), .batch-list-table td:nth-child(8) { width: 130px; }
+    .batch-list-table th:nth-child(9), .batch-list-table td:nth-child(9) { width: 150px; }
+    .batch-list-table .batch-id { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
     .guard-node-table th:nth-child(1), .guard-node-table td:nth-child(1) { width: 520px; text-align: left; }
     .guard-node-table th:nth-child(2), .guard-node-table td:nth-child(2) { width: 90px; }
     .guard-node-table th:nth-child(3), .guard-node-table td:nth-child(3) { width: 120px; }
@@ -860,15 +871,15 @@ socks5://203.0.113.11:1080
       $('batch-back').hidden = !batch;
       if (batch) {
         const rows = state.batchNodes.map((node) => `<tr><td><span class="number-badge">#${node.id}</span></td><td class="mono">${escapeHTML(node.address || '—')}</td><td><span class="node-status ${nodeTone(node.status)}">${nodeLabel(node.status)}</span></td><td>${node.latencyMs ? escapeHTML(node.latencyMs) + ' ms' : '—'}</td><td class="mono">${escapeHTML(node.exitIp || '—')}</td><td>${escapeHTML(node.country || '—')}</td><td>${formatDate(node.lastChecked)}</td></tr>`).join('');
-        $('batches-table').innerHTML = `<div class="help-text">批次 ${escapeHTML(batch.batchId)}：录入 ${formatFullDate(batch.createdAt)}，过期 ${formatFullDate(batch.expiresAt)}；新增 ${batch.totalCount} 个，重复 ${batch.duplicateCount} 个，格式错误 ${batch.inputErrorCount} 行；已完成 ${batch.completedCount} 个，当前健康 ${batch.realtimeConnectedCount} 个。</div><table class="data-table node-table"><thead><tr><th>ID</th><th>节点地址</th><th>状态</th><th>延迟</th><th>出口 IP</th><th>国家</th><th>最近检查</th></tr></thead><tbody>${rows || '<tr><td class="empty-cell" colspan="7">该批次没有新增节点。</td></tr>'}</tbody></table>`;
+        $('batches-table').innerHTML = `<div class="help-text">批次 ${escapeHTML(batch.batchId)}：录入 ${formatFullDate(batch.createdAt)}，过期 ${formatFullDate(batch.expiresAt)}；新增 ${batch.totalCount} 个，重复 ${batch.duplicateCount} 个，格式错误 ${batch.inputErrorCount} 行；已完成 ${batch.completedCount} 个，当前健康 ${batch.currentHealthyCount} 个。</div><table class="data-table node-table"><thead><tr><th>ID</th><th>节点地址</th><th>状态</th><th>延迟</th><th>出口 IP</th><th>国家</th><th>最近检查</th></tr></thead><tbody>${rows || '<tr><td class="empty-cell" colspan="7">该批次没有新增节点。</td></tr>'}</tbody></table>`;
         return;
       }
       if (!state.batches.length) {
         $('batches-table').innerHTML = '<div class="help-text">暂无通过【增加IP】创建的批次。</div>';
         return;
       }
-      const rows = state.batches.map((item) => `<tr><td class="mono">${escapeHTML(item.batchId)}</td><td>${formatDate(item.createdAt)}</td><td>${formatDate(item.expiresAt)}</td><td class="mono">${item.totalCount}</td><td class="mono">${item.duplicateCount}</td><td class="mono">${item.inputErrorCount}</td><td class="mono">${item.completedCount}</td><td class="mono">${item.realtimeConnectedCount}</td><td><button class="secondary-button" type="button" data-batch-id="${escapeHTML(item.batchId)}">查看节点</button></td></tr>`).join('');
-      $('batches-table').innerHTML = `<div class="help-text">IP 批次按创建时间保留 ${state.settings.ipBatchRetentionDays} 天；过期后在保活探测过程中删除。当前 ${state.batches.length} 个批次。</div><table class="data-table node-table"><thead><tr><th>批次 ID</th><th>录入时间</th><th>过期时间</th><th>新增</th><th>重复</th><th>格式错误</th><th>已完成</th><th>当前健康</th><th>操作</th></tr></thead><tbody>${rows}</tbody></table>`;
+      const rows = state.batches.map((item) => `<tr><td class="mono"><span class="batch-id" title="${escapeHTML(item.batchId)}">${escapeHTML(item.batchId)}</span></td><td>${formatDate(item.createdAt)}</td><td>${formatDate(item.expiresAt)}</td><td class="mono">${item.totalCount}</td><td class="mono">${item.duplicateCount}</td><td class="mono">${item.inputErrorCount}</td><td class="mono">${item.completedCount}</td><td class="mono">${item.currentHealthyCount}</td><td><button class="secondary-button" type="button" data-batch-id="${escapeHTML(item.batchId)}">查看节点</button></td></tr>`).join('');
+      $('batches-table').innerHTML = `<div class="help-text">IP 批次按创建时间保留 ${state.settings.ipBatchRetentionDays} 天；过期后在保活探测过程中删除。当前 ${state.batches.length} 个批次。</div><table class="data-table batch-list-table"><thead><tr><th>批次 ID</th><th>录入时间</th><th>过期时间</th><th>新增</th><th>重复</th><th>格式错误</th><th>已完成</th><th>当前健康</th><th>操作</th></tr></thead><tbody>${rows}</tbody></table>`;
     }
 
     function renderSettings() {

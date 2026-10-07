@@ -14,6 +14,7 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/runtime/executor/helps"
 	sdkAuth "github.com/router-for-me/CLIProxyAPI/v8/sdk/auth"
 	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
+	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/executor"
 	log "github.com/sirupsen/logrus"
 )
 
@@ -161,7 +162,10 @@ func (e *AntigravityExecutor) refreshTokenSingleFlight(ctx context.Context, auth
 	// Real Antigravity uses Go's default User-Agent for OAuth token refresh
 	httpReq.Header.Set("User-Agent", "Go-http-client/2.0")
 
-	httpClient := newAntigravityHTTPClient(ctx, e.cfg, auth, 0)
+	refreshAuth := auth.Clone()
+	refreshAuth.ProxyURL = auth.TokenRefreshProxyURL()
+	refreshCtx := cliproxyexecutor.WithoutRequestProxyURL(ctx)
+	httpClient := newAntigravityHTTPClient(refreshCtx, e.cfg, refreshAuth, 0)
 	httpResp, errDo := httpClient.Do(httpReq)
 	if errDo != nil {
 		return nil, errDo

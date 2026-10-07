@@ -189,16 +189,15 @@ type inspectionResult struct {
 }
 
 type ipBatch struct {
-	ID                     string `json:"id"`
-	SequenceNumber         int64  `json:"sequenceNumber"`
-	CreatedAt              int64  `json:"createdAt"`
-	ExpiresAt              int64  `json:"expiresAt"`
-	TotalCount             int64  `json:"totalCount"`
-	DuplicateCount         int64  `json:"duplicateCount"`
-	InputErrorCount        int64  `json:"inputErrorCount"`
-	CompletedCount         int64  `json:"completedCount"`
-	InitialConnectedCount  int64  `json:"initialConnectedCount"`
-	RealtimeConnectedCount int64  `json:"realtimeConnectedCount"`
+	ID                  string `json:"id"`
+	SequenceNumber      int64  `json:"sequenceNumber"`
+	CreatedAt           int64  `json:"createdAt"`
+	ExpiresAt           int64  `json:"expiresAt"`
+	TotalCount          int64  `json:"totalCount"`
+	DuplicateCount      int64  `json:"duplicateCount"`
+	InputErrorCount     int64  `json:"inputErrorCount"`
+	CompletedCount      int64  `json:"completedCount"`
+	CurrentHealthyCount int64  `json:"currentHealthyCount"`
 }
 
 type authBinding struct {
@@ -1434,14 +1433,14 @@ func (store *guardianStore) listIPBatches() ([]ipBatch, error) {
 	}
 	rows, err := store.database.Query(`
 SELECT batches.batch_id, batches.sequence_number, batches.created_at, batches.total_count, batches.duplicate_count, batches.input_error_count,
-       COALESCE(SUM(CASE WHEN nodes.status IN (?, ?, ?, ?, ?) THEN 1 ELSE 0 END), 0),
-       COALESCE(SUM(CASE WHEN nodes.status IN (?, ?, ?) THEN 1 ELSE 0 END), 0)
+       COALESCE(SUM(CASE WHEN nodes.last_checked > 0 THEN 1 ELSE 0 END), 0),
+       COALESCE(SUM(CASE WHEN nodes.status IN (?, ?, ?, ?) THEN 1 ELSE 0 END), 0)
 FROM ip_batches AS batches
 LEFT JOIN ip_batch_nodes AS batch_nodes ON batch_nodes.batch_id = batches.batch_id
 LEFT JOIN nodes ON nodes.id = batch_nodes.node_id AND nodes.scope = 'guard'
 GROUP BY batches.batch_id, batches.sequence_number, batches.created_at, batches.total_count, batches.duplicate_count, batches.input_error_count
 ORDER BY batches.sequence_number DESC, batches.created_at DESC, batches.batch_id DESC
-LIMIT ?`, statusHealthy, statusHealthyCandidate, statusHealthyFallback, statusUnhealthy, statusDisabled, statusHealthy, statusHealthyCandidate, statusHealthyFallback, maxIPBatches)
+LIMIT ?`, statusHealthy, statusConnected, statusHealthyCandidate, statusHealthyFallback, maxIPBatches)
 	if err != nil {
 		return nil, fmt.Errorf("list IP batches: %w", err)
 	}
@@ -1449,11 +1448,10 @@ LIMIT ?`, statusHealthy, statusHealthyCandidate, statusHealthyFallback, statusUn
 	items := make([]ipBatch, 0)
 	for rows.Next() {
 		var item ipBatch
-		if err := rows.Scan(&item.ID, &item.SequenceNumber, &item.CreatedAt, &item.TotalCount, &item.DuplicateCount, &item.InputErrorCount, &item.CompletedCount, &item.InitialConnectedCount); err != nil {
+		if err := rows.Scan(&item.ID, &item.SequenceNumber, &item.CreatedAt, &item.TotalCount, &item.DuplicateCount, &item.InputErrorCount, &item.CompletedCount, &item.CurrentHealthyCount); err != nil {
 			return nil, fmt.Errorf("scan IP batch: %w", err)
 		}
 		item.ExpiresAt = time.UnixMilli(item.CreatedAt).AddDate(0, 0, settings.IPBatchRetentionDays).UnixMilli()
-		item.RealtimeConnectedCount = item.InitialConnectedCount
 		items = append(items, item)
 	}
 	return items, rows.Err()
