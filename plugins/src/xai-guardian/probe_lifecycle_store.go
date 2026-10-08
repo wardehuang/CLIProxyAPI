@@ -329,8 +329,27 @@ func (store *guardianStore) reconcileHealthySlots(settings pluginSettings) error
 	for _, nodeID := range candidateIDs {
 		available[nodeID] = struct{}{}
 	}
-	assignments := make([]healthySlot, 0, settings.HealthySlotCount+settings.HealthyCandidateSlotCount)
-	for slotIndex := 1; slotIndex <= settings.HealthySlotCount+settings.HealthyCandidateSlotCount; slotIndex++ {
+	totalSlotCount := settings.HealthySlotCount + settings.HealthyCandidateSlotCount
+	assignments := make([]healthySlot, totalSlotCount)
+	for slotIndex := 1; slotIndex <= totalSlotCount; slotIndex++ {
+		slotID := int64(slotIndex)
+		kind := "primary"
+		if slotIndex > settings.HealthySlotCount {
+			kind = "candidate"
+		}
+		previous, exists := existing[slotID]
+		if !exists || previous.NodeID == 0 || previous.Kind != kind || previous.RefreshedAt < cutoff {
+			continue
+		}
+		if _, availableNode := available[previous.NodeID]; !availableNode {
+			continue
+		}
+		previous.SlotID = slotID
+		previous.Kind = kind
+		assignments[slotIndex-1] = previous
+		delete(available, previous.NodeID)
+	}
+	for slotIndex := 1; slotIndex <= totalSlotCount; slotIndex++ {
 		slotID := int64(slotIndex)
 		kind := "primary"
 		status := statusHealthy
@@ -338,13 +357,7 @@ func (store *guardianStore) reconcileHealthySlots(settings pluginSettings) error
 			kind = "candidate"
 			status = statusHealthyCandidate
 		}
-		var assignment healthySlot
-		if previous, exists := existing[slotID]; exists {
-			if _, availableNode := available[previous.NodeID]; availableNode && previous.Kind == kind && previous.RefreshedAt >= cutoff {
-				assignment = previous
-				delete(available, previous.NodeID)
-			}
-		}
+		assignment := assignments[slotIndex-1]
 		if assignment.NodeID == 0 {
 			for _, nodeID := range candidateIDs {
 				if _, availableNode := available[nodeID]; !availableNode {
@@ -358,9 +371,7 @@ func (store *guardianStore) reconcileHealthySlots(settings pluginSettings) error
 		if assignment.NodeID == 0 {
 			continue
 		}
-		assignment.SlotID = slotID
-		assignment.Kind = kind
-		assignments = append(assignments, assignment)
+		assignments[slotIndex-1] = assignment
 		if _, err := tx.Exec(`INSERT INTO healthy_slots(slot_id, slot_kind, node_id, refreshed_at) VALUES (?, ?, ?, ?)`, assignment.SlotID, assignment.Kind, assignment.NodeID, assignment.RefreshedAt); err != nil {
 			return fmt.Errorf("assign healthy slot %d: %w", slotID, err)
 		}

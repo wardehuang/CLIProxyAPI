@@ -1,12 +1,9 @@
 package main
 
 import (
-	cryptorand "crypto/rand"
-	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
-	"math/big"
 	"net/url"
 	"path/filepath"
 	"sort"
@@ -27,7 +24,6 @@ type hostAuthList struct {
 type xaiAuthFile struct {
 	Entry       pluginapi.HostAuthFileEntry
 	Index       string
-	Identity    string
 	Name        string
 	Path        string
 	Priority    int
@@ -76,8 +72,8 @@ func listXAIAuthEntries() ([]pluginapi.HostAuthFileEntry, error) {
 }
 
 func isXAIAuthEntry(entry pluginapi.HostAuthFileEntry) bool {
-	value := strings.ToLower(strings.TrimSpace(strings.Join([]string{entry.Provider, entry.Type, entry.Name, entry.Label}, " ")))
-	return strings.Contains(value, "xai") || strings.Contains(value, "grok")
+	provider := strings.ToLower(strings.TrimSpace(entry.Provider + " " + entry.Type + " " + entry.Name))
+	return strings.Contains(provider, "xai") || strings.HasPrefix(strings.ToLower(strings.TrimSpace(entry.Name)), "xai-")
 }
 
 func authEntryIdentity(entry pluginapi.HostAuthFileEntry) string {
@@ -92,9 +88,6 @@ func authEntryIdentity(entry pluginapi.HostAuthFileEntry) string {
 
 func authEntryName(entry pluginapi.HostAuthFileEntry) string {
 	if value := strings.TrimSpace(entry.Name); value != "" {
-		return value
-	}
-	if value := strings.TrimSpace(entry.Label); value != "" {
 		return value
 	}
 	return authEntryIdentity(entry)
@@ -153,7 +146,6 @@ func getXAIAuthFile(entry pluginapi.HostAuthFileEntry) (xaiAuthFile, error) {
 	return xaiAuthFile{
 		Entry:       entry,
 		Index:       resolvedIndex,
-		Identity:    authEntryIdentity(entry),
 		Name:        name,
 		Path:        path,
 		Priority:    priority,
@@ -266,6 +258,13 @@ func refreshHealthyAuthDistribution(store *guardianStore) error {
 	store.authDistributionMutex.Lock()
 	defer store.authDistributionMutex.Unlock()
 
+	settings, err := store.settings()
+	if err != nil {
+		return fmt.Errorf("read auth distribution settings: %w", err)
+	}
+	if settings.HealthySlotCount < 1 {
+		return fmt.Errorf("healthy slot count must be positive")
+	}
 	entries, err := listXAIAuthEntries()
 	if err != nil {
 		return err
@@ -274,112 +273,84 @@ func refreshHealthyAuthDistribution(store *guardianStore) error {
 	if err != nil {
 		return err
 	}
-	if err := syncAuthBindingsFromFiles(store, files, 0, 0); err != nil {
-		return fmt.Errorf("sync auth metadata: %w", err)
-	}
 	primarySlots, err := listPrimaryHealthySlotNodes(store)
 	if err != nil {
 		return err
 	}
-	used := make(map[string]struct{}, len(primarySlots))
-	assignments := make(map[string]authAssignment, len(primarySlots))
-	selections := make([]authSelection, 0, len(primarySlots))
-	var firstErr error
+	slotsByID := make(map[int64]healthySlotNode, len(primarySlots))
 	for _, slot := range primarySlots {
-		selected, source, err := selectAuthForHealthySlot(store, slot, used, files)
-		if err != nil {
-			store.recordAuthDistributionFailure(slot.NodeID, err)
-			if firstErr == nil {
-				firstErr = err
-			}
-			continue
-		}
-		assignments[selected.Index] = authAssignment{SlotID: slot.SlotID, NodeID: slot.NodeID, ProxyURL: slot.Address}
-		selections = append(selections, authSelection{AuthIndex: selected.Index, AuthIdentity: selected.Identity, NodeID: slot.NodeID, SlotID: slot.SlotID, Source: source})
+		slotsByID[slot.SlotID] = slot
 	}
-	for _, file := range files {
-		desired := ""
-		if firstErr == nil {
-			if assignment, assigned := assignments[file.Index]; assigned {
-				desired = assignment.ProxyURL
-			}
+	assignments := make(map[string]authAssignment, len(files))
+	for fileIndex, file := range files {
+		slotID := int64(fileIndex%settings.HealthySlotCount + 1)
+		slot, found := slotsByID[slotID]
+		if !found {
+			slot = healthySlotNode{SlotID: slotID}
+		} else if slot.NodeID != 0 && slot.Status != statusHealthy {
+			return fmt.Errorf("healthy auth distribution slot %d node %d is not healthy: %s", slotID, slot.NodeID, slot.Status)
 		}
-		if file.ProxyURL == desired {
+		assignments[file.Index] = authAssignment{SlotID: slotID, NodeID: slot.NodeID, ProxyURL: slot.Address}
+	}
+	if err := syncAuthBindingsFromFiles(store, files, 0, 0); err != nil {
+		return fmt.Errorf("sync auth metadata: %w", err)
+	}
+
+	applied := make([]authDistributionUpdate, 0, len(files))
+	for _, file := range files {
+		assignment := assignments[file.Index]
+		if file.ProxyURL == assignment.ProxyURL {
 			store.recordAuthProxyWriteSuccess(file.Index)
 			continue
 		}
-		if strings.TrimSpace(file.Path) == "" || file.Raw == nil {
-			store.recordAuthProxyWriteFailure(file.Index, fmt.Errorf("auth file is not writable"), 1)
-			if firstErr == nil {
-				firstErr = fmt.Errorf("auth %s has no writable file", file.Index)
-			}
-			continue
-		}
-		attempts, err := saveAndVerifyAuthProxyURL(file, desired)
+		attempts, err := saveAndVerifyAuthProxyURL(file, assignment.ProxyURL)
 		if err != nil {
 			store.recordAuthProxyWriteFailure(file.Index, err, attempts)
-			if firstErr == nil {
-				firstErr = err
+			applied = append(applied, authDistributionUpdate{File: file, OriginalProxyURL: file.ProxyURL})
+			if rollbackErr := rollbackAuthDistributionFiles(applied); rollbackErr != nil {
+				return fmt.Errorf("save auth distribution %s: %w; rollback failed: %v", file.Index, err, rollbackErr)
 			}
-			continue
+			return fmt.Errorf("save auth distribution %s: %w", file.Index, err)
 		}
+		applied = append(applied, authDistributionUpdate{File: file, OriginalProxyURL: file.ProxyURL})
 		store.recordAuthProxyWriteSuccess(file.Index)
 	}
-	if firstErr != nil {
-		if err := clearAuthDistributionFiles(store, files); err != nil {
-			firstErr = fmt.Errorf("clear auth proxy URLs after failure: %w; previous error: %v", err, firstErr)
-		}
-		if err := store.replaceAuthDistribution(nil); err != nil {
-			return fmt.Errorf("clear auth distribution after write failure: %w; previous error: %v", err, firstErr)
-		}
-		return firstErr
-	}
 	if err := store.replaceAuthDistribution(assignments); err != nil {
-		clearErr := clearAuthDistributionFiles(store, files)
-		distributionErr := store.replaceAuthDistribution(nil)
-		if clearErr != nil || distributionErr != nil {
-			return fmt.Errorf("replace auth distribution: %w; clear files: %v; clear database: %v", err, clearErr, distributionErr)
+		if rollbackErr := rollbackAuthDistributionFiles(applied); rollbackErr != nil {
+			return fmt.Errorf("replace auth distribution: %w; rollback failed: %v", err, rollbackErr)
 		}
-		return err
-	}
-	for _, selection := range selections {
-		if err := store.recordAuthSelection(selection); err != nil {
-			return err
-		}
+		return fmt.Errorf("replace auth distribution: %w", err)
 	}
 	return nil
 }
 
-func clearAuthDistributionFiles(store *guardianStore, files []xaiAuthFile) error {
-	var firstErr error
-	for _, file := range files {
-		if strings.TrimSpace(file.ProxyURL) == "" && strings.TrimSpace(stringField(file.Raw, "proxy_url")) == "" {
-			continue
+type authDistributionUpdate struct {
+	File             xaiAuthFile
+	OriginalProxyURL string
+}
+
+func rollbackAuthDistributionFiles(updates []authDistributionUpdate) error {
+	for index := len(updates) - 1; index >= 0; index-- {
+		update := updates[index]
+		if _, err := saveAndVerifyAuthProxyURL(update.File, update.OriginalProxyURL); err != nil {
+			return fmt.Errorf("restore auth %s: %w", update.File.Index, err)
 		}
-		attempts, err := saveAndVerifyAuthProxyURL(file, "")
-		if err != nil {
-			store.recordAuthProxyWriteFailure(file.Index, err, attempts)
-			if firstErr == nil {
-				firstErr = err
-			}
-			continue
-		}
-		store.recordAuthProxyWriteSuccess(file.Index)
 	}
-	return firstErr
+	return nil
 }
 
 type healthySlotNode struct {
 	SlotID  int64
 	NodeID  int64
 	Address string
+	Status  string
 }
 
 func listPrimaryHealthySlotNodes(store *guardianStore) ([]healthySlotNode, error) {
-	rows, err := store.database.Query(`SELECT healthy_slots.slot_id, healthy_slots.node_id, nodes.address
-FROM healthy_slots INNER JOIN nodes ON nodes.id = healthy_slots.node_id
-WHERE healthy_slots.slot_kind = 'primary' AND nodes.scope = 'guard' AND nodes.status = ?
-ORDER BY healthy_slots.slot_id`, statusHealthy)
+	rows, err := store.database.Query(`SELECT healthy_slots.slot_id, healthy_slots.node_id, COALESCE(nodes.address, ''), COALESCE(nodes.status, '')
+FROM healthy_slots LEFT JOIN nodes ON nodes.id = healthy_slots.node_id AND nodes.scope = 'guard'
+WHERE healthy_slots.slot_kind = 'primary'
+ORDER BY healthy_slots.slot_id`)
 	if err != nil {
 		return nil, fmt.Errorf("list primary healthy slots: %w", err)
 	}
@@ -387,7 +358,7 @@ ORDER BY healthy_slots.slot_id`, statusHealthy)
 	items := make([]healthySlotNode, 0)
 	for rows.Next() {
 		var item healthySlotNode
-		if err := rows.Scan(&item.SlotID, &item.NodeID, &item.Address); err != nil {
+		if err := rows.Scan(&item.SlotID, &item.NodeID, &item.Address, &item.Status); err != nil {
 			return nil, fmt.Errorf("scan primary healthy slot: %w", err)
 		}
 		items = append(items, item)
@@ -396,67 +367,6 @@ ORDER BY healthy_slots.slot_id`, statusHealthy)
 		return nil, fmt.Errorf("iterate primary healthy slots: %w", err)
 	}
 	return items, nil
-}
-
-func selectAuthForHealthySlot(store *guardianStore, slot healthySlotNode, used map[string]struct{}, files []xaiAuthFile) (xaiAuthFile, string, error) {
-	available := make([]xaiAuthFile, 0, len(files))
-	for _, file := range files {
-		if file.Priority > 0 && !file.Disabled && strings.TrimSpace(stringField(file.Raw, "access_token")) != "" {
-			available = append(available, file)
-		}
-	}
-	if len(available) == 0 {
-		return xaiAuthFile{}, "", fmt.Errorf("没有 priority>0 且包含 access_token 的 xAI auth")
-	}
-	for _, file := range available {
-		if file.ProxyURL == slot.Address {
-			if _, exists := used[file.Identity]; !exists {
-				used[file.Identity] = struct{}{}
-				return file, "node_binding", nil
-			}
-		}
-	}
-	var historicalIdentity string
-	err := store.database.QueryRow(`SELECT auth_identity FROM auth_selection_history
-WHERE node_id = ? AND was_success = 1 ORDER BY selected_at DESC, id DESC LIMIT 1`, slot.NodeID).Scan(&historicalIdentity)
-	if err != nil && err != sql.ErrNoRows {
-		return xaiAuthFile{}, "", fmt.Errorf("read auth selection history: %w", err)
-	}
-	if err == nil {
-		for _, file := range available {
-			if file.Identity == historicalIdentity {
-				if _, exists := used[file.Identity]; !exists {
-					used[file.Identity] = struct{}{}
-					return file, "node_history", nil
-				}
-				break
-			}
-		}
-	}
-	candidates := make([]xaiAuthFile, 0, len(available))
-	for _, file := range available {
-		if _, exists := used[file.Identity]; !exists {
-			candidates = append(candidates, file)
-		}
-	}
-	if len(candidates) == 0 {
-		return xaiAuthFile{}, "", fmt.Errorf("当前健康槽位分配已耗尽可用 auth")
-	}
-	index, err := cryptorand.Int(cryptorand.Reader, big.NewInt(int64(len(candidates))))
-	if err != nil {
-		return xaiAuthFile{}, "", fmt.Errorf("select random auth: %w", err)
-	}
-	selected := candidates[index.Int64()]
-	used[selected.Identity] = struct{}{}
-	return selected, "random", nil
-}
-
-type authSelection struct {
-	AuthIndex    string
-	AuthIdentity string
-	NodeID       int64
-	SlotID       int64
-	Source       string
 }
 
 func saveAndVerifyAuthProxyURL(file xaiAuthFile, proxyURL string) (int, error) {

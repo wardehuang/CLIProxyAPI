@@ -836,7 +836,7 @@ socks5://203.0.113.11:1080
       const slotHeader = showSlotColumn ? `<th>${sortButton('slot', '槽位')}</th>` : '';
       const actionHeader = showActionColumn ? '<th>操作</th>' : '';
       const rows = sortedNodes.map((node) => {
-        const nodeCell = `<div class="node-cell"><strong class="mono">${escapeHTML(node.address || '—')}</strong><span class="subline">#${escapeHTML(node.id)}</span></div>`;
+        const nodeCell = `<div class="node-cell"><strong class="mono">${escapeHTML(node.address || '—')}</strong></div>`;
         if (showExceptionColumn) return `<tr><td>${nodeCell}</td><td>${escapeHTML(node.lastError || '—')}</td><td>${formatDate(node.lastChecked)}</td></tr>`;
         return `<tr><td>${nodeCell}</td><td>${escapeHTML(node.country || '—')}</td><td>${node.latencyMs ? escapeHTML(node.latencyMs) + ' ms' : '—'}</td>${showSlotColumn ? `<td><span class="type-badge">${node.slotKind ? `${escapeHTML(node.slotKind)} #${node.slotId}` : '未分配'}</span></td>` : ''}<td class="mono">${escapeHTML(node.exitIp || '—')}</td><td>${escapeHTML(node.country || '—')}</td><td>${formatDate(node.lastChecked)}</td>${showActionColumn ? `<td><button class="secondary-button" type="button" data-view-auth-node="${escapeHTML(node.id)}">查看绑定Auth</button></td>` : ''}</tr>`;
       }).join('');

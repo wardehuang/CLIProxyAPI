@@ -1679,24 +1679,12 @@ func (store *guardianStore) replaceAuthDistribution(assignments map[string]authA
 	return nil
 }
 
-func (store *guardianStore) recordAuthSelection(selection authSelection) error {
-	_, err := store.database.Exec(`INSERT INTO auth_selection_history(selected_at, auth_index, auth_identity, selection_source, node_id, slot_id, was_success) VALUES (?, ?, ?, ?, ?, ?, 1)`, time.Now().UnixMilli(), selection.AuthIndex, selection.AuthIdentity, selection.Source, selection.NodeID, selection.SlotID)
-	if err != nil {
-		return fmt.Errorf("record auth selection %s: %w", selection.AuthIndex, err)
-	}
-	return nil
-}
-
 func (store *guardianStore) recordAuthProxyWriteFailure(authIndex string, err error, attempts int) {
 	_, _ = store.database.Exec(`UPDATE auth_bindings SET proxy_write_attempts = proxy_write_attempts + ?, proxy_write_error = ?, proxy_write_at = ?, status = 'write_failed', updated_at = ? WHERE auth_index = ?`, attempts, sanitizeLogText(err.Error()), time.Now().UnixMilli(), time.Now().UnixMilli(), authIndex)
 }
 
 func (store *guardianStore) recordAuthProxyWriteSuccess(authIndex string) {
 	_, _ = store.database.Exec(`UPDATE auth_bindings SET proxy_write_error = '', proxy_write_at = ?, status = CASE WHEN status = 'write_failed' THEN 'available' ELSE status END, updated_at = ? WHERE auth_index = ?`, time.Now().UnixMilli(), time.Now().UnixMilli(), authIndex)
-}
-
-func (store *guardianStore) recordAuthDistributionFailure(nodeID int64, err error) {
-	_, _ = store.database.Exec(`UPDATE auth_bindings SET proxy_write_error = ?, proxy_write_at = ?, updated_at = ? WHERE node_id = ?`, sanitizeLogText(err.Error()), time.Now().UnixMilli(), time.Now().UnixMilli(), nodeID)
 }
 
 func (store *guardianStore) observeAuthAttempt(authIndex, authName, proxyURL string) error {
