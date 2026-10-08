@@ -2,12 +2,14 @@ package auth
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"math/rand/v2"
 	"net/http"
 	"reflect"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -856,15 +858,56 @@ func schedulerAuthCandidates(auths []*Auth) []pluginapi.SchedulerAuthCandidate {
 		if auth == nil {
 			continue
 		}
+		attributes := schedulerSafeAttributes(auth.Attributes)
+		if scheduleGroup, ok := schedulerScheduleGroupAttribute(auth.Metadata); ok {
+			if attributes == nil {
+				attributes = make(map[string]string, 1)
+			}
+			attributes["schedule_group"] = scheduleGroup
+		}
 		out = append(out, pluginapi.SchedulerAuthCandidate{
 			ID:         auth.ID,
 			Provider:   strings.ToLower(strings.TrimSpace(auth.Provider)),
 			Priority:   authPriority(auth),
 			Status:     string(auth.Status),
-			Attributes: schedulerSafeAttributes(auth.Attributes),
+			Attributes: attributes,
 		})
 	}
 	return out
+}
+
+func schedulerScheduleGroupAttribute(metadata map[string]any) (string, bool) {
+	values := []map[string]any{metadata}
+	for _, key := range []string{"attributes", "metadata"} {
+		if nested, ok := metadata[key].(map[string]any); ok {
+			values = append(values, nested)
+		}
+	}
+	for _, current := range values {
+		value, ok := current["schedule_group"]
+		if !ok {
+			continue
+		}
+		switch typed := value.(type) {
+		case float64:
+			return strconv.Itoa(int(typed)), true
+		case int:
+			return strconv.Itoa(typed), true
+		case int64:
+			return strconv.FormatInt(typed, 10), true
+		case json.Number:
+			groupID, err := typed.Int64()
+			if err == nil {
+				return strconv.FormatInt(groupID, 10), true
+			}
+		case string:
+			groupID, err := strconv.Atoi(strings.TrimSpace(typed))
+			if err == nil {
+				return strconv.Itoa(groupID), true
+			}
+		}
+	}
+	return "", false
 }
 
 func schedulerProviders(provider string, providers []string) []string {
