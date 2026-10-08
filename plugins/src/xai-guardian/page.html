@@ -744,6 +744,21 @@ socks5h://proxy.example:1080"></textarea>
       return envelope.data;
     }
 
+    function updateOperationProgress(text) {
+      $('operation-overlay').querySelector('small').textContent = text;
+    }
+
+    async function waitForAuthRefreshProxyBatch(jobID) {
+      while (true) {
+        const result = await api(`/api/auths/refresh-proxy-urls/status?jobId=${encodeURIComponent(jobID)}`);
+        if (result.status !== 'queued' && result.status !== 'running') return result;
+        updateOperationProgress(result.authCount
+          ? `已处理 ${result.processedCount}/${result.authCount}；成功 ${result.updatedCount}，失败 ${result.failedCount}`
+          : '正在读取 xAI auth 文件列表…');
+        await new Promise((resolve) => window.setTimeout(resolve, 1000));
+      }
+    }
+
     function renderMode() {
       const descriptions = {
         accounts: ['账号状态', '仅显示最后一次后台账号检查快照；未运行后台账号检查时不显示当前 CPA 账号清单。'],
@@ -1216,17 +1231,29 @@ socks5h://proxy.example:1080"></textarea>
         if (!text.trim()) { setMessage('refresh-proxy-message', '请输入至少一个代理 URL。', true); return; }
         setBusy(true, '批量设置 refresh_proxy_url 中…');
         try {
-          const result = await api('/api/auths/refresh-proxy-urls', 'POST', {text});
+          const started = await api('/api/auths/refresh-proxy-urls', 'POST', {text});
+          if (started.status === 'already_running') {
+            setMessage('refresh-proxy-message', '已有批量任务正在执行；本次输入未提交。', true);
+            return;
+          }
+          const result = await waitForAuthRefreshProxyBatch(started.jobId);
+          if (result.status !== 'completed') {
+            const progress = result.authCount
+              ? `已处理 ${result.processedCount}/${result.authCount} 个 auth，成功 ${result.updatedCount}，失败 ${result.failedCount}`
+              : '';
+            setMessage('refresh-proxy-message', `${result.error || '批量任务状态不可用'}${progress ? `；${progress}` : ''}。输入保留。`, true);
+            return;
+          }
           const failedAuthNames = Array.isArray(result.failedAuthNames) ? result.failedAuthNames : [];
-          if (failedAuthNames.length) {
+          if (result.failedCount) {
             const shownNames = failedAuthNames.slice(0, 10).join('、');
-            const remaining = failedAuthNames.length > 10 ? `；另有 ${failedAuthNames.length - 10} 个未展开` : '';
-            setMessage('refresh-proxy-message', `已回读确认 ${result.updatedCount}/${result.authCount} 个 auth；失败 ${result.failedCount} 个：${shownNames}${remaining}。可保留输入后重试。`, true);
+            const remaining = result.failedCount > failedAuthNames.length ? `；另有 ${result.failedCount - failedAuthNames.length} 个未展开` : '';
+            setMessage('refresh-proxy-message', `已处理 ${result.processedCount}/${result.authCount} 个 auth，回读确认 ${result.updatedCount} 个；失败 ${result.failedCount} 个：${shownNames}${remaining}。可保留输入后重试。`, true);
           } else {
             const unused = result.unusedProxyCount ? `；${result.unusedProxyCount} 条代理未使用` : '';
             $('refresh-proxy-input').value = '';
             $('refresh-proxy-modal').hidden = true;
-            showToast(`refresh_proxy_url 已回读确认：${result.updatedCount} 个 auth，使用 ${result.proxyCount - result.unusedProxyCount}/${result.proxyCount} 条代理${unused}。`);
+            showToast(`refresh_proxy_url 已回读确认：${result.updatedCount}/${result.authCount} 个 auth，使用 ${result.proxyCount - result.unusedProxyCount}/${result.proxyCount} 条代理${unused}。`);
           }
         } catch (error) { setMessage('refresh-proxy-message', error.message, true); }
         finally { setBusy(false); }

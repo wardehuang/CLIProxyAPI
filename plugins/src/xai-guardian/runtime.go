@@ -2,7 +2,9 @@ package main
 
 import (
 	"context"
+	"crypto/rand"
 	"database/sql"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -19,6 +21,10 @@ var guardianRuntime = &runtimeController{scheduleGroups: newScheduleGroupState()
 type runtimeController struct {
 	mutex                     sync.RWMutex
 	store                     *guardianStore
+	refreshProxyBatchMutex    sync.RWMutex
+	refreshProxyBatchJob      *authRefreshProxyBatchJob
+	refreshProxyBatchCancel   context.CancelFunc
+	refreshProxyBatchGroup    sync.WaitGroup
 	inspectionCancel          context.CancelFunc
 	inspectionGroup           sync.WaitGroup
 	probeCancel               context.CancelFunc
@@ -32,6 +38,19 @@ type runtimeController struct {
 	scheduleGroups            *scheduleGroupState
 	runtimeScheduleGroupCount int
 	config                    pluginConfig
+}
+
+type authRefreshProxyBatchJob struct {
+	ID               string
+	Status           string
+	AuthCount        int
+	ProxyCount       int
+	ProcessedCount   int
+	UpdatedCount     int
+	FailedCount      int
+	FailedAuthNames  []string
+	UnusedProxyCount int
+	Error            string
 }
 
 func (controller *runtimeController) configure(config pluginConfig) error {
@@ -225,7 +244,12 @@ func (controller *runtimeController) startReviveWorkerLocked(settings pluginSett
 func (controller *runtimeController) shutdown() {
 	controller.mutex.Lock()
 	defer controller.mutex.Unlock()
+	if controller.refreshProxyBatchCancel != nil {
+		controller.refreshProxyBatchCancel()
+	}
 	controller.stopWorkersLocked()
+	controller.refreshProxyBatchGroup.Wait()
+	controller.refreshProxyBatchCancel = nil
 	controller.scheduleGroups.resetRuntime()
 	if controller.store != nil {
 		_ = controller.store.appendLog(logLevelInfo, "plugin.shutdown", "xAI Guardian 正在停止", "")
@@ -262,8 +286,11 @@ func (controller *runtimeController) api(method, path string, query url.Values, 
 	if (method == http.MethodPut || method == http.MethodPost) && path == "/api/settings" {
 		return controller.updateSettings(store, body)
 	}
+	if method == http.MethodGet && path == "/api/auths/refresh-proxy-urls/status" {
+		return controller.authRefreshProxyBatchStatusAPI(query.Get("jobId"))
+	}
 	if method == http.MethodPost && path == "/api/auths/refresh-proxy-urls" {
-		return controller.applyAuthRefreshProxyURLs(store, body)
+		return controller.startAuthRefreshProxyBatch(store, body)
 	}
 	if method == http.MethodGet && path == "/api/accounts" {
 		return controller.accountsAPI(store)
@@ -406,7 +433,7 @@ func (controller *runtimeController) api(method, path string, query url.Values, 
 	return http.StatusNotFound, nil, fmt.Errorf("API path not found")
 }
 
-func (controller *runtimeController) applyAuthRefreshProxyURLs(store *guardianStore, body []byte) (int, []byte, error) {
+func (controller *runtimeController) startAuthRefreshProxyBatch(store *guardianStore, body []byte) (int, []byte, error) {
 	var payload struct {
 		Text string `json:"text"`
 	}
@@ -418,35 +445,131 @@ func (controller *runtimeController) applyAuthRefreshProxyURLs(store *guardianSt
 		return http.StatusBadRequest, nil, err
 	}
 
+	var jobIDBytes [16]byte
+	if _, err := rand.Read(jobIDBytes[:]); err != nil {
+		return http.StatusInternalServerError, nil, fmt.Errorf("create batch job ID: %w", err)
+	}
+	job := &authRefreshProxyBatchJob{
+		ID:              hex.EncodeToString(jobIDBytes[:]),
+		Status:          "queued",
+		ProxyCount:      len(proxyURLs),
+		FailedAuthNames: make([]string, 0, 10),
+	}
+
+	controller.mutex.Lock()
+	if controller.store != store {
+		controller.mutex.Unlock()
+		return jsonAPIError(http.StatusServiceUnavailable, "plugin_stopping", "插件正在停止，未启动批量任务")
+	}
+	controller.refreshProxyBatchMutex.Lock()
+	if active := controller.refreshProxyBatchJob; active != nil && (active.Status == "queued" || active.Status == "running") {
+		activeJobID := active.ID
+		controller.refreshProxyBatchMutex.Unlock()
+		controller.mutex.Unlock()
+		return jsonAPIResult(map[string]any{"status": "already_running", "jobId": activeJobID}, nil)
+	}
+	controller.refreshProxyBatchJob = job
+	workerContext, cancel := context.WithCancel(context.Background())
+	controller.refreshProxyBatchCancel = cancel
+	controller.refreshProxyBatchGroup.Add(1)
+	controller.refreshProxyBatchMutex.Unlock()
+	controller.mutex.Unlock()
+
+	go controller.runAuthRefreshProxyBatch(workerContext, store, job, proxyURLs)
+	return jsonAPIResult(map[string]any{"jobId": job.ID, "status": "queued"}, nil)
+}
+
+func (controller *runtimeController) runAuthRefreshProxyBatch(ctx context.Context, store *guardianStore, job *authRefreshProxyBatchJob, proxyURLs []string) {
+	defer controller.refreshProxyBatchGroup.Done()
+	controller.updateAuthRefreshProxyBatchJob(job, func(current *authRefreshProxyBatchJob) {
+		current.Status = "running"
+	})
+
 	store.authDistributionMutex.Lock()
 	defer store.authDistributionMutex.Unlock()
+	if ctx.Err() != nil {
+		controller.updateAuthRefreshProxyBatchJob(job, func(current *authRefreshProxyBatchJob) {
+			current.Status = "cancelled"
+			current.Error = "任务已取消；尚未处理 auth 文件"
+		})
+		return
+	}
 
 	entries, err := listXAIAuthEntries()
 	if err != nil {
-		return http.StatusInternalServerError, nil, err
+		controller.updateAuthRefreshProxyBatchJob(job, func(current *authRefreshProxyBatchJob) {
+			current.Status = "failed"
+			current.Error = "读取 xAI auth 文件列表失败"
+		})
+		return
 	}
 	if len(entries) == 0 {
-		return http.StatusNotFound, nil, fmt.Errorf("no xAI auth JSON files found")
+		controller.updateAuthRefreshProxyBatchJob(job, func(current *authRefreshProxyBatchJob) {
+			current.Status = "failed"
+			current.Error = "没有找到 xAI auth JSON 文件"
+		})
+		return
 	}
+	unusedProxyCount := len(proxyURLs) - len(entries)
+	if unusedProxyCount < 0 {
+		unusedProxyCount = 0
+	}
+	controller.updateAuthRefreshProxyBatchJob(job, func(current *authRefreshProxyBatchJob) {
+		current.AuthCount = len(entries)
+		current.UnusedProxyCount = unusedProxyCount
+	})
 
-	failedAuthNames := make([]string, 0)
 	for index, entry := range entries {
-		if err := saveAndVerifyAuthRefreshProxyURL(entry, proxyURLs[index%len(proxyURLs)]); err != nil {
-			failedAuthNames = append(failedAuthNames, authEntryName(entry))
+		if ctx.Err() != nil {
+			controller.updateAuthRefreshProxyBatchJob(job, func(current *authRefreshProxyBatchJob) {
+				current.Status = "cancelled"
+				current.Error = "任务已取消；可能已有部分 auth 文件写入"
+			})
+			return
 		}
+		saveErr := saveAndVerifyAuthRefreshProxyURL(entry, proxyURLs[index%len(proxyURLs)])
+		controller.updateAuthRefreshProxyBatchJob(job, func(current *authRefreshProxyBatchJob) {
+			current.ProcessedCount++
+			if saveErr != nil {
+				current.FailedCount++
+				if len(current.FailedAuthNames) < 10 {
+					current.FailedAuthNames = append(current.FailedAuthNames, authEntryName(entry))
+				}
+				return
+			}
+			current.UpdatedCount++
+		})
 	}
-	usedProxyCount := len(proxyURLs)
-	if usedProxyCount > len(entries) {
-		usedProxyCount = len(entries)
+	controller.updateAuthRefreshProxyBatchJob(job, func(current *authRefreshProxyBatchJob) {
+		current.Status = "completed"
+	})
+}
+
+func (controller *runtimeController) updateAuthRefreshProxyBatchJob(job *authRefreshProxyBatchJob, update func(*authRefreshProxyBatchJob)) {
+	controller.refreshProxyBatchMutex.Lock()
+	update(job)
+	controller.refreshProxyBatchMutex.Unlock()
+}
+
+func (controller *runtimeController) authRefreshProxyBatchStatusAPI(jobID string) (int, []byte, error) {
+	controller.refreshProxyBatchMutex.RLock()
+	job := controller.refreshProxyBatchJob
+	if job == nil {
+		controller.refreshProxyBatchMutex.RUnlock()
+		return jsonAPIResult(map[string]any{"status": "idle"}, nil)
 	}
-	return jsonAPIResult(map[string]any{
-		"authCount":        len(entries),
-		"proxyCount":       len(proxyURLs),
-		"updatedCount":     len(entries) - len(failedAuthNames),
-		"failedCount":      len(failedAuthNames),
-		"failedAuthNames":  failedAuthNames,
-		"unusedProxyCount": len(proxyURLs) - usedProxyCount,
-	}, nil)
+	if jobID != "" && jobID != job.ID {
+		controller.refreshProxyBatchMutex.RUnlock()
+		return jsonAPIResult(map[string]any{"jobId": jobID, "status": "not_found"}, nil)
+	}
+	result := map[string]any{
+		"jobId": job.ID, "status": job.Status, "authCount": job.AuthCount, "proxyCount": job.ProxyCount,
+		"processedCount": job.ProcessedCount, "updatedCount": job.UpdatedCount, "failedCount": job.FailedCount,
+		"failedAuthNames": append([]string(nil), job.FailedAuthNames...), "unusedProxyCount": job.UnusedProxyCount,
+		"error": job.Error,
+	}
+	controller.refreshProxyBatchMutex.RUnlock()
+	return jsonAPIResult(result, nil)
 }
 
 func (controller *runtimeController) updateSettings(store *guardianStore, body []byte) (int, []byte, error) {
@@ -697,6 +820,11 @@ func jsonAPIResult(value any, err error) (int, []byte, error) {
 	}
 	raw, err := json.Marshal(map[string]any{"ok": true, "data": value})
 	return http.StatusOK, raw, err
+}
+
+func jsonAPIError(status int, code, message string) (int, []byte, error) {
+	raw, err := json.Marshal(map[string]any{"ok": false, "error": map[string]string{"code": code, "message": message}})
+	return status, raw, err
 }
 
 func publicSettings(settings pluginSettings) map[string]any {
