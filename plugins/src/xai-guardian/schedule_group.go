@@ -51,26 +51,39 @@ func (state *scheduleGroupState) resetRuntime() {
 func (state *scheduleGroupState) release(store *guardianStore, completion pluginapi.RequestCompletion) {
 	authID := selectedAuthID(completion.Metadata)
 	state.mutex.Lock()
-	groupID, ok := state.groupByAuth[authID]
-	if authID == "" || !ok {
-		trackedGroupID := 0
+	authGroupID, authTracked := state.groupByAuth[authID]
+	groupID := authGroupID
+	releaseMethod := "selected_auth_id"
+	mismatchReason := ""
+
+	if completion.RequestID != "" {
+		groupID = 0
 		for busyGroupID, ownerRequestID := range state.requestIDByGroup {
-			if completion.RequestID != "" && ownerRequestID == completion.RequestID {
-				trackedGroupID = busyGroupID
+			if ownerRequestID == completion.RequestID {
+				groupID = busyGroupID
 				break
 			}
 		}
-		state.mutex.Unlock()
-		if trackedGroupID != 0 {
-			reason := "selected_auth_id_not_tracked"
-			if authID == "" {
-				reason = "selected_auth_id_missing"
-			}
-			detail := fmt.Sprintf("request_id=%q group_id=%d outcome=%q status_code=%d reason=%s", completion.RequestID, trackedGroupID, completion.Outcome, completion.StatusCode, reason)
-			_ = store.appendLog(logLevelWarn, "schedule.group_release_mismatch", "xAI scheduler could not match completion to its selected auth", detail)
+		if groupID == 0 {
+			state.mutex.Unlock()
+			detail := fmt.Sprintf("request_id=%q group_id=0 outcome=%q status_code=%d reason=request_id_not_tracked", completion.RequestID, completion.Outcome, completion.StatusCode)
+			_ = store.appendLog(logLevelWarn, "schedule.group_release_mismatch", "xAI scheduler could not match completion to its schedule group", detail)
+			return
 		}
+		releaseMethod = "request_id"
+		switch {
+		case authID == "":
+			mismatchReason = "selected_auth_id_missing"
+		case !authTracked:
+			mismatchReason = "selected_auth_id_not_tracked"
+		case authTracked && authGroupID != groupID:
+			mismatchReason = "selected_auth_id_group_mismatch"
+		}
+	} else if authID == "" || !authTracked {
+		state.mutex.Unlock()
 		return
 	}
+
 	ownerRequestID := state.requestIDByGroup[groupID]
 	for candidateID, candidateGroupID := range state.groupByAuth {
 		if candidateGroupID == groupID {
@@ -81,7 +94,11 @@ func (state *scheduleGroupState) release(store *guardianStore, completion plugin
 	delete(state.requestIDByGroup, groupID)
 	state.mutex.Unlock()
 
-	detail := fmt.Sprintf("request_id=%q owner_request_id=%q group_id=%d outcome=%q status_code=%d request_id_match=%t", completion.RequestID, ownerRequestID, groupID, completion.Outcome, completion.StatusCode, completion.RequestID == ownerRequestID)
+	if mismatchReason != "" {
+		detail := fmt.Sprintf("request_id=%q group_id=%d outcome=%q status_code=%d reason=%s released=true", completion.RequestID, groupID, completion.Outcome, completion.StatusCode, mismatchReason)
+		_ = store.appendLog(logLevelWarn, "schedule.group_release_mismatch", "xAI scheduler released a schedule group by request ID after selected auth mismatch", detail)
+	}
+	detail := fmt.Sprintf("request_id=%q owner_request_id=%q group_id=%d outcome=%q status_code=%d request_id_match=%t release_method=%s", completion.RequestID, ownerRequestID, groupID, completion.Outcome, completion.StatusCode, completion.RequestID != "" && completion.RequestID == ownerRequestID, releaseMethod)
 	_ = store.appendLog(logLevelInfo, "schedule.group_released", "xAI scheduler released a schedule group", detail)
 }
 
