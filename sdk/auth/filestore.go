@@ -13,6 +13,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/authjsonaudit"
 	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
 	"github.com/router-for-me/CLIProxyAPI/v8/sdk/pluginapi"
 )
@@ -119,7 +120,12 @@ func (s *FileTokenStore) Save(ctx context.Context, auth *cliproxyauth.Auth) (str
 		if setter, ok := auth.Storage.(metadataSetter); ok {
 			setter.SetMetadata(auth.Metadata)
 		}
-		if err = auth.Storage.SaveTokenToFile(path); err != nil {
+		before, errRead := os.ReadFile(path)
+		beforePresent := errRead == nil && authjsonaudit.HasRefreshProxyURL(before)
+		writer := authjsonaudit.Source(ctx, "sdk_auth_filestore_storage")
+		err = auth.Storage.SaveTokenToFile(path)
+		authjsonaudit.LogRefreshProxyURLDrop(writer, path, beforePresent, authjsonaudit.HasRefreshProxyURLInMap(auth.Metadata), err)
+		if err != nil {
 			return "", err
 		}
 	case auth.Metadata != nil:
@@ -128,21 +134,26 @@ func (s *FileTokenStore) Save(ctx context.Context, auth *cliproxyauth.Auth) (str
 		if errMarshal != nil {
 			return "", fmt.Errorf("auth filestore: marshal metadata failed: %w", errMarshal)
 		}
+		writer := authjsonaudit.Source(ctx, "sdk_auth_filestore_metadata")
 		if existing, errRead := os.ReadFile(path); errRead == nil {
 			if jsonEqual(existing, raw) {
 				break
 			}
+			beforePresent := authjsonaudit.HasRefreshProxyURL(existing)
 			file, errOpen := os.OpenFile(path, os.O_WRONLY|os.O_TRUNC, 0o600)
 			if errOpen != nil {
 				return "", fmt.Errorf("auth filestore: open existing failed: %w", errOpen)
 			}
 			if _, errWrite := file.Write(raw); errWrite != nil {
 				_ = file.Close()
+				authjsonaudit.LogRefreshProxyURLDrop(writer, path, beforePresent, authjsonaudit.HasRefreshProxyURL(raw), errWrite)
 				return "", fmt.Errorf("auth filestore: write existing failed: %w", errWrite)
 			}
 			if errClose := file.Close(); errClose != nil {
+				authjsonaudit.LogRefreshProxyURLDrop(writer, path, beforePresent, authjsonaudit.HasRefreshProxyURL(raw), errClose)
 				return "", fmt.Errorf("auth filestore: close existing failed: %w", errClose)
 			}
+			authjsonaudit.LogRefreshProxyURLDrop(writer, path, beforePresent, authjsonaudit.HasRefreshProxyURL(raw), nil)
 			break
 		} else if !os.IsNotExist(errRead) {
 			return "", fmt.Errorf("auth filestore: read existing failed: %w", errRead)

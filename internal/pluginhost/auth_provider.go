@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/authjsonaudit"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
 	coreauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
 	"github.com/router-for-me/CLIProxyAPI/v8/sdk/pluginapi"
@@ -530,7 +531,11 @@ func (s *pluginTokenStorage) SaveTokenToFile(path string) error {
 	if pluginTokenStorageFileCurrent(path, payload) {
 		return nil
 	}
-	return atomicWriteFile(path, payload)
+	before, errRead := os.ReadFile(path)
+	beforePresent := errRead == nil && authjsonaudit.HasRefreshProxyURL(before)
+	errWrite := atomicWriteFile(path, payload)
+	authjsonaudit.LogRefreshProxyURLDrop("plugin_token_storage", path, beforePresent, authjsonaudit.HasRefreshProxyURL(payload), errWrite)
+	return errWrite
 }
 
 func pluginTokenStorageFileCurrent(path string, payload []byte) bool {

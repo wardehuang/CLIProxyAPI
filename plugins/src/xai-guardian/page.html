@@ -217,6 +217,11 @@
     .guard-node-table th:nth-child(6), .guard-node-table td:nth-child(6) { width: 90px; }
     .guard-node-table th:nth-child(7), .guard-node-table td:nth-child(7) { width: 180px; }
     .guard-node-table th:nth-child(8), .guard-node-table td:nth-child(8) { width: 160px; }
+    .guard-node-table.guard-error-table { min-width: 1260px; }
+    .guard-node-table.guard-error-table th:nth-child(1), .guard-node-table.guard-error-table td:nth-child(1) { width: 360px; text-align: left; }
+    .guard-node-table.guard-error-table th:nth-child(2), .guard-node-table.guard-error-table td:nth-child(2) { width: 720px; text-align: left; }
+    .guard-node-table.guard-error-table td:nth-child(2) { overflow-wrap: anywhere; white-space: normal; }
+    .guard-node-table.guard-error-table th:nth-child(3), .guard-node-table.guard-error-table td:nth-child(3) { width: 180px; }
     .guard-table th:nth-child(1), .guard-table td:nth-child(1) { width: 250px; text-align: left; }
     .guard-table th:nth-child(2), .guard-table td:nth-child(2) { width: 150px; }
     .guard-table th:nth-child(3), .guard-table td:nth-child(3) { width: 90px; }
@@ -648,7 +653,7 @@ socks5://203.0.113.11:1080
     const state = {
       accounts: [], nodes: [], inspection: {run: null, results: []}, guardNodes: [], batches: [], batchNodes: [], degradation: [], logs: [], logGroups: {batch_probe: [], keepalive_probe: [], revive_probe: []}, settings: null, keepalive: null,
       summary: null,
-      mode: 'accounts', guardTab: 'ips', logCategory: 'realtime_guard', logStatus: 'connected', selectedLogGroupIDs: {batch_probe: '', keepalive_probe: '', revive_probe: ''}, logSearch: '', logMax: 0, selectedBatchID: '', filter: 'all', guardStatusFilter: 'all', mask: 'full', page: 1, pageSize: 100,
+      mode: 'accounts', guardTab: 'ips', logCategory: 'realtime_guard', logStatus: 'connected', selectedLogGroupIDs: {batch_probe: '', keepalive_probe: '', revive_probe: ''}, logSearch: '', logMax: 0, selectedBatchID: '', filter: 'all', guardStatusFilter: 'healthy', mask: 'full', page: 1, pageSize: 100,
       keyword: '', expandedAccount: '', guardSortKey: 'latency', guardSortDirection: 'asc', authBindingDetail: null, busy: false, pageRefreshTimer: 0, settingsDirty: false, settingsRevision: 0
     };
     const $ = (id) => document.getElementById(id);
@@ -811,6 +816,7 @@ socks5://203.0.113.11:1080
       const visibleNodes = state.guardStatusFilter === 'all' ? state.guardNodes : state.guardNodes.filter((node) => node.status === state.guardStatusFilter);
       const showSlotColumn = state.guardStatusFilter === 'healthy' || state.guardStatusFilter === 'healthy_candidate';
       const showActionColumn = state.guardStatusFilter === 'healthy';
+      const showExceptionColumn = state.guardStatusFilter === 'unhealthy';
       const activeSortKey = showSlotColumn ? state.guardSortKey : 'latency';
       const sortedNodes = [...visibleNodes].sort((left, right) => {
         const leftValue = nodeSortValue(left, activeSortKey);
@@ -829,9 +835,17 @@ socks5://203.0.113.11:1080
       };
       const slotHeader = showSlotColumn ? `<th>${sortButton('slot', '槽位')}</th>` : '';
       const actionHeader = showActionColumn ? '<th>操作</th>' : '';
-      const rows = sortedNodes.map((node) => `<tr><td><div class="node-cell"><strong class="mono">${escapeHTML(node.address || '—')}</strong><span class="subline">#${escapeHTML(node.id)}</span></div></td><td>${escapeHTML(node.country || '—')}</td><td>${node.latencyMs ? escapeHTML(node.latencyMs) + ' ms' : '—'}</td>${showSlotColumn ? `<td><span class="type-badge">${node.slotKind ? `${escapeHTML(node.slotKind)} #${node.slotId}` : '未分配'}</span></td>` : ''}<td class="mono">${escapeHTML(node.exitIp || '—')}</td><td>${escapeHTML(node.country || '—')}</td><td>${formatDate(node.lastChecked)}</td>${showActionColumn ? `<td><button class="secondary-button" type="button" data-view-auth-node="${escapeHTML(node.id)}">查看绑定Auth</button></td>` : ''}</tr>`).join('');
-      const columnCount = 6 + Number(showSlotColumn) + Number(showActionColumn);
-      $('guard-nodes-table').innerHTML = `<table class="data-table node-table guard-node-table"><thead><tr><th>节点</th><th>国家</th><th>${sortButton('latency', '延迟')}</th>${slotHeader}<th>出口IP</th><th>国家</th><th>探测时间</th>${actionHeader}</tr></thead><tbody>${rows || `<tr><td class="empty-cell" colspan="${columnCount}">暂无通过【增加IP】录入的 IP。</td></tr>`}</tbody></table>`;
+      const rows = sortedNodes.map((node) => {
+        const nodeCell = `<div class="node-cell"><strong class="mono">${escapeHTML(node.address || '—')}</strong><span class="subline">#${escapeHTML(node.id)}</span></div>`;
+        if (showExceptionColumn) return `<tr><td>${nodeCell}</td><td>${escapeHTML(node.lastError || '—')}</td><td>${formatDate(node.lastChecked)}</td></tr>`;
+        return `<tr><td>${nodeCell}</td><td>${escapeHTML(node.country || '—')}</td><td>${node.latencyMs ? escapeHTML(node.latencyMs) + ' ms' : '—'}</td>${showSlotColumn ? `<td><span class="type-badge">${node.slotKind ? `${escapeHTML(node.slotKind)} #${node.slotId}` : '未分配'}</span></td>` : ''}<td class="mono">${escapeHTML(node.exitIp || '—')}</td><td>${escapeHTML(node.country || '—')}</td><td>${formatDate(node.lastChecked)}</td>${showActionColumn ? `<td><button class="secondary-button" type="button" data-view-auth-node="${escapeHTML(node.id)}">查看绑定Auth</button></td>` : ''}</tr>`;
+      }).join('');
+      const columnCount = showExceptionColumn ? 3 : 6 + Number(showSlotColumn) + Number(showActionColumn);
+      const tableHeaders = showExceptionColumn
+        ? '<tr><th>节点</th><th>异常【异常信息】</th><th>探测时间</th></tr>'
+        : `<tr><th>节点</th><th>国家</th><th>${sortButton('latency', '延迟')}</th>${slotHeader}<th>出口IP</th><th>国家</th><th>探测时间</th>${actionHeader}</tr>`;
+      const tableClass = showExceptionColumn ? 'data-table node-table guard-node-table guard-error-table' : 'data-table node-table guard-node-table';
+      $('guard-nodes-table').innerHTML = `<table class="${tableClass}"><thead>${tableHeaders}</thead><tbody>${rows || `<tr><td class="empty-cell" colspan="${columnCount}">暂无通过【增加IP】录入的 IP。</td></tr>`}</tbody></table>`;
     }
 
     function renderAuthBindingModal() {

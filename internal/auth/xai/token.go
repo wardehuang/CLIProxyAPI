@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/authjsonaudit"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/misc"
 	log "github.com/sirupsen/logrus"
 )
@@ -40,6 +41,8 @@ func (ts *TokenStorage) SetMetadata(meta map[string]any) {
 // SaveTokenToFile writes xAI credentials to a JSON auth file.
 func (ts *TokenStorage) SaveTokenToFile(authFilePath string) error {
 	misc.LogSavingCredentials(authFilePath)
+	before, errRead := os.ReadFile(authFilePath)
+	beforePresent := errRead == nil && authjsonaudit.HasRefreshProxyURL(before)
 	ts.Type = "xai"
 	ts.AuthKind = "oauth"
 	if errMkdirAll := os.MkdirAll(filepath.Dir(authFilePath), 0o700); errMkdirAll != nil {
@@ -53,17 +56,24 @@ func (ts *TokenStorage) SaveTokenToFile(authFilePath string) error {
 
 	file, err := os.Create(authFilePath)
 	if err != nil {
+		authjsonaudit.LogRefreshProxyURLDrop("xai_token_storage", authFilePath, beforePresent, authjsonaudit.HasRefreshProxyURLInMap(data), err)
 		return fmt.Errorf("xai token storage: create token file: %w", err)
 	}
+	var writeErr error
 	defer func() {
 		if errClose := file.Close(); errClose != nil {
 			log.Errorf("xai token storage: close token file error: %v", errClose)
+			if writeErr == nil {
+				writeErr = errClose
+			}
 		}
+		authjsonaudit.LogRefreshProxyURLDrop("xai_token_storage", authFilePath, beforePresent, authjsonaudit.HasRefreshProxyURLInMap(data), writeErr)
 	}()
 
 	encoder := json.NewEncoder(file)
 	encoder.SetIndent("", "  ")
 	if err = encoder.Encode(data); err != nil {
+		writeErr = err
 		return fmt.Errorf("xai token storage: write token file: %w", err)
 	}
 	return nil

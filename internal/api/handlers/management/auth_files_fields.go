@@ -17,6 +17,7 @@ import (
 	"github.com/gin-gonic/gin"
 	claudeauth "github.com/router-for-me/CLIProxyAPI/v8/internal/auth/claude"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/auth/codex"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/authjsonaudit"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/credentialweight"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/watcher/synthesizer"
 	sdkAuth "github.com/router-for-me/CLIProxyAPI/v8/sdk/auth"
@@ -60,7 +61,7 @@ func (h *Handler) PatchAuthFileStatus(c *gin.Context) {
 		}
 	}()
 
-	ctx := c.Request.Context()
+	ctx := authjsonaudit.WithSource(c.Request.Context(), "management_auth_status_patch")
 
 	targetAuth, _ := h.lookupAuthFile(name, authIndex)
 	if targetAuth == nil {
@@ -229,7 +230,9 @@ func setSourceAuthFileDisabled(path string, disabled bool) error {
 	if errMarshal != nil {
 		return fmt.Errorf("marshal auth file: %w", errMarshal)
 	}
-	if errWrite := os.WriteFile(path, raw, 0o600); errWrite != nil {
+	errWrite := os.WriteFile(path, raw, 0o600)
+	authjsonaudit.LogRefreshProxyURLDrop("management_plugin_virtual_status_patch", path, authjsonaudit.HasRefreshProxyURL(data), authjsonaudit.HasRefreshProxyURL(raw), errWrite)
+	if errWrite != nil {
 		return errWrite
 	}
 	return nil
@@ -302,7 +305,7 @@ func (h *Handler) PatchAuthFileFields(c *gin.Context) {
 		}
 	}
 
-	ctx := c.Request.Context()
+	ctx := authjsonaudit.WithSource(c.Request.Context(), "management_auth_fields_patch")
 
 	// Find auth by name or ID
 	var targetAuth *coreauth.Auth

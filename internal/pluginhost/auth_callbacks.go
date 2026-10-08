@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/authjsonaudit"
 	coreauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
 	"github.com/router-for-me/CLIProxyAPI/v8/sdk/pluginapi"
 )
@@ -302,7 +303,11 @@ func (h *Host) saveAuthFile(ctx context.Context, name string, data []byte) (stri
 	if errBuild != nil {
 		return "", errBuild
 	}
-	if errWrite := os.WriteFile(dst, data, 0o600); errWrite != nil {
+	before, errRead := os.ReadFile(dst)
+	beforePresent := errRead == nil && authjsonaudit.HasRefreshProxyURL(before)
+	errWrite := os.WriteFile(dst, data, 0o600)
+	authjsonaudit.LogRefreshProxyURLDrop("plugin_host_auth_save", dst, beforePresent, authjsonaudit.HasRefreshProxyURL(data), errWrite)
+	if errWrite != nil {
 		return "", fmt.Errorf("failed to write auth file: %w", errWrite)
 	}
 	if errUpsert := h.upsertAuthRecord(ctx, auth); errUpsert != nil {
