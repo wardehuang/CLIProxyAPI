@@ -524,7 +524,7 @@
           <div class="settings-panel">
             <div class="panel-header">
               <div><h2 class="panel-title">配置</h2><p class="panel-subtitle">保存到插件 SQLite。探测/保活/复活调度类：下次启动生效。实时守护阈值、页面刷新：立即生效。</p></div>
-              <div class="panel-extra"><span class="help-text">调度类下次启动</span><button class="primary-button" id="save-settings" type="button">保存</button></div>
+              <div class="panel-extra"><span class="help-text">调度类下次启动</span><button class="secondary-button" id="open-refresh-proxy-modal" type="button">批量设置 refresh_proxy_url</button><button class="primary-button" id="save-settings" type="button">保存</button></div>
             </div>
             <section class="settings-section">
               <div class="panel-header"><div><h3 class="panel-title">1. 探测与页面</h3><p class="panel-subtitle">新录入 IP 进入独立 probe round；页面刷新只读取 guard scope 的结果，不触发探测。</p></div></div>
@@ -603,6 +603,28 @@ socks5://203.0.113.11:1080
         <div class="modal-actions">
           <button class="secondary-button" type="button" data-close-modal="add-ip-modal">取消</button>
           <button class="primary-button" id="submit-add-ip" type="button">录入</button>
+        </div>
+      </div>
+    </section>
+  </div>
+
+  <div class="modal-layer" id="refresh-proxy-modal" hidden>
+    <section class="modal" role="dialog" aria-modal="true" aria-labelledby="refresh-proxy-modal-title">
+      <div class="modal-head">
+        <div>
+          <h2 id="refresh-proxy-modal-title">批量设置 refresh_proxy_url</h2>
+          <p>只更新 xAI auth JSON 的 refresh_proxy_url，不改 proxy_url。按 auth 文件名升序循环分配；列表不另存，值写入各 auth JSON。</p>
+        </div>
+        <button class="secondary-button" type="button" data-close-modal="refresh-proxy-modal" aria-label="关闭">关闭</button>
+      </div>
+      <div class="modal-body">
+        <textarea class="modal-input" id="refresh-proxy-input" autocomplete="off" spellcheck="false" placeholder="http://user:pass@proxy.example:8080
+socks5h://proxy.example:1080"></textarea>
+        <div class="help-text">每行一个代理；支持 http、https、socks5、socks5h URL，可带认证且必须包含端口。也接受 host:port（按 http 处理）。空行忽略；格式错误时不会开始写入。</div>
+        <div id="refresh-proxy-message" class="message"></div>
+        <div class="modal-actions">
+          <button class="secondary-button" type="button" data-close-modal="refresh-proxy-modal">取消</button>
+          <button class="primary-button" id="submit-refresh-proxy" type="button">循环写入</button>
         </div>
       </div>
     </section>
@@ -1169,7 +1191,7 @@ socks5://203.0.113.11:1080
     document.addEventListener('click', async (event) => {
       const target = event.target.closest('button');
       if (!target || state.busy) return;
-      if (target.dataset.closeModal) { $(target.dataset.closeModal).hidden = true; return; }
+      if (target.dataset.closeModal) { $(target.dataset.closeModal).hidden = true; if (target.dataset.closeModal === 'refresh-proxy-modal') $('refresh-proxy-input').value = ''; return; }
       if (target.dataset.guardTab) { state.guardTab = target.dataset.guardTab; renderGuardTab(); return; }
       if (target.dataset.mode) { state.mode = target.dataset.mode; renderMode(); renderGuardTab(); return; }
       if (target.dataset.logCategory) { state.logCategory = target.dataset.logCategory; state.logStatus = 'connected'; state.logs = []; renderLogs(); refreshLogs().catch((error) => { setMessage('logs-error', error.message, true); }); return; }
@@ -1188,6 +1210,28 @@ socks5://203.0.113.11:1080
       if (target.id === 'search-logs') { refreshLogs().catch((error) => { setMessage('logs-error', error.message, true); }); return; }
       if (target.id === 'add-ip') { $('add-ip-message').textContent = ''; $('add-ip-message').classList.add('hidden'); $('add-ip-modal').hidden = false; $('ip-input').focus(); return; }
       if (target.id === 'submit-add-ip') { const text = $('ip-input').value.trim(); if (!text) { setMessage('add-ip-message', '请输入至少一行 IP。', true); return; } setBusy(true, '增加 IP 中…'); try { const result = await api('/api/batches', 'POST', {text}); const errorCount = Array.isArray(result.errors) ? result.errors.length : 0; $('ip-input').value = ''; $('add-ip-modal').hidden = true; await refreshGuard(); showToast(`已录入 ${result.added} 个 IP，重复 ${result.duplicates} 个${errorCount ? `，${errorCount} 行格式错误` : ''}。`, errorCount > 0); } catch (error) { setMessage('add-ip-message', error.message, true); } finally { setBusy(false); } return; }
+      if (target.id === 'open-refresh-proxy-modal') { setMessage('refresh-proxy-message', ''); $('refresh-proxy-modal').hidden = false; $('refresh-proxy-input').focus(); return; }
+      if (target.id === 'submit-refresh-proxy') {
+        const text = $('refresh-proxy-input').value;
+        if (!text.trim()) { setMessage('refresh-proxy-message', '请输入至少一个代理 URL。', true); return; }
+        setBusy(true, '批量设置 refresh_proxy_url 中…');
+        try {
+          const result = await api('/api/auths/refresh-proxy-urls', 'POST', {text});
+          const failedAuthNames = Array.isArray(result.failedAuthNames) ? result.failedAuthNames : [];
+          if (failedAuthNames.length) {
+            const shownNames = failedAuthNames.slice(0, 10).join('、');
+            const remaining = failedAuthNames.length > 10 ? `；另有 ${failedAuthNames.length - 10} 个未展开` : '';
+            setMessage('refresh-proxy-message', `已回读确认 ${result.updatedCount}/${result.authCount} 个 auth；失败 ${result.failedCount} 个：${shownNames}${remaining}。可保留输入后重试。`, true);
+          } else {
+            const unused = result.unusedProxyCount ? `；${result.unusedProxyCount} 条代理未使用` : '';
+            $('refresh-proxy-input').value = '';
+            $('refresh-proxy-modal').hidden = true;
+            showToast(`refresh_proxy_url 已回读确认：${result.updatedCount} 个 auth，使用 ${result.proxyCount - result.unusedProxyCount}/${result.proxyCount} 条代理${unused}。`);
+          }
+        } catch (error) { setMessage('refresh-proxy-message', error.message, true); }
+        finally { setBusy(false); }
+        return;
+      }
       if (target.id === 'batch-back') { state.selectedBatchID = ''; state.batchNodes = []; renderBatches(); return; }
       if (target.id === 'view-schedule-group-counters') { const counters = $('schedule-group-counters'); if (!counters.hidden) { counters.hidden = true; target.textContent = '查看调用次数'; target.setAttribute('aria-expanded', 'false'); return; } try { renderScheduleGroupCounters(await api('/api/schedule-groups/counters')); } catch (error) { $('schedule-group-counters-summary').textContent = error.message; counters.hidden = false; target.textContent = '隐藏调用次数'; target.setAttribute('aria-expanded', 'true'); } return; }
       if (target.id === 'run-keepalive') { setBusy(true, '保活探测排队中…'); try { await api('/api/keepalive/run', 'POST', {}); await refreshGuard(); setMessage('keepalive-message', '独立保活探测已排队。'); } catch (error) { setMessage('keepalive-message', error.message, true); } finally { setBusy(false); } return; }

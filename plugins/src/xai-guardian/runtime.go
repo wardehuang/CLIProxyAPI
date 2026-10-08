@@ -262,6 +262,9 @@ func (controller *runtimeController) api(method, path string, query url.Values, 
 	if (method == http.MethodPut || method == http.MethodPost) && path == "/api/settings" {
 		return controller.updateSettings(store, body)
 	}
+	if method == http.MethodPost && path == "/api/auths/refresh-proxy-urls" {
+		return controller.applyAuthRefreshProxyURLs(store, body)
+	}
 	if method == http.MethodGet && path == "/api/accounts" {
 		return controller.accountsAPI(store)
 	}
@@ -401,6 +404,49 @@ func (controller *runtimeController) api(method, path string, query url.Values, 
 		return jsonAPIResult(map[string]any{"deleted": true}, nil)
 	}
 	return http.StatusNotFound, nil, fmt.Errorf("API path not found")
+}
+
+func (controller *runtimeController) applyAuthRefreshProxyURLs(store *guardianStore, body []byte) (int, []byte, error) {
+	var payload struct {
+		Text string `json:"text"`
+	}
+	if err := json.Unmarshal(body, &payload); err != nil {
+		return http.StatusBadRequest, nil, fmt.Errorf("invalid request body")
+	}
+	proxyURLs, err := parseRefreshProxyURLLines(payload.Text)
+	if err != nil {
+		return http.StatusBadRequest, nil, err
+	}
+
+	store.authDistributionMutex.Lock()
+	defer store.authDistributionMutex.Unlock()
+
+	entries, err := listXAIAuthEntries()
+	if err != nil {
+		return http.StatusInternalServerError, nil, err
+	}
+	if len(entries) == 0 {
+		return http.StatusNotFound, nil, fmt.Errorf("no xAI auth JSON files found")
+	}
+
+	failedAuthNames := make([]string, 0)
+	for index, entry := range entries {
+		if err := saveAndVerifyAuthRefreshProxyURL(entry, proxyURLs[index%len(proxyURLs)]); err != nil {
+			failedAuthNames = append(failedAuthNames, authEntryName(entry))
+		}
+	}
+	usedProxyCount := len(proxyURLs)
+	if usedProxyCount > len(entries) {
+		usedProxyCount = len(entries)
+	}
+	return jsonAPIResult(map[string]any{
+		"authCount":        len(entries),
+		"proxyCount":       len(proxyURLs),
+		"updatedCount":     len(entries) - len(failedAuthNames),
+		"failedCount":      len(failedAuthNames),
+		"failedAuthNames":  failedAuthNames,
+		"unusedProxyCount": len(proxyURLs) - usedProxyCount,
+	}, nil)
 }
 
 func (controller *runtimeController) updateSettings(store *guardianStore, body []byte) (int, []byte, error) {
@@ -682,13 +728,13 @@ func publicIPBatches(batches []ipBatch, retentionDays int) []map[string]any {
 	items := make([]map[string]any, 0, len(batches))
 	for _, batch := range batches {
 		items = append(items, map[string]any{
-			"batchId":                batch.ID,
-			"sequenceNumber":         batch.SequenceNumber,
-			"createdAt":              batch.CreatedAt,
-			"expiresAt":              time.UnixMilli(batch.CreatedAt).AddDate(0, 0, retentionDays).UnixMilli(),
-			"totalCount":             batch.TotalCount,
-			"duplicateCount":         batch.DuplicateCount,
-			"inputErrorCount":        batch.InputErrorCount,
+			"batchId":             batch.ID,
+			"sequenceNumber":      batch.SequenceNumber,
+			"createdAt":           batch.CreatedAt,
+			"expiresAt":           time.UnixMilli(batch.CreatedAt).AddDate(0, 0, retentionDays).UnixMilli(),
+			"totalCount":          batch.TotalCount,
+			"duplicateCount":      batch.DuplicateCount,
+			"inputErrorCount":     batch.InputErrorCount,
 			"completedCount":      batch.CompletedCount,
 			"pendingCount":        batch.TotalCount - batch.CompletedCount,
 			"currentHealthyCount": batch.CurrentHealthyCount,

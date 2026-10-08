@@ -31,6 +31,7 @@ type xaiAuthFile struct {
 	Unavailable bool
 	ProxyURL    string
 	Raw         map[string]any
+	RawJSON     json.RawMessage
 }
 
 type authAssignment struct {
@@ -153,6 +154,7 @@ func getXAIAuthFile(entry pluginapi.HostAuthFileEntry) (xaiAuthFile, error) {
 		Unavailable: entry.Unavailable,
 		ProxyURL:    strings.TrimSpace(stringField(object, "proxy_url")),
 		Raw:         object,
+		RawJSON:     append(json.RawMessage(nil), response.JSON...),
 	}, nil
 }
 
@@ -402,6 +404,80 @@ func saveAndVerifyAuthProxyURL(file xaiAuthFile, proxyURL string) (int, error) {
 		lastErr = fmt.Errorf("proxy_url verification mismatch for auth %s", file.Index)
 	}
 	return 3, lastErr
+}
+
+func parseRefreshProxyURLLines(text string) ([]string, error) {
+	lines := strings.Split(strings.ReplaceAll(text, "\r\n", "\n"), "\n")
+	proxyURLs := make([]string, 0, len(lines))
+	for index, line := range lines {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		node, err := parseProxyAddress(line)
+		if err != nil {
+			return nil, fmt.Errorf("line %d: %w", index+1, err)
+		}
+		proxyURLs = append(proxyURLs, node.Address)
+	}
+	if len(proxyURLs) == 0 {
+		return nil, fmt.Errorf("at least one proxy URL is required")
+	}
+	return proxyURLs, nil
+}
+
+func saveAndVerifyAuthRefreshProxyURL(entry pluginapi.HostAuthFileEntry, proxyURL string) error {
+	var lastErr error
+	for attempt := 1; attempt <= 3; attempt++ {
+		file, err := getXAIAuthFile(entry)
+		if err != nil {
+			lastErr = fmt.Errorf("read auth %s: %w", authEntryName(entry), err)
+			continue
+		}
+		var object map[string]json.RawMessage
+		if err := json.Unmarshal(file.RawJSON, &object); err != nil {
+			return fmt.Errorf("decode auth JSON %s: %w", file.Index, err)
+		}
+		if object == nil {
+			return fmt.Errorf("auth JSON %s must be an object", file.Index)
+		}
+		encodedProxyURL, err := json.Marshal(proxyURL)
+		if err != nil {
+			return fmt.Errorf("encode refresh_proxy_url for auth %s: %w", file.Index, err)
+		}
+		object["refresh_proxy_url"] = encodedProxyURL
+		payload, err := json.Marshal(object)
+		if err != nil {
+			return fmt.Errorf("encode auth JSON %s: %w", file.Index, err)
+		}
+		if _, err := callHost(pluginabi.MethodHostAuthSave, pluginapi.HostAuthSaveRequest{Name: file.Name, JSON: payload}); err != nil {
+			lastErr = fmt.Errorf("save auth %s: %w", file.Index, err)
+			continue
+		}
+		verifiedRaw, err := callHost(pluginabi.MethodHostAuthGet, pluginapi.HostAuthGetRequest{AuthIndex: file.Index})
+		if err != nil {
+			lastErr = fmt.Errorf("verify auth %s: %w", file.Index, err)
+			continue
+		}
+		var verified pluginapi.HostAuthGetResponse
+		if err := json.Unmarshal(verifiedRaw, &verified); err != nil {
+			lastErr = fmt.Errorf("decode verified auth %s: %w", file.Index, err)
+			continue
+		}
+		var verifiedObject map[string]json.RawMessage
+		if err := json.Unmarshal(verified.JSON, &verifiedObject); err != nil {
+			lastErr = fmt.Errorf("decode verified auth JSON %s: %w", file.Index, err)
+			continue
+		}
+		var verifiedProxyURL string
+		value, exists := verifiedObject["refresh_proxy_url"]
+		if !exists || json.Unmarshal(value, &verifiedProxyURL) != nil || verifiedProxyURL != proxyURL {
+			lastErr = fmt.Errorf("refresh_proxy_url verification mismatch for auth %s", file.Index)
+			continue
+		}
+		return nil
+	}
+	return lastErr
 }
 
 func stringField(object map[string]any, key string) string {

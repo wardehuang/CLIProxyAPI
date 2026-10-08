@@ -424,7 +424,7 @@ func isAllowedUIPath(method, path string) bool {
 	case http.MethodPut:
 		return path == "/api/settings"
 	case http.MethodPost:
-		if path == "/api/accounts/refresh" || path == "/api/nodes" || path == "/api/batches" || path == "/api/inspection" || path == "/api/keepalive/run" || path == "/api/degradation/clear" {
+		if path == "/api/accounts/refresh" || path == "/api/nodes" || path == "/api/batches" || path == "/api/inspection" || path == "/api/keepalive/run" || path == "/api/degradation/clear" || path == "/api/auths/refresh-proxy-urls" {
 			return true
 		}
 		return strings.HasPrefix(path, "/api/nodes/") && strings.HasSuffix(path, "/delete")
