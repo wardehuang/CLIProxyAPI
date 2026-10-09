@@ -629,8 +629,9 @@
               </div>
             </section>
             <section class="settings-section">
-              <div class="panel-header"><div><h3 class="panel-title">4. 实时守护</h3><p class="panel-subtitle">CPA 核心执行流式判定；这里保存首字、生成、空闲和 thinking evidence 阈值。</p></div></div>
+              <div class="panel-header"><div><h3 class="panel-title">4. 实时守护</h3><p class="panel-subtitle">Hard TPS 优先判定；其余检查思考、工具调用和本轮写入证据。TTFB 规则当前禁用。</p></div></div>
               <div class="settings-grid">
+                <div class="settings-field"><label for="realtime-guard-hard-tps">Hard TPS 降智阈值</label><input class="settings-input" id="realtime-guard-hard-tps" type="number" min="1" step="1"><span class="settings-help">TPS ≥ 阈值即判降智 · 默认 1000 · 优先级最高</span></div>
                 <div class="settings-field"><label for="realtime-guard-ttfb-seconds">TTFB 阈值（秒）</label><input class="settings-input" id="realtime-guard-ttfb-seconds" type="number" min="0.1" step="0.1"></div>
                 <div class="settings-field"><label for="realtime-guard-generation-seconds">生成阶段阈值（秒）</label><input class="settings-input" id="realtime-guard-generation-seconds" type="number" min="0.1" step="0.1"></div>
                 <div class="settings-field"><label for="realtime-guard-token-threshold">token 阈值</label><input class="settings-input" id="realtime-guard-token-threshold" type="number" min="1"></div>
@@ -705,13 +706,20 @@ socks5h://proxy.example:1080"></textarea>
       <div class="modal-head">
         <div>
           <h2 id="inspection-settings-title">服务端巡检配置</h2>
-          <p>配置保存到插件 SQLite。自动触发使用固定间隔；间隔填 0 关闭自动巡检，手动巡检仍可用。</p>
+          <p>配置保存到插件 SQLite。定时巡检默认关闭；开启后可按间隔频率执行，或每天按北京时间（Asia/Shanghai）在指定时刻执行。手动巡检不受开关影响。</p>
         </div>
         <button class="secondary-button" type="button" data-close-modal="inspection-settings-modal" aria-label="关闭">关闭</button>
       </div>
       <div class="modal-body">
         <div class="settings-grid inspection-config-grid">
-          <div class="settings-field"><label for="inspection-interval-setting">定时巡检间隔（秒）</label><input class="settings-input" id="inspection-interval-setting" type="number" min="0" max="86400" step="1"><span class="settings-help">0 关闭自动；范围 0–86400</span></div>
+          <div class="settings-field">
+            <label for="inspection-schedule-enabled-setting">自动巡检</label>
+            <label class="settings-checkbox-field" for="inspection-schedule-enabled-setting"><input id="inspection-schedule-enabled-setting" type="checkbox">开启自动巡检</label>
+            <span class="settings-help">关闭后不自动触发；手动巡检仍可用</span>
+          </div>
+          <div class="settings-field"><label for="inspection-schedule-mode-setting">调度方式</label><select class="settings-input" id="inspection-schedule-mode-setting"><option value="interval">按频率</option><option value="daily_time">每天定时</option></select><span class="settings-help">保存后立即更新计划</span></div>
+          <div class="settings-field" id="inspection-frequency-field"><label for="inspection-interval-setting">巡检频率（秒）</label><input class="settings-input" id="inspection-interval-setting" type="number" min="0" max="86400" step="1"><span class="settings-help">开启且按频率时需 1–86400 秒</span></div>
+          <div class="settings-field" id="inspection-daily-field" hidden><label for="inspection-daily-time-setting">每天定时（北京时间）</label><input class="settings-input" id="inspection-daily-time-setting" type="time" step="60"><span class="settings-help">每天一次；默认 04:00（Asia/Shanghai）</span></div>
           <div class="settings-field"><label for="inspection-concurrency-setting">巡检并发</label><input class="settings-input" id="inspection-concurrency-setting" type="number" min="1" max="64" step="1"><span class="settings-help">默认 4；范围 1–64</span></div>
           <div class="settings-field"><label for="inspection-timeout-setting">每个 Auth 整轮超时（秒）</label><input class="settings-input" id="inspection-timeout-setting" type="number" min="1" max="600" step="1"><span class="settings-help">默认 60；范围 1–600</span></div>
         </div>
@@ -759,6 +767,22 @@ socks5h://proxy.example:1080"></textarea>
           <button class="secondary-button" type="button" data-close-modal="account-degradation-probe-modal">取消</button>
           <button class="primary-button" id="account-degradation-probe-submit" type="button">开始检测</button>
         </div>
+      </div>
+    </section>
+  </div>
+
+  <div class="modal-layer" id="account-degradation-last-modal" hidden>
+    <section class="modal degradation-check-modal" role="dialog" aria-modal="true" aria-labelledby="account-degradation-last-title">
+      <div class="modal-head">
+        <div>
+          <h2 id="account-degradation-last-title">上次检测</h2>
+          <p id="account-degradation-last-account"></p>
+        </div>
+        <button class="secondary-button" type="button" data-close-modal="account-degradation-last-modal" aria-label="关闭">关闭</button>
+      </div>
+      <div class="modal-body">
+        <div id="account-degradation-last-message" class="message" aria-live="polite"></div>
+        <div id="account-degradation-last-result" class="degradation-result" aria-live="polite" hidden></div>
       </div>
     </section>
   </div>
@@ -942,7 +966,7 @@ socks5h://proxy.example:1080"></textarea>
           <td><span class="number-badge">${numberValue(item.scheduleGroup) ?? '—'}</span></td>
           <td><div class="quota-cell"><span class="quota-empty">— 暂无额度 —</span></div></td>
           <td>${formatDate(item.lastInspection)}</td>
-        </tr>${expanded ? `<tr class="detail-row"><td colspan="8"><section class="detail-panel"><div class="detail-hero"><div><span class="detail-eyebrow">xAI Guardian Account</span><h3>${displayName}</h3></div><div class="detail-badges"><span class="status-badge ${statusTone(key)}">${statusLabel(key, item.status)}</span><span class="type-badge">${escapeHTML(accountType)}</span></div></div><div class="detail-grid"><div class="detail-section"><h4>基础信息</h4><dl class="detail-list"><div><dt>Auth Index</dt><dd class="mono">${escapeHTML(item.authIndex || '—')}</dd></div><div><dt>账号类型</dt><dd>${escapeHTML(accountType)}</dd></div><div><dt>调度组</dt><dd>${numberValue(item.scheduleGroup) ?? '—'}</dd></div></dl></div><div class="detail-section"><h4>账号检查状态</h4><dl class="detail-list"><div><dt>状态</dt><dd>${escapeHTML(item.status || '—')}</dd></div><div><dt>优先级</dt><dd>${numberValue(item.priority) ?? '—'}</dd></div><div><dt>最近检查</dt><dd>${formatFullDate(item.lastInspection)}</dd></div></dl></div></div><div class="detail-actions"><button class="primary-button" type="button" data-degradation-check="${escapeHTML(item.authIndex || '')}" data-account-name="${displayName}">降智检测</button></div></section></td></tr>` : ''}`;
+        </tr>${expanded ? `<tr class="detail-row"><td colspan="8"><section class="detail-panel"><div class="detail-hero"><div><span class="detail-eyebrow">xAI Guardian Account</span><h3>${displayName}</h3></div><div class="detail-badges"><span class="status-badge ${statusTone(key)}">${statusLabel(key, item.status)}</span><span class="type-badge">${escapeHTML(accountType)}</span></div></div><div class="detail-grid"><div class="detail-section"><h4>基础信息</h4><dl class="detail-list"><div><dt>Auth Index</dt><dd class="mono">${escapeHTML(item.authIndex || '—')}</dd></div><div><dt>账号类型</dt><dd>${escapeHTML(accountType)}</dd></div><div><dt>调度组</dt><dd>${numberValue(item.scheduleGroup) ?? '—'}</dd></div></dl></div><div class="detail-section"><h4>账号检查状态</h4><dl class="detail-list"><div><dt>状态</dt><dd>${escapeHTML(item.status || '—')}</dd></div><div><dt>优先级</dt><dd>${numberValue(item.priority) ?? '—'}</dd></div><div><dt>最近检查</dt><dd>${formatFullDate(item.lastInspection)}</dd></div></dl></div></div><div class="detail-actions"><button class="secondary-button" type="button" data-degradation-latest="${escapeHTML(item.authIndex || '')}" data-account-name="${displayName}">上次检测</button><button class="primary-button" type="button" data-degradation-check="${escapeHTML(item.authIndex || '')}" data-account-name="${displayName}">降智检测</button></div></section></td></tr>` : ''}`;
       }).join('');
       $('accounts-table').innerHTML = `<table class="data-table account-table"><thead><tr><th>账号</th><th>出口IP</th><th>账号类型</th><th>状态</th><th>优先级</th><th>调度组</th><th>额度窗口</th><th>最后检查</th></tr></thead><tbody>${body || '<tr><td class="empty-cell" colspan="8">最近一次巡检没有探测候选账号。</td></tr>'}</tbody></table>`;
       $('accounts-page-info').textContent = `第 ${state.page} / ${totalPages} 页，显示 ${filtered.length ? start + 1 : 0} - ${Math.min(start + state.pageSize, filtered.length)} / ${filtered.length}`;
@@ -977,7 +1001,7 @@ socks5h://proxy.example:1080"></textarea>
       const truncatedNote = result.responseBodyTruncated ? '<div class="degradation-threshold-note">响应正文已截断；下方显示保留部分。</div>' : '';
       const thresholdFields = [
         field('Soft TPS', thresholds.softTps == null ? '未使用' : thresholds.softTps),
-        field('Hard TPS', thresholds.hardTps == null ? '未使用' : thresholds.hardTps),
+        field('Hard TPS', thresholds.hardTps == null ? '未使用' : `${thresholds.hardTps}（TPS ≥ 阈值判降智）`),
         field('TTFB 阈值', formatSecondsThreshold(thresholds.ttfbSeconds, thresholds.ttfbActive)),
         field('生成耗时阈值', formatSecondsThreshold(thresholds.generationSeconds, thresholds.generationActive)),
         field('最低 Output tokens', thresholds.minOutputTokens),
@@ -1038,7 +1062,7 @@ socks5h://proxy.example:1080"></textarea>
           ${field('错误信息', result.errorText || '—')}
           ${field('终态事件', result.terminalEvent ? '已收到' : '未收到')}
         </div>
-        <section class="degradation-report-section"><h4>Realtime Guard 阈值</h4><div class="degradation-report-fields">${thresholdFields}</div><div class="degradation-threshold-note">TPS 是本次响应的观测值。当前插件分类器不使用 Soft TPS / Hard TPS；TTFB 与生成耗时阈值为已保存设置，但不参与当前分类。</div></section>
+        <section class="degradation-report-section"><h4>Realtime Guard 阈值</h4><div class="degradation-report-fields">${thresholdFields}</div><div class="degradation-threshold-note">Hard TPS 命中即判降智，优先于思考与工具证据；Soft TPS 不参与实时守护。TTFB 降智规则已禁用，生成耗时阈值仅展示。TPS =（Output + Reasoning tokens）/（FinishedAt − FirstPayloadAt），按毫秒截断，最小按 1 ms 计算。</div></section>
         <section class="degradation-report-section"><h4>请求与上游证据</h4>
           <details class="degradation-report-details"><summary>请求体</summary><pre>${escapeHTML(result.requestBody || '{}')}</pre></details>
           <details class="degradation-report-details"><summary>请求头（敏感值已脱敏）</summary><pre>${stringify(result.requestHeaders)}</pre></details>
@@ -1047,6 +1071,26 @@ socks5h://proxy.example:1080"></textarea>
         </section>
         <div class="help-text">答案核对只作提示，不参与实时守护判定。授权头、Cookie、代理凭据和响应正文中的敏感值已脱敏。</div>
       </div>`;
+    }
+
+    async function openLatestAccountDegradationProbe(authIndex, accountName) {
+      $('account-degradation-last-account').textContent = `账号：${accountName || authIndex}`;
+      $('account-degradation-last-result').innerHTML = '';
+      $('account-degradation-last-result').hidden = true;
+      setMessage('account-degradation-last-message', '正在读取上次检测…');
+      $('account-degradation-last-modal').hidden = false;
+      try {
+        const response = await api(`/api/accounts/degradation-check/latest?authIndex=${encodeURIComponent(authIndex)}`);
+        if (!response.found) {
+          setMessage('account-degradation-last-message', '该账号暂无检测记录。');
+          return;
+        }
+        $('account-degradation-last-result').innerHTML = renderAccountDegradationProbeResult(response.result);
+        $('account-degradation-last-result').hidden = false;
+        setMessage('account-degradation-last-message', '');
+      } catch (error) {
+        setMessage('account-degradation-last-message', error.message, true);
+      }
     }
 
     function openAccountDegradationProbe(authIndex, accountName) {
@@ -1269,6 +1313,7 @@ socks5h://proxy.example:1080"></textarea>
         'healthy-slot-count':'healthySlotCount',
         'healthy-candidate-slot-count':'healthyCandidateSlotCount',
         'healthy-slot-max-age-minutes':'healthySlotMaxAgeMinutes',
+        'realtime-guard-hard-tps':'qualityHardTPS',
         'realtime-guard-ttfb-seconds':'realtimeGuardTTFBSeconds',
         'realtime-guard-generation-seconds':'realtimeGuardGenerationSeconds',
         'realtime-guard-token-threshold':'realtimeGuardTokenThreshold',
@@ -1514,16 +1559,30 @@ socks5h://proxy.example:1080"></textarea>
         return false;
       }
     }
+    function updateInspectionScheduleFields() {
+      const mode = $('inspection-schedule-mode-setting').value;
+      $('inspection-frequency-field').hidden = mode !== 'interval';
+      $('inspection-daily-field').hidden = mode !== 'daily_time';
+    }
+
     function fillInspectionSettingsForm(settings) {
+      $('inspection-schedule-enabled-setting').checked = settings.enabled;
+      $('inspection-schedule-mode-setting').value = settings.mode;
       $('inspection-interval-setting').value = settings.intervalSeconds;
+      $('inspection-daily-time-setting').value = settings.dailyTime;
       $('inspection-concurrency-setting').value = settings.concurrency;
       $('inspection-timeout-setting').value = settings.timeoutSeconds;
+      updateInspectionScheduleFields();
     }
 
     async function openInspectionSettings() {
+      $('inspection-schedule-enabled-setting').checked = false;
+      $('inspection-schedule-mode-setting').value = 'interval';
       $('inspection-interval-setting').value = '';
+      $('inspection-daily-time-setting').value = '';
       $('inspection-concurrency-setting').value = '';
       $('inspection-timeout-setting').value = '';
+      updateInspectionScheduleFields();
       $('inspection-settings-modal').hidden = false;
       setMessage('inspection-settings-message', '');
       setBusy(true, '读取服务端巡检配置…');
@@ -1537,25 +1596,31 @@ socks5h://proxy.example:1080"></textarea>
     }
 
     async function saveInspectionSettings() {
+      const enabled = $('inspection-schedule-enabled-setting').checked;
+      const mode = $('inspection-schedule-mode-setting').value;
+      const dailyTime = $('inspection-daily-time-setting').value;
       const intervalRaw = $('inspection-interval-setting').value.trim();
       const concurrencyRaw = $('inspection-concurrency-setting').value.trim();
       const timeoutRaw = $('inspection-timeout-setting').value.trim();
       const intervalSeconds = intervalRaw === '' ? NaN : Number(intervalRaw);
       const concurrency = concurrencyRaw === '' ? NaN : Number(concurrencyRaw);
       const timeoutSeconds = timeoutRaw === '' ? NaN : Number(timeoutRaw);
-      if (!Number.isInteger(intervalSeconds) || intervalSeconds < 0 || intervalSeconds > 86400 ||
+      const validDailyTime = /^(?:[01]\d|2[0-3]):[0-5]\d$/.test(dailyTime);
+      if (!['interval', 'daily_time'].includes(mode) || !validDailyTime ||
+          !Number.isInteger(intervalSeconds) || intervalSeconds < 0 || intervalSeconds > 86400 ||
+          (enabled && mode === 'interval' && intervalSeconds < 1) ||
           !Number.isInteger(concurrency) || concurrency < 1 || concurrency > 64 ||
           !Number.isInteger(timeoutSeconds) || timeoutSeconds < 1 || timeoutSeconds > 600) {
-        setMessage('inspection-settings-message', '参数超出范围：间隔 0–86400 秒，并发 1–64，单 Auth 超时 1–600 秒。', true);
+        setMessage('inspection-settings-message', '请检查配置：开启的频率需为 1–86400 秒；定时时刻使用北京时间；并发 1–64；单 Auth 超时 1–600 秒。', true);
         return;
       }
       setMessage('inspection-settings-message', '');
       setBusy(true, '保存服务端巡检配置…');
       try {
-        const saved = await api('/api/inspection/settings', 'PUT', {intervalSeconds, concurrency, timeoutSeconds});
+        const saved = await api('/api/inspection/settings', 'PUT', {enabled, mode, dailyTime, intervalSeconds, concurrency, timeoutSeconds});
         fillInspectionSettingsForm(saved);
         $('inspection-settings-modal').hidden = true;
-        showToast('巡检配置已保存；定时计划立即更新，当前巡检不取消。新并发与超时从下一轮生效。');
+        showToast('巡检配置已保存，定时计划立即更新；当前巡检不取消，新并发与超时从下一轮生效。');
       } catch (error) {
         setMessage('inspection-settings-message', error.message, true);
       } finally {
@@ -1576,10 +1641,13 @@ socks5h://proxy.example:1080"></textarea>
       } else { $('operation-overlay')?.remove(); }
     }
 
+    $('inspection-schedule-mode-setting').addEventListener('change', updateInspectionScheduleFields);
+
     document.addEventListener('click', async (event) => {
       const target = event.target.closest('button');
       if (!target || state.busy) return;
       if (target.dataset.closeModal) { $(target.dataset.closeModal).hidden = true; if (target.dataset.closeModal === 'refresh-proxy-modal') $('refresh-proxy-input').value = ''; return; }
+      if (target.hasAttribute('data-degradation-latest')) { await openLatestAccountDegradationProbe(target.dataset.degradationLatest, target.dataset.accountName); return; }
       if (target.hasAttribute('data-degradation-check')) { openAccountDegradationProbe(target.dataset.degradationCheck, target.dataset.accountName); return; }
       if (target.id === 'account-degradation-probe-submit') { await submitAccountDegradationProbe(); return; }
       if (target.dataset.guardTab) { state.guardTab = target.dataset.guardTab; renderGuardTab(); return; }
@@ -1672,6 +1740,7 @@ socks5h://proxy.example:1080"></textarea>
           healthySlotCount: numberField('healthy-slot-count'),
           healthyCandidateSlotCount: numberField('healthy-candidate-slot-count'),
           healthySlotMaxAgeMinutes: numberField('healthy-slot-max-age-minutes'),
+          qualityHardTPS: numberField('realtime-guard-hard-tps'),
           realtimeGuardTTFBSeconds: numberField('realtime-guard-ttfb-seconds'),
           realtimeGuardGenerationSeconds: numberField('realtime-guard-generation-seconds'),
           realtimeGuardTokenThreshold: numberField('realtime-guard-token-threshold'),

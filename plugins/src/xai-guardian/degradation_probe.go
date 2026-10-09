@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/rand"
+	"database/sql"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -153,7 +154,70 @@ func accountDegradationProbeAPI(store *guardianStore, body []byte) (int, []byte,
 	if err != nil {
 		return jsonAPIError(http.StatusInternalServerError, "probe_request_failed", sanitizeLogText(err.Error()))
 	}
+	if err := store.saveLatestAccountDegradationProbeResult(result); err != nil {
+		return jsonAPIError(http.StatusInternalServerError, "probe_result_save_failed", sanitizeLogText(err.Error()))
+	}
 	return jsonAPIResult(result, nil)
+}
+
+func latestAccountDegradationProbeAPI(store *guardianStore, authIndex string) (int, []byte, error) {
+	authIndex = strings.TrimSpace(authIndex)
+	if authIndex == "" {
+		return jsonAPIError(http.StatusBadRequest, "invalid_request", "authIndex is required")
+	}
+	result, found, err := store.latestAccountDegradationProbeResult(authIndex)
+	if err != nil {
+		return http.StatusInternalServerError, nil, err
+	}
+	if !found {
+		return jsonAPIResult(map[string]any{"found": false, "result": nil}, nil)
+	}
+	return jsonAPIResult(map[string]any{"found": true, "result": result}, nil)
+}
+
+func (store *guardianStore) saveLatestAccountDegradationProbeResult(result accountDegradationProbeResult) error {
+	if strings.TrimSpace(result.AuthIndex) == "" {
+		return fmt.Errorf("save latest degradation probe result: auth index is required")
+	}
+	if strings.TrimSpace(result.CheckID) == "" {
+		return fmt.Errorf("save latest degradation probe result: check ID is required")
+	}
+	resultJSON, err := json.Marshal(result)
+	if err != nil {
+		return fmt.Errorf("marshal latest degradation probe result: %w", err)
+	}
+	_, err = store.database.Exec(`
+INSERT INTO account_degradation_probe_results(auth_index, check_id, detected_at_ms, result_json)
+VALUES(?, ?, ?, ?)
+ON CONFLICT(auth_index) DO UPDATE SET
+    check_id = excluded.check_id,
+    detected_at_ms = excluded.detected_at_ms,
+    result_json = excluded.result_json
+WHERE excluded.detected_at_ms >= account_degradation_probe_results.detected_at_ms`,
+		result.AuthIndex, result.CheckID, result.DetectedAt.UnixMilli(), string(resultJSON))
+	if err != nil {
+		return fmt.Errorf("save latest degradation probe result: %w", err)
+	}
+	return nil
+}
+
+func (store *guardianStore) latestAccountDegradationProbeResult(authIndex string) (accountDegradationProbeResult, bool, error) {
+	var rawResult string
+	err := store.database.QueryRow(`SELECT result_json FROM account_degradation_probe_results WHERE auth_index = ?`, authIndex).Scan(&rawResult)
+	if err == sql.ErrNoRows {
+		return accountDegradationProbeResult{}, false, nil
+	}
+	if err != nil {
+		return accountDegradationProbeResult{}, false, fmt.Errorf("load latest degradation probe result: %w", err)
+	}
+	var result accountDegradationProbeResult
+	if err := json.Unmarshal([]byte(rawResult), &result); err != nil {
+		return accountDegradationProbeResult{}, false, fmt.Errorf("decode latest degradation probe result: %w", err)
+	}
+	if result.AuthIndex != authIndex {
+		return accountDegradationProbeResult{}, false, fmt.Errorf("latest degradation probe result auth index mismatch")
+	}
+	return result, true, nil
 }
 
 type accountDegradationProbeExchange struct {
@@ -244,15 +308,16 @@ func runAccountDegradationProbe(client *http.Client, file xaiAuthFile, model, ac
 	}
 	exchange.UpstreamResponseHeaders = redactedProbeHeaders(response.Header)
 	var responseBody []byte
-	var firstVisibleAt time.Time
+	var firstPayloadAt, firstVisibleAt time.Time
 	var readErr error
 	if response.StatusCode >= http.StatusBadRequest {
 		responseBody, exchange.ResponseBodyTruncated, readErr = readAccountDegradationProbeReportBody(response.Body)
 	} else {
-		responseBody, firstVisibleAt, readErr = readAccountDegradationProbeStream(response.Body)
+		responseBody, firstPayloadAt, firstVisibleAt, readErr = readAccountDegradationProbeStream(response.Body)
 	}
 	finishedAt := time.Now()
 	completion.Body = responseBody
+	completion.FirstPayloadAt = firstPayloadAt
 	completion.FirstVisibleAt = firstVisibleAt
 	completion.FinishedAt = finishedAt
 	evidence := parseStreamEvidence(responseBody)
@@ -288,13 +353,16 @@ func applyAccountDegradationProbeHeaders(request *http.Request, accessToken stri
 	return applyXAIAuthJSONHeaders(request, file.Raw)
 }
 
-func readAccountDegradationProbeStream(reader io.Reader) ([]byte, time.Time, error) {
+func readAccountDegradationProbeStream(reader io.Reader) ([]byte, time.Time, time.Time, error) {
 	scanner := bufio.NewScanner(reader)
 	scanner.Buffer(nil, 52_428_800)
 	var body bytes.Buffer
-	var firstVisibleAt time.Time
+	var firstPayloadAt, firstVisibleAt time.Time
 	for scanner.Scan() {
 		line := scanner.Bytes()
+		if firstPayloadAt.IsZero() && accountDegradationProbeLineHasPayload(line) {
+			firstPayloadAt = time.Now()
+		}
 		if firstVisibleAt.IsZero() && accountDegradationProbeLineHasVisibleOutput(line) {
 			firstVisibleAt = time.Now()
 		}
@@ -304,7 +372,18 @@ func readAccountDegradationProbeStream(reader io.Reader) ([]byte, time.Time, err
 			break
 		}
 	}
-	return append([]byte(nil), body.Bytes()...), firstVisibleAt, scanner.Err()
+	return append([]byte(nil), body.Bytes()...), firstPayloadAt, firstVisibleAt, scanner.Err()
+}
+
+func accountDegradationProbeLineHasPayload(line []byte) bool {
+	data := bytes.TrimSpace(line)
+	if bytes.HasPrefix(data, []byte("event:")) {
+		return false
+	}
+	if bytes.HasPrefix(data, []byte("data:")) {
+		data = bytes.TrimSpace(data[len("data:"):])
+	}
+	return len(data) > 0 && !bytes.Equal(data, []byte("[DONE]"))
 }
 
 func accountDegradationProbeLineIsTerminal(line []byte) bool {
@@ -353,6 +432,7 @@ func buildAccountDegradationProbeResult(file xaiAuthFile, model string, evidence
 	if completion.StatusCode > 0 {
 		status = fmt.Sprintf("HTTP %d", completion.StatusCode)
 	}
+	hardTPS := settings.QualityHardTPS
 	result := accountDegradationProbeResult{
 		CheckID:                 exchange.CheckID,
 		Account:                 sanitizeLogText(account),
@@ -374,6 +454,7 @@ func buildAccountDegradationProbeResult(file xaiAuthFile, model string, evidence
 		UpstreamResponse:        exchange.UpstreamResponse,
 		ResponseBodyTruncated:   exchange.ResponseBodyTruncated,
 		Thresholds: accountDegradationProbeThresholds{
+			HardTPS:                         &hardTPS,
 			TTFBSeconds:                     settings.RealtimeGuardTTFBSeconds,
 			TTFBActive:                      false,
 			GenerationSeconds:               settings.RealtimeGuardGenerationSeconds,
@@ -400,7 +481,9 @@ func buildAccountDegradationProbeResult(file xaiAuthFile, model string, evidence
 	} else {
 		classification := classifyRealtimeGuardEvidence(evidence, completion, settings)
 		result.Classification = "normal"
-		if classification.Degraded {
+		if classification.Unknown {
+			result.Classification = "unknown"
+		} else if classification.Degraded {
 			result.Classification = "degraded"
 		}
 		result.Degraded = classification.Degraded
@@ -460,47 +543,43 @@ func buildAccountDegradationProbeResult(file xaiAuthFile, model string, evidence
 	result.Metrics.ExpectedAnswer = accountDegradationProbeExpectedAnswer
 	result.Metrics.Answer = evidence.OutputText
 	result.Metrics.AnswerMatchesExpected = accountDegradationProbeAnswerMatchesExpected(evidence.OutputText)
-	result.Timing.TTFBMS = elapsedProbeMilliseconds(completion.StartedAt, completion.FirstResponseByteAt)
+	result.Timing.TTFBMS = elapsedProbeMilliseconds(completion.UpstreamStartedAt, completion.FirstResponseByteAt)
 	result.Timing.FirstGenerationMS = elapsedProbeMilliseconds(completion.StartedAt, completion.FirstVisibleAt)
-	result.Timing.GenerationMS = elapsedProbeMilliseconds(completion.FirstVisibleAt, completion.FinishedAt)
 	if total := elapsedProbeMilliseconds(completion.StartedAt, completion.FinishedAt); total != nil {
 		result.Timing.TotalMS = *total
 	}
-	if generationMS := result.Timing.GenerationMS; generationMS != nil && *generationMS > 0 {
-		result.Timing.TPS = float64(evaluatedTokens) * 1000 / float64(*generationMS)
+	if generationDuration, timingError := realtimeGuardGenerationDuration(completion); timingError == "" {
+		generationMS := generationDuration.Milliseconds()
+		result.Timing.GenerationMS = &generationMS
+		result.Timing.TPS = float64(evaluatedTokens) / generationDuration.Seconds()
 	}
 	return result
 }
 
 func realtimeThinkingAssessment(evidence streamEvidence, completion pluginapi.XAIStreamCompletionRequest, settings pluginSettings) (bool, string) {
-	if evidence.BurstDump || isBurstDump(evidence, completion, settings) {
-		return true, "burst_dump"
-	}
-	if evidence.RefusalDetected {
-		return false, "refusal_detected"
-	}
 	if evidence.OutputTokens < settings.RealtimeGuardMinOutputTokens {
 		return true, "below_minimum_output_tokens"
 	}
 	encryptedFloor := effectiveRealtimeEncryptedFloor(evidence, settings)
 	hasSummaryEvidence := !evidence.ReasoningMetadataError && evidence.SummaryChars >= settings.RealtimeGuardMinSummaryChars && !isPlaceholderSummary(evidence.SummaryText)
-	if hasSummaryEvidence {
-		return true, "summary_evidence"
-	}
 	hasEncryptedEvidence := !evidence.ReasoningMetadataError && evidence.ReasoningItemCompleted && evidence.EncryptedBytes >= encryptedFloor
-	if hasEncryptedEvidence {
-		return true, "encrypted_content_evidence"
+	burstDump := isBurstDump(evidence, completion, settings) || evidence.BurstDump
+	switch {
+	case burstDump:
+		return true, "burst_dump_disabled"
+	case evidence.ReasoningMetadataError:
+		return false, "reasoning_metadata_invalid"
+	case hasSummaryEvidence && hasEncryptedEvidence:
+		return true, "summary_and_encrypted_evidence"
+	case hasSummaryEvidence:
+		return true, "summary_evidence"
+	case hasEncryptedEvidence:
+		return true, "encrypted_evidence"
+	case evidence.ReasoningTokens > 0:
+		return false, "reasoning_tokens_without_evidence"
+	default:
+		return false, "missing_thinking_evidence"
 	}
-	if evidence.ReasoningMetadataError {
-		return false, "reasoning_metadata_error"
-	}
-	if evidence.SummaryChars > 0 {
-		return false, "summary_below_minimum_chars"
-	}
-	if evidence.EncryptedBytes > 0 {
-		return false, "encrypted_below_effective_floor"
-	}
-	return false, "missing_thinking_evidence"
 }
 
 func effectiveRealtimeEncryptedFloor(evidence streamEvidence, settings pluginSettings) int {

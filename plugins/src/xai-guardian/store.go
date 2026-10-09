@@ -19,6 +19,9 @@ import (
 const (
 	defaultDatabasePath                                 = "/opt/cli-proxy-api/plugin-data/xai-guardian/xai-guardian.sqlite3"
 	defaultInspectionIntervalSeconds                    = 0
+	defaultInspectionScheduleEnabled                    = false
+	defaultInspectionScheduleMode                       = inspectionScheduleModeInterval
+	defaultInspectionDailyTime                          = "04:00"
 	defaultInspectionWorkerCount                        = 4
 	defaultInspectionTimeoutSeconds                     = 60
 	defaultWorkerCount                                  = 4
@@ -36,6 +39,7 @@ const (
 	defaultRealtimeGuardTTFBSeconds                     = 5.0
 	defaultRealtimeGuardGenerationSeconds               = 1.25
 	defaultRealtimeGuardTokenThreshold                  = 300
+	defaultQualityHardTPS                               = 1000.0
 	defaultRealtimeGuardTimeoutSeconds                  = 120
 	defaultRealtimeGuardIdleTimeoutSeconds              = 500
 	defaultIPBatchRetentionDays                         = 6
@@ -77,6 +81,9 @@ const (
 	statusUnhealthy        = "unhealthy"
 	statusDisabled         = "disabled"
 
+	inspectionScheduleModeInterval  = "interval"
+	inspectionScheduleModeDailyTime = "daily_time"
+
 	logLevelInfo  = "info"
 	logLevelWarn  = "warn"
 	logLevelError = "error"
@@ -104,6 +111,9 @@ type pluginSettings struct {
 	DebugEnabled                                 bool
 	RefreshIntervalSeconds                       int
 	InspectionIntervalSeconds                    int
+	InspectionScheduleEnabled                    bool
+	InspectionScheduleMode                       string
+	InspectionDailyTime                          string
 	InspectionWorkerCount                        int
 	InspectionTimeoutSeconds                     int
 	KeepaliveWorkerCount                         int
@@ -117,6 +127,7 @@ type pluginSettings struct {
 	RealtimeGuardTTFBSeconds                     float64
 	RealtimeGuardGenerationSeconds               float64
 	RealtimeGuardTokenThreshold                  int
+	QualityHardTPS                               float64
 	RealtimeGuardTimeoutSeconds                  int
 	RealtimeGuardIdleTimeoutSeconds              int
 	RealtimeGuardMinSummaryChars                 int
@@ -397,6 +408,12 @@ CREATE TABLE IF NOT EXISTS account_inspection_results (
 );
 CREATE INDEX IF NOT EXISTS idx_account_inspection_results_run ON account_inspection_results(run_id, id);
 CREATE INDEX IF NOT EXISTS idx_account_inspection_results_auth ON account_inspection_results(auth_index, id DESC);
+CREATE TABLE IF NOT EXISTS account_degradation_probe_results (
+    auth_index TEXT PRIMARY KEY,
+    check_id TEXT NOT NULL,
+    detected_at_ms INTEGER NOT NULL,
+    result_json TEXT NOT NULL
+);
 CREATE TABLE IF NOT EXISTS account_inspection_profiles (
     auth_index TEXT PRIMARY KEY,
     account_type TEXT NOT NULL,
@@ -537,6 +554,8 @@ CREATE TABLE IF NOT EXISTS plugin_logs (
 CREATE INDEX IF NOT EXISTS idx_plugin_logs_created ON plugin_logs(created_at DESC, id DESC);
 INSERT OR IGNORE INTO plugin_settings(setting_key, setting_value) VALUES
     ('inspection_interval_seconds', '0'),
+    ('inspection_schedule_mode', 'interval'),
+    ('inspection_daily_time', '04:00'),
     ('inspection_worker_count', '4'),
     ('inspection_timeout_seconds', '60'),
     ('worker_count', '4'),
@@ -554,6 +573,7 @@ INSERT OR IGNORE INTO plugin_settings(setting_key, setting_value) VALUES
     ('realtime_guard_ttfb_seconds', '5'),
     ('realtime_guard_generation_seconds', '1.25'),
     ('realtime_guard_token_threshold', '300'),
+    ('quality_hard_tps', '1000'),
     ('realtime_guard_timeout_seconds', '120'),
     ('realtime_guard_idle_timeout_seconds', '500'),
     ('realtime_guard_min_summary_chars', '32'),
@@ -568,7 +588,12 @@ INSERT OR IGNORE INTO plugin_settings(setting_key, setting_value) VALUES
 	if err != nil {
 		return fmt.Errorf("initialize sqlite database: %w", err)
 	}
-	if _, err := store.database.Exec(`DELETE FROM plugin_settings WHERE setting_key IN ('quality_worker_count', 'quality_probe_timeout_seconds', 'quality_probe_model', 'quality_soft_tps', 'quality_hard_tps', 'quality_llm_probe_enabled')`); err != nil {
+	if _, err := store.database.Exec(`INSERT OR IGNORE INTO plugin_settings(setting_key, setting_value)
+SELECT 'inspection_schedule_enabled', CASE WHEN CAST(setting_value AS INTEGER) > 0 THEN '1' ELSE '0' END
+FROM plugin_settings WHERE setting_key = 'inspection_interval_seconds'`); err != nil {
+		return fmt.Errorf("migrate inspection schedule enabled setting: %w", err)
+	}
+	if _, err := store.database.Exec(`DELETE FROM plugin_settings WHERE setting_key IN ('quality_worker_count', 'quality_probe_timeout_seconds', 'quality_probe_model', 'quality_soft_tps', 'quality_llm_probe_enabled')`); err != nil {
 		return fmt.Errorf("remove obsolete quality settings: %w", err)
 	}
 	if err := store.ensurePluginLogColumns(); err != nil {
@@ -886,6 +911,12 @@ func (store *guardianStore) settings() (pluginSettings, error) {
 		switch key {
 		case "debug_enabled":
 			settings.DebugEnabled = strings.TrimSpace(value) == "1" || strings.EqualFold(strings.TrimSpace(value), "true")
+		case "inspection_schedule_enabled":
+			settings.InspectionScheduleEnabled = strings.TrimSpace(value) == "1" || strings.EqualFold(strings.TrimSpace(value), "true")
+		case "inspection_schedule_mode":
+			settings.InspectionScheduleMode = strings.TrimSpace(value)
+		case "inspection_daily_time":
+			settings.InspectionDailyTime = strings.TrimSpace(value)
 		case "realtime_guard_ttfb_seconds":
 			parsed, parseErr := strconv.ParseFloat(strings.TrimSpace(value), 64)
 			if parseErr == nil {
@@ -895,6 +926,11 @@ func (store *guardianStore) settings() (pluginSettings, error) {
 			parsed, parseErr := strconv.ParseFloat(strings.TrimSpace(value), 64)
 			if parseErr == nil {
 				settings.RealtimeGuardGenerationSeconds = parsed
+			}
+		case "quality_hard_tps":
+			parsed, parseErr := strconv.ParseFloat(strings.TrimSpace(value), 64)
+			if parseErr == nil {
+				settings.QualityHardTPS = parsed
 			}
 		default:
 			parsed, parseErr := strconv.Atoi(strings.TrimSpace(value))
@@ -974,6 +1010,9 @@ func (store *guardianStore) setSettings(settings pluginSettings) error {
 		"debug_enabled":                                      strconv.FormatBool(settings.DebugEnabled),
 		"refresh_interval_seconds":                           strconv.Itoa(settings.RefreshIntervalSeconds),
 		"inspection_interval_seconds":                        strconv.Itoa(settings.InspectionIntervalSeconds),
+		"inspection_schedule_enabled":                        strconv.FormatBool(settings.InspectionScheduleEnabled),
+		"inspection_schedule_mode":                           settings.InspectionScheduleMode,
+		"inspection_daily_time":                              settings.InspectionDailyTime,
 		"inspection_worker_count":                            strconv.Itoa(settings.InspectionWorkerCount),
 		"inspection_timeout_seconds":                         strconv.Itoa(settings.InspectionTimeoutSeconds),
 		"keepalive_worker_count":                             strconv.Itoa(settings.KeepaliveWorkerCount),
@@ -987,6 +1026,7 @@ func (store *guardianStore) setSettings(settings pluginSettings) error {
 		"realtime_guard_ttfb_seconds":                        strconv.FormatFloat(settings.RealtimeGuardTTFBSeconds, 'f', -1, 64),
 		"realtime_guard_generation_seconds":                  strconv.FormatFloat(settings.RealtimeGuardGenerationSeconds, 'f', -1, 64),
 		"realtime_guard_token_threshold":                     strconv.Itoa(settings.RealtimeGuardTokenThreshold),
+		"quality_hard_tps":                                   strconv.FormatFloat(settings.QualityHardTPS, 'f', -1, 64),
 		"realtime_guard_timeout_seconds":                     strconv.Itoa(settings.RealtimeGuardTimeoutSeconds),
 		"realtime_guard_idle_timeout_seconds":                strconv.Itoa(settings.RealtimeGuardIdleTimeoutSeconds),
 		"realtime_guard_min_summary_chars":                   strconv.Itoa(settings.RealtimeGuardMinSummaryChars),
@@ -1018,6 +1058,16 @@ ON CONFLICT(setting_key) DO UPDATE SET setting_value = excluded.setting_value`, 
 func validateSettings(settings pluginSettings) error {
 	if settings.InspectionIntervalSeconds < 0 || settings.InspectionIntervalSeconds > maxInspectionIntervalSeconds {
 		return fmt.Errorf("inspection interval is out of range")
+	}
+	if settings.InspectionScheduleMode != inspectionScheduleModeInterval && settings.InspectionScheduleMode != inspectionScheduleModeDailyTime {
+		return fmt.Errorf("inspection schedule mode is invalid")
+	}
+	parsedDailyTime, err := time.Parse("15:04", settings.InspectionDailyTime)
+	if err != nil || parsedDailyTime.Format("15:04") != settings.InspectionDailyTime {
+		return fmt.Errorf("inspection daily time must use HH:MM")
+	}
+	if settings.InspectionScheduleEnabled && settings.InspectionScheduleMode == inspectionScheduleModeInterval && settings.InspectionIntervalSeconds < 1 {
+		return fmt.Errorf("enabled inspection interval must be positive")
 	}
 	if settings.InspectionWorkerCount < 1 || settings.InspectionWorkerCount > maxInspectionWorkerCount {
 		return fmt.Errorf("inspection worker count is out of range")
@@ -1054,6 +1104,9 @@ func validateSettings(settings pluginSettings) error {
 	}
 	if settings.HealthySlotMaxAgeMinutes < 1 || settings.HealthySlotMaxAgeMinutes > maxHealthySlotMaxAgeMinutes {
 		return fmt.Errorf("healthy slot max age is out of range")
+	}
+	if math.IsNaN(settings.QualityHardTPS) || math.IsInf(settings.QualityHardTPS, 0) || settings.QualityHardTPS <= 0 {
+		return fmt.Errorf("realtime guard hard TPS must be positive")
 	}
 	if math.IsNaN(settings.RealtimeGuardTTFBSeconds) || math.IsInf(settings.RealtimeGuardTTFBSeconds, 0) || settings.RealtimeGuardTTFBSeconds <= 0 || math.IsNaN(settings.RealtimeGuardGenerationSeconds) || math.IsInf(settings.RealtimeGuardGenerationSeconds, 0) || settings.RealtimeGuardGenerationSeconds <= 0 {
 		return fmt.Errorf("realtime guard thresholds must be positive")

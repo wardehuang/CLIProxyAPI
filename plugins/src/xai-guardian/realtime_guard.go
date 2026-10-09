@@ -1,7 +1,6 @@
 package main
 
 import (
-	"bufio"
 	"bytes"
 	"context"
 	"database/sql"
@@ -95,11 +94,12 @@ func completeXAIStream(_ context.Context, completion pluginapi.XAIStreamCompleti
 	}
 
 	evidence := parseStreamEvidence(completion.Body)
-	if evidence.StreamError != "" {
-		return streamFailureDecision(store, completion)
-	}
 	classification := classifyRealtimeGuardEvidence(evidence, completion, settings)
 	reason, degraded := classification.Reason, classification.Degraded
+	if classification.Unknown {
+		_ = store.appendLog(logLevelWarn, "guard.classification_unknown", "xAI 响应无法完成实时守护分类", classification.Reason)
+		return pluginapi.XAIStreamCompletionResponse{Action: pluginapi.XAIStreamActionFail, Reason: classification.Reason, StatusCode: http.StatusBadGateway, Error: "realtime guard classification unavailable"}, nil
+	}
 	if !degraded {
 		degradationCleared := false
 		if authIndex != "" {
@@ -143,6 +143,7 @@ func completeXAIStream(_ context.Context, completion pluginapi.XAIStreamCompleti
 }
 
 type realtimeGuardClassification struct {
+	Unknown                   bool
 	Reason                    string
 	Degraded                  bool
 	IsRealThinking            bool
@@ -152,22 +153,103 @@ type realtimeGuardClassification struct {
 }
 
 func classifyRealtimeGuardEvidence(evidence streamEvidence, completion pluginapi.XAIStreamCompletionRequest, settings pluginSettings) realtimeGuardClassification {
-	toolEvidence := evidence.CompletedFunctionCalls > 0 && !evidence.RefusalDetected
-	burstDump := evidence.BurstDump || isBurstDump(evidence, completion, settings)
-	isRealThinking := burstDump || isRealThinking(evidence, completion, settings)
-	mutation := completedMutationEvidence{}
-	if !toolEvidence && !isRealThinking && evidence.CompletedMessage {
-		mutation = scanCompletedMutationEvidence(completion.OriginalRequest)
+	classification := realtimeGuardClassification{
+		Reason:                    "within_threshold",
+		CompletedToolCallEvidence: evidence.CompletedFunctionCalls > 0 && !evidence.RefusalDetected,
+		BurstDump:                 evidence.BurstDump || isBurstDump(evidence, completion, settings),
 	}
-	reason, degraded := classifyStream(evidence, mutation, completion, settings)
-	return realtimeGuardClassification{
-		Reason:                    reason,
-		Degraded:                  degraded,
-		IsRealThinking:            isRealThinking,
-		CompletedToolCallEvidence: toolEvidence,
-		CompletedMutationEvidence: mutation.Found,
-		BurstDump:                 burstDump,
+	classification.IsRealThinking = classification.BurstDump || isRealThinking(evidence, completion, settings)
+
+	if strings.TrimSpace(completion.Error) != "" {
+		classification.Unknown = true
+		classification.Reason = "upstream_error"
+		return classification
 	}
+	if completion.StatusCode < http.StatusOK || completion.StatusCode >= http.StatusMultipleChoices {
+		classification.Unknown = true
+		classification.Reason = fmt.Sprintf("http_%d", completion.StatusCode)
+		return classification
+	}
+	if !completion.Completed {
+		classification.Unknown = true
+		classification.Reason = "sse_incomplete"
+		return classification
+	}
+	if evidence.StreamError != "" {
+		classification.Unknown = true
+		classification.Reason = "sse_failed"
+		return classification
+	}
+	if !evidence.CompletedEvent {
+		classification.Unknown = true
+		classification.Reason = "sse_incomplete"
+		return classification
+	}
+
+	generationDuration, timingError := realtimeGuardGenerationDuration(completion)
+	if timingError != "" {
+		classification.Unknown = true
+		classification.Reason = timingError
+		return classification
+	}
+	totalTokens := evidence.OutputTokens + evidence.ReasoningTokens
+	tps := float64(totalTokens) / generationDuration.Seconds()
+	if tps >= settings.QualityHardTPS {
+		classification.Degraded = true
+		classification.Reason = "hard_tps"
+		return classification
+	}
+
+	if !classification.IsRealThinking {
+		if classification.CompletedToolCallEvidence {
+			classification.Reason = "completed_tool_call_evidence"
+			return classification
+		}
+		if evidence.CompletedMessage && !evidence.RefusalDetected {
+			mutation := scanCompletedMutationEvidence(completion.OriginalRequest)
+			classification.CompletedMutationEvidence = mutation.Found
+		}
+		if !classification.CompletedMutationEvidence {
+			classification.Degraded = true
+			classification.Reason = "missing_thinking_without_action"
+			return classification
+		}
+		classification.Reason = "completed_mutation_evidence"
+		return classification
+	}
+	if classification.CompletedToolCallEvidence {
+		classification.Reason = "completed_tool_call_evidence"
+	}
+	return classification
+}
+
+func realtimeGuardGenerationDuration(completion pluginapi.XAIStreamCompletionRequest) (time.Duration, string) {
+	if completion.UpstreamStartedAt.IsZero() {
+		return 0, "upstream_started_at_missing"
+	}
+	if completion.FirstResponseByteAt.IsZero() {
+		return 0, "upstream_first_byte_missing"
+	}
+	if completion.FirstResponseByteAt.Before(completion.UpstreamStartedAt) {
+		return 0, "upstream_ttfb_invalid"
+	}
+	if completion.FirstPayloadAt.IsZero() {
+		return 0, "first_payload_missing"
+	}
+	if completion.FirstPayloadAt.Before(completion.FirstResponseByteAt) {
+		return 0, "first_payload_invalid"
+	}
+	if completion.FinishedAt.IsZero() {
+		return 0, "finished_at_missing"
+	}
+	if completion.FinishedAt.Before(completion.FirstPayloadAt) {
+		return 0, "generation_window_invalid"
+	}
+	generationDuration := time.Duration(completion.FinishedAt.Sub(completion.FirstPayloadAt).Milliseconds()) * time.Millisecond
+	if generationDuration < time.Millisecond {
+		generationDuration = time.Millisecond
+	}
+	return generationDuration, ""
 }
 
 type realtimeDegradationTransition struct {
@@ -478,29 +560,7 @@ func isGuardTimeout(value string) bool {
 	return strings.Contains(lower, "first payload timeout") || strings.Contains(lower, "progress timeout") || strings.Contains(lower, "idle timeout") || strings.Contains(lower, "context deadline exceeded")
 }
 
-func classifyStream(evidence streamEvidence, mutation completedMutationEvidence, completion pluginapi.XAIStreamCompletionRequest, settings pluginSettings) (string, bool) {
-	if evidence.BurstDump {
-		return "burst_dump_disabled", false
-	}
-	if isBurstDump(evidence, completion, settings) {
-		return "burst_dump_disabled", false
-	}
-	if evidence.CompletedFunctionCalls > 0 && !evidence.RefusalDetected {
-		return "completed_tool_call_evidence", false
-	}
-	if isRealThinking(evidence, completion, settings) {
-		return "thinking_evidence", false
-	}
-	if mutation.Found {
-		return "completed_mutation_evidence", false
-	}
-	return "missing_thinking_without_action", true
-}
-
 func isRealThinking(evidence streamEvidence, completion pluginapi.XAIStreamCompletionRequest, settings pluginSettings) bool {
-	if evidence.RefusalDetected {
-		return false
-	}
 	if evidence.OutputTokens < settings.RealtimeGuardMinOutputTokens {
 		return true
 	}
@@ -538,28 +598,35 @@ func parseStreamEvidence(body []byte) streamEvidence {
 	if len(body) == 0 {
 		return evidence
 	}
-	if bytes.Contains(body, []byte("data:")) {
-		for _, event := range splitSSEEvents(body) {
-			if len(event.payload) == 0 || bytes.Equal(bytes.TrimSpace(event.payload), []byte("[DONE]")) {
-				continue
-			}
-			value := decodePayload(event.payload)
-			if value == nil {
-				continue
-			}
-			applyStreamEvent(&evidence, event.name, value)
-		}
+	if !bytes.Contains(body, []byte("data:")) {
+		evidence.StreamError = "sse_failed"
 		return evidence
 	}
-	value := decodePayload(body)
-	if value != nil {
-		applyStreamEvent(&evidence, valueType(value), value)
+	for _, event := range splitSSEEvents(body) {
+		payload := bytes.TrimSpace(event.payload)
+		if bytes.Equal(payload, []byte("[DONE]")) {
+			evidence.CompletedEvent = true
+			evidence.TerminalEvent = true
+			continue
+		}
+		var object map[string]any
+		if err := json.Unmarshal(payload, &object); err != nil {
+			evidence.StreamError = "sse_failed"
+			return evidence
+		}
+		if object == nil {
+			evidence.StreamError = "sse_failed"
+			return evidence
+		}
+		applyStreamEvent(&evidence, valueType(object), object)
+		if evidence.StreamError != "" {
+			return evidence
+		}
 	}
 	return evidence
 }
 
 type sseEvent struct {
-	name    string
 	payload []byte
 }
 
@@ -567,20 +634,13 @@ func splitSSEEvents(body []byte) []sseEvent {
 	normalized := bytes.ReplaceAll(body, []byte("\r\n"), []byte("\n"))
 	result := make([]sseEvent, 0)
 	for _, block := range bytes.Split(normalized, []byte("\n\n")) {
-		var name string
-		var data []string
-		scanner := bufio.NewScanner(bytes.NewReader(block))
-		for scanner.Scan() {
-			line := scanner.Text()
-			switch {
-			case strings.HasPrefix(line, "event:"):
-				name = strings.TrimSpace(strings.TrimPrefix(line, "event:"))
-			case strings.HasPrefix(line, "data:"):
-				data = append(data, strings.TrimPrefix(strings.TrimPrefix(line, "data:"), " "))
+		for _, rawLine := range bytes.Split(block, []byte("\n")) {
+			line := bytes.TrimSpace(rawLine)
+			if !bytes.HasPrefix(line, []byte("data:")) {
+				continue
 			}
-		}
-		if len(data) > 0 {
-			result = append(result, sseEvent{name: name, payload: []byte(strings.Join(data, "\n"))})
+			payload := bytes.TrimSpace(line[len("data:"):])
+			result = append(result, sseEvent{payload: append([]byte(nil), payload...)})
 		}
 	}
 	return result
@@ -607,40 +667,40 @@ func applyStreamEvent(evidence *streamEvidence, eventName string, value any) {
 	if !ok {
 		return
 	}
-	if eventName == "" {
-		eventName = valueType(value)
-	}
 	eventName = strings.ToLower(strings.TrimSpace(eventName))
-	if strings.Contains(eventName, "failed") || strings.Contains(eventName, "error") {
+	if strings.Contains(eventName, "failed") || strings.Contains(eventName, "incomplete") || eventName == "error" || strings.Contains(eventName, "error") {
 		evidence.StreamError = eventName
-	}
-	if eventName == "response.incomplete" {
-		evidence.StreamError = "response.incomplete"
-	}
-	if eventName == "response.failed" {
-		evidence.StreamError = "response.failed"
-	}
-	if eventName == "response.completed" {
-		evidence.CompletedEvent = true
-	}
-	if eventName == "response.completed" || eventName == "response.incomplete" || eventName == "response.failed" {
-		evidence.TerminalEvent = true
+		if eventName == "response.failed" || eventName == "response.incomplete" {
+			evidence.TerminalEvent = true
+		}
+		return
 	}
 	if strings.Contains(stringifyLower(value), "burst_dump") {
 		evidence.BurstDump = true
 	}
-	if strings.Contains(eventName, "function_call_arguments.done") {
-		recordFunctionCall(evidence, object)
+	if eventName == "response.completed" {
+		evidence.CompletedEvent = true
+		evidence.TerminalEvent = true
 	}
-	if strings.Contains(eventName, "reasoning") {
-		if strings.HasSuffix(eventName, ".delta") && eventTextLength(object) > 0 {
+	if eventName == "response.refusal.delta" {
+		evidence.RefusalDetected = true
+	}
+	switch eventName {
+	case "response.reasoning_summary_text.delta", "response.reasoning_text.delta":
+		recordReasoningItemID(evidence, stringValue(object["item_id"]))
+		if eventTextLength(object) > 0 {
 			evidence.ReasoningDelta = true
 		}
-		if itemID, ok := object["item_id"]; ok {
-			recordReasoningItemID(evidence, stringValue(itemID))
+		appendSummaryDelta(eventTextValue(object), evidence)
+	case "response.reasoning_summary_text.done", "response.reasoning_text.done":
+		recordReasoningItemID(evidence, stringValue(object["item_id"]))
+		recordSummary(object["text"], evidence)
+	case "response.reasoning_summary_part.done":
+		recordReasoningItemID(evidence, stringValue(object["item_id"]))
+		if part := nestedObject(object, "part"); part != nil && strings.EqualFold(stringValue(part["type"]), "summary_text") {
+			recordSummary(part["text"], evidence)
 		}
-	}
-	if strings.Contains(eventName, "output_item.done") || strings.Contains(eventName, "output_item.added") {
+	case "response.output_item.added", "response.output_item.done":
 		item := nestedObject(object, "item")
 		if item == nil {
 			item = nestedObject(object, "output_item")
@@ -648,75 +708,59 @@ func applyStreamEvent(evidence *streamEvidence, eventName string, value any) {
 		if item == nil {
 			item = object
 		}
-		recordOutputItem(evidence, item)
-	}
-	if eventName == "response.output_text.delta" {
+		recordOutputItem(evidence, item, eventName == "response.output_item.done")
+	case "response.output_text.delta":
 		evidence.OutputText += stringValue(object["delta"])
-	}
-	if eventName == "response.output_text.done" {
+	case "response.output_text.done":
 		if text := stringValue(object["text"]); text != "" {
 			evidence.OutputText = text
 		}
-	}
-	if strings.Contains(eventName, "reasoning_summary") || strings.Contains(eventName, "summary_text") || strings.Contains(eventName, "reasoning_text") {
-		if strings.Contains(eventName, ".delta") {
-			appendSummaryDelta(eventTextValue(object), evidence)
-		} else {
-			recordSummary(eventTextValue(object), evidence)
-		}
-	}
-	if strings.Contains(eventName, "encrypted_content") {
-		evidence.EncryptedBytes += eventEncryptedLength(object)
-	}
-	if eventName == "response.completed" || strings.HasPrefix(eventName, "response.") {
+	case "response.completed":
 		response := nestedObject(object, "response")
 		if response == nil {
 			response = object
 		}
-		if status := strings.ToLower(stringValue(response["status"])); status == "incomplete" || status == "failed" {
-			evidence.StreamError = status
+		usage := object["usage"]
+		if usage == nil {
+			usage = response["usage"]
 		}
+		readUsage(evidence, usage)
 		if output, ok := response["output"].([]any); ok {
 			for _, rawItem := range output {
-				item, ok := rawItem.(map[string]any)
-				if ok {
-					recordOutputItem(evidence, item)
+				if item, itemOK := rawItem.(map[string]any); itemOK {
+					recordOutputItem(evidence, item, true)
 				}
 			}
 		}
-		readUsage(evidence, response["usage"])
-		readUsage(evidence, object["usage"])
-	}
-	if strings.Contains(eventName, "usage") {
-		readUsage(evidence, object["usage"])
-	}
-	if hasNonEmptyRefusal(value) {
-		evidence.RefusalDetected = true
 	}
 }
 
-func recordOutputItem(evidence *streamEvidence, item map[string]any) {
+func recordOutputItem(evidence *streamEvidence, item map[string]any, terminal bool) {
 	typeName := strings.ToLower(stringValue(item["type"]))
 	status := strings.ToLower(stringValue(item["status"]))
 	if typeName == "reasoning" {
 		recordReasoningItemID(evidence, stringValue(item["id"]))
-		if status == "completed" {
+		if terminal || status == "completed" {
 			evidence.ReasoningItemCompleted = true
 		}
+		if encrypted := strings.TrimSpace(stringValue(item["encrypted_content"])); len(encrypted) > evidence.EncryptedBytes {
+			evidence.EncryptedBytes = len([]byte(encrypted))
+		}
+		if summaries, ok := item["summary"].([]any); ok {
+			for _, rawSummary := range summaries {
+				summary, summaryOK := rawSummary.(map[string]any)
+				if !summaryOK || !strings.EqualFold(stringValue(summary["type"]), "summary_text") {
+					continue
+				}
+				recordSummary(stringValue(summary["text"]), evidence)
+			}
+		}
 	}
-	if typeName == "message" && status == "completed" && strings.TrimSpace(stringValue(item["id"])) != "" {
+	if typeName == "message" && terminal && status == "completed" && strings.TrimSpace(stringValue(item["id"])) != "" {
 		evidence.CompletedMessage = true
 	}
-	if typeName == "function_call" && status == "completed" {
+	if typeName == "function_call" && terminal && status == "completed" {
 		recordFunctionCall(evidence, item)
-	}
-	if typeName == "reasoning" {
-		if summary := item["summary"]; summary != nil {
-			recordSummary(summary, evidence)
-		}
-		if encrypted := item["encrypted_content"]; encrypted != nil {
-			evidence.EncryptedBytes = maxInt(evidence.EncryptedBytes, encryptedLength(encrypted))
-		}
 	}
 	if typeName == "message" {
 		if content, ok := item["content"].([]any); ok {
@@ -726,10 +770,11 @@ func recordOutputItem(evidence *streamEvidence, item map[string]any) {
 				if !ok {
 					continue
 				}
-				if strings.Contains(strings.ToLower(stringValue(contentItem["type"])), "refusal") && strings.TrimSpace(stringValue(contentItem["refusal"])) != "" {
+				contentType := strings.ToLower(stringValue(contentItem["type"]))
+				if contentType == "refusal" {
 					evidence.RefusalDetected = true
 				}
-				if status == "completed" && stringValue(contentItem["type"]) == "output_text" {
+				if status == "completed" && contentType == "output_text" {
 					outputText.WriteString(stringValue(contentItem["text"]))
 				}
 			}
@@ -826,8 +871,8 @@ func isPlaceholderSummary(value string) bool {
 func recordFunctionCall(evidence *streamEvidence, object map[string]any) {
 	callID := strings.TrimSpace(stringValue(object["call_id"]))
 	name := strings.TrimSpace(stringValue(object["name"]))
-	arguments := object["arguments"]
-	if callID == "" || name == "" || !hasMutationArguments(arguments) {
+	arguments := strings.TrimSpace(stringValue(object["arguments"]))
+	if callID == "" || name == "" || arguments == "" {
 		return
 	}
 	for _, existing := range evidence.FunctionCallNames {
@@ -849,7 +894,6 @@ func readUsage(evidence *streamEvidence, value any) {
 	if details, ok := usage["output_tokens_details"].(map[string]any); ok {
 		evidence.ReasoningTokens = maxInt(evidence.ReasoningTokens, integerValue(details["reasoning_tokens"]))
 	}
-	evidence.ReasoningTokens = maxInt(evidence.ReasoningTokens, integerValue(usage["reasoning_tokens"]))
 }
 
 func nestedObject(object map[string]any, key string) map[string]any {
@@ -865,13 +909,6 @@ func eventTextLength(object map[string]any) int {
 		return textLength(value)
 	}
 	return textLength(object["summary"])
-}
-
-func eventEncryptedLength(object map[string]any) int {
-	if value := object["encrypted_content"]; value != nil {
-		return encryptedLength(value)
-	}
-	return encryptedLength(object["delta"])
 }
 
 func textLength(value any) int {
@@ -893,37 +930,6 @@ func textLength(value any) int {
 		}
 	}
 	return 0
-}
-
-func encryptedLength(value any) int {
-	if value == nil {
-		return 0
-	}
-	if text, ok := value.(string); ok {
-		return len([]byte(text))
-	}
-	return textLength(value)
-}
-
-func hasNonEmptyRefusal(value any) bool {
-	switch typed := value.(type) {
-	case map[string]any:
-		for key, child := range typed {
-			if strings.Contains(strings.ToLower(key), "refusal") && (strings.TrimSpace(stringValue(child)) != "" || strings.TrimSpace(summaryText(child)) != "" || hasNonEmptyRefusal(child)) {
-				return true
-			}
-			if hasNonEmptyRefusal(child) {
-				return true
-			}
-		}
-	case []any:
-		for _, child := range typed {
-			if hasNonEmptyRefusal(child) {
-				return true
-			}
-		}
-	}
-	return false
 }
 
 func stringifyLower(value any) string {
