@@ -106,6 +106,7 @@
     .account-panel, .server-panel, .guard-panel { display: grid; gap: 14px; padding: 18px; }
 
     .summary-grid { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 12px; }
+    .account-summary-grid { grid-template-columns: repeat(4, minmax(0, 1fr)); }
     .summary-card {
       --summary-accent: var(--primary-color);
       isolation: isolate;
@@ -375,6 +376,7 @@
 
     @container xai-guardian-page (max-width: 1080px) {
       .summary-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+      .account-summary-grid { grid-template-columns: repeat(4, minmax(0, 1fr)); }
       .server-summary-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
       .settings-grid, .probe-settings-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
     }
@@ -414,7 +416,7 @@
 
     <section class="view active" data-view="accounts" role="tabpanel">
       <section class="panel account-panel">
-        <div class="summary-grid" id="account-summary"></div>
+        <div class="summary-grid account-summary-grid" id="account-summary"></div>
         <div class="data-panel">
           <div class="data-header">
             <input class="search-input" id="account-search" type="search" placeholder="搜索账号" aria-label="搜索账号">

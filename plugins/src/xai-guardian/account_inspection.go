@@ -291,7 +291,7 @@ func inspectXAIAccount(ctx context.Context, store *guardianStore, runID int64, e
 	priority = accountPriorityPointer(file.Priority)
 	result.Priority = priority
 	result.Disabled = file.Disabled || (priority != nil && *priority == accountInspectionPriorityDisabled)
-	result.ScheduleGroup = authScheduleGroup(file.Raw)
+	result.ScheduleGroup = readNestedScheduleGroup(file.Raw)
 	if result.Disabled {
 		return preserveAccountInspectionResult(result, previous, hasPrevious, "账号已停用，跳过巡检"), false, nil
 	}
@@ -1154,23 +1154,6 @@ func isInspectionManagedPriority(priority *int) bool {
 	return priority != nil && (*priority == accountInspectionPriorityQuota || *priority == accountInspectionPriorityAbnormal ||
 		*priority == accountInspectionPriorityLegacy || *priority == accountInspectionPriorityUnauthorized ||
 		*priority == accountInspectionPrioritySSOExpired)
-}
-
-func authScheduleGroup(authFile map[string]any) *int {
-	metadata, ok := authFile["metadata"].(map[string]any)
-	if !ok {
-		return nil
-	}
-	value, exists := metadata["schedule_group"]
-	if !exists {
-		return nil
-	}
-	group, ok := xAIInspectionNumber(value)
-	if !ok {
-		return nil
-	}
-	converted := int(group)
-	return &converted
 }
 
 func xAIInspectionNumber(value any) (float64, bool) {
