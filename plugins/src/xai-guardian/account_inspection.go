@@ -18,7 +18,7 @@ import (
 )
 
 const (
-	accountInspectionWorkerCount = 4
+	accountInspectionWorkerCount  = 4
 	accountInspectionBodyLimit    = 1024 * 1024
 	accountInspectionDetailLimit  = 400
 	accountInspectionProbeURL     = "https://cli-chat-proxy.grok.com/v1/billing"
@@ -31,15 +31,15 @@ const (
 )
 
 const (
-	accountInspectionPriorityQuota      = -1
-	accountInspectionPriorityAbnormal   = -2
-	accountInspectionPriorityLegacy     = -3
+	accountInspectionPriorityQuota        = -1
+	accountInspectionPriorityAbnormal     = -2
+	accountInspectionPriorityLegacy       = -3
 	accountInspectionPriorityUnauthorized = -4
-	accountInspectionPriorityDisabled   = -5
-	accountInspectionPriorityBotFlagged = -6
-	accountInspectionPrioritySSOExpired = -7
-	accountInspectionPriorityDegraded   = -8
-	accountInspectionPriorityHealthy    = 1
+	accountInspectionPriorityDisabled     = -5
+	accountInspectionPriorityBotFlagged   = -6
+	accountInspectionPrioritySSOExpired   = -7
+	accountInspectionPriorityDegraded     = -8
+	accountInspectionPriorityHealthy      = 1
 )
 
 type accountInspectionWorkResult struct {
@@ -55,12 +55,12 @@ type xaiInspectionResponse struct {
 }
 
 type xaiInspectionOutcome struct {
-	alive          bool
-	quota          bool
-	statusCode     int
-	errorKind      string
-	detail         string
-	recoveryAtMS   int64
+	alive        bool
+	quota        bool
+	statusCode   int
+	errorKind    string
+	detail       string
+	recoveryAtMS int64
 }
 
 type xaiBillingSnapshot struct {
@@ -137,6 +137,7 @@ func runPreparedAccountInspection(ctx context.Context, store *guardianStore, run
 	var runErr error
 	for outcome := range results {
 		item := outcome.result
+		item.Probed = outcome.probed
 		if item.RunID == 0 {
 			item.RunID = runID
 		}
@@ -1021,5 +1022,3 @@ func firstNonEmpty(values ...string) string {
 	}
 	return ""
 }
-
-

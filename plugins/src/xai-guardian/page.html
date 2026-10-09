@@ -425,10 +425,9 @@
                 <button class="pill-button" type="button" data-mask="masked">脱敏</button>
               </div>
               <div class="filter-pills" aria-label="账号状态筛选">
-                <button class="pill-button active" type="button" data-filter="all">全部账号</button>
-                <button class="pill-button" type="button" data-filter="enabled">已启用</button>
+                <button class="pill-button active" type="button" data-filter="all">全部候选</button>
+                <button class="pill-button" type="button" data-filter="enabled">健康</button>
                 <button class="pill-button" type="button" data-filter="quota">额度耗尽</button>
-                <button class="pill-button" type="button" data-filter="disabled">已停用</button>
                 <button class="pill-button" type="button" data-filter="abnormal">账号异常</button>
               </div>
             </div>
@@ -613,7 +612,7 @@
                 <div class="settings-field"><label for="realtime-guard-burst-max-window-ms">burst 最大窗口（毫秒）</label><input class="settings-input" id="realtime-guard-burst-max-window-ms" type="number" min="1"></div>
               </div>
             </section>
-            <div class="help-text">IP 列表、保活、复活、健康槽位和实时守护使用 guard 数据域；账号状态后台快照单独维护。页面不读取、接收或保存 Management key、xAI 凭据。</div>
+            <div class="help-text">IP 列表、保活、复活、健康槽位和实时守护使用 guard 数据域；账号状态读取最近一次账号巡检结果。页面不读取、接收或保存 Management key、xAI 凭据。</div>
             <div id="settings-message" class="message"></div>
           </div>
         </section>
@@ -749,12 +748,18 @@ socks5h://proxy.example:1080"></textarea>
     const statusKey = (item) => {
       const status = String(item.status || '').toLowerCase();
       const priority = numberValue(item.priority);
-      if (status.includes('quota') || priority === -1) return 'quota';
-      if (status.includes('disabled') || priority === -5) return 'disabled';
+      if (status.includes('quota')) return 'quota';
+      if (status.includes('disabled')) return 'disabled';
       if (status === 'available' || status === 'enabled' || status === 'active' || status === 'healthy') return 'enabled';
+      if (['abnormal', 'skipped', 'failed', 'checking', 'pending'].includes(status)) return 'abnormal';
+      if (priority === -1) return 'quota';
+      if (priority === -5) return 'disabled';
       return 'abnormal';
     };
-    const statusLabel = (key) => ({enabled:'已启用', quota:'额度耗尽', disabled:'已停用', abnormal:'账号异常'}[key] || '账号异常');
+    const statusLabel = (key, status = '') => {
+      const inspectedLabel = ({healthy:'健康', quota_exhausted:'额度耗尽', abnormal:'账号异常', skipped:'跳过', checking:'检查中', pending:'待巡检'}[String(status).toLowerCase()]);
+      return inspectedLabel || ({enabled:'健康', quota:'额度耗尽', disabled:'已停用', abnormal:'账号异常'}[key] || '账号异常');
+    };
     const statusTone = (key) => ({enabled:'status-good', quota:'status-violet', disabled:'status-warn', abnormal:'status-bad'}[key] || 'status-bad');
     const nodeTone = (status) => 'node-' + String(status || 'uninspected').toLowerCase();
     const nodeLabel = (status) => ({healthy:'健康', healthy_candidate:'健康备选', healthy_fallback:'健康保底', connected:'已连通', cooldown:'冷却中', unhealthy:'异常', inspecting:'探测中', probing:'探测中', keepalive_probing:'保活探测中', revive_probing:'复活探测中', disabled:'已停用', uninspected:'未探测'}[status] || status || '未探测');
@@ -799,7 +804,7 @@ socks5h://proxy.example:1080"></textarea>
 
     function renderMode() {
       const descriptions = {
-        accounts: ['账号状态', '仅显示最后一次后台账号检查快照；未运行后台账号检查时不显示当前 CPA 账号清单。'],
+        accounts: ['账号状态', '只显示最近一次账号巡检的探测候选及该次巡检结果；没有候选时显示空列表。'],
         inspection: ['服务端巡检', '检查 xAI Auth 账号状态、额度和计费响应，并按 Manager 语义调整 priority。'],
         guard: ['降智守护', '查看降智记录、守护策略和插件日志。']
       };
@@ -827,9 +832,9 @@ socks5h://proxy.example:1080"></textarea>
     }
 
     function renderAccountSummary() {
-      const counts = {enabled:0, quota:0, disabled:0, abnormal:0};
+      const counts = {enabled:0, quota:0, abnormal:0};
       state.accounts.forEach((item) => { counts[statusKey(item)] += 1; });
-      const cards = [['总账号', state.accounts.length, 'A', 'blue'], ['已启用', counts.enabled, 'E', 'green'], ['额度耗尽', counts.quota, 'Q', 'violet'], ['已停用', counts.disabled, 'D', 'amber'], ['账号异常', counts.abnormal, '!', 'red']];
+      const cards = [['探测候选', state.accounts.length, 'P', 'blue'], ['健康', counts.enabled, '✓', 'green'], ['额度耗尽', counts.quota, 'Q', 'violet'], ['账号异常', counts.abnormal, '!', 'red']];
       $('account-summary').innerHTML = cards.map((card) => `<article class="summary-card tone-${card[3]}"><div class="summary-header"><span class="summary-icon">${card[2]}</span><span class="summary-label">${card[0]}</span></div><strong class="summary-value">${card[1]}</strong></article>`).join('');
     }
 
@@ -852,14 +857,14 @@ socks5h://proxy.example:1080"></textarea>
           <td><div class="account-cell"><strong title="${escapeHTML(accountName(item))}">${displayName}</strong><span class="subline">${escapeHTML(item.authIndex || '无 Auth Index')}</span></div></td>
           <td class="mono">${escapeHTML(item.exitIp || '—')}</td>
           <td><span class="type-badge">${escapeHTML(accountType)}</span></td>
-          <td><div class="status-cell"><span class="status-badge ${statusTone(key)}">${statusLabel(key)}</span></div></td>
+          <td><div class="status-cell"><span class="status-badge ${statusTone(key)}">${statusLabel(key, item.status)}</span></div></td>
           <td><span class="number-badge">${numberValue(item.priority) ?? '—'}</span></td>
           <td><span class="number-badge">${numberValue(item.scheduleGroup) ?? '—'}</span></td>
           <td><div class="quota-cell"><span class="quota-empty">— 暂无额度 —</span></div></td>
           <td>${formatDate(item.lastInspection)}</td>
-        </tr>${expanded ? `<tr class="detail-row"><td colspan="8"><section class="detail-panel"><div class="detail-hero"><div><span class="detail-eyebrow">xAI Guardian Account</span><h3>${displayName}</h3></div><div class="detail-badges"><span class="status-badge ${statusTone(key)}">${statusLabel(key)}</span><span class="type-badge">${escapeHTML(accountType)}</span></div></div><div class="detail-grid"><div class="detail-section"><h4>基础信息</h4><dl class="detail-list"><div><dt>Auth Index</dt><dd class="mono">${escapeHTML(item.authIndex || '—')}</dd></div><div><dt>账号类型</dt><dd>${escapeHTML(accountType)}</dd></div><div><dt>调度组</dt><dd>${numberValue(item.scheduleGroup) ?? '—'}</dd></div></dl></div><div class="detail-section"><h4>账号检查状态</h4><dl class="detail-list"><div><dt>状态</dt><dd>${escapeHTML(item.status || '—')}</dd></div><div><dt>优先级</dt><dd>${numberValue(item.priority) ?? '—'}</dd></div><div><dt>最近检查</dt><dd>${formatFullDate(item.lastInspection)}</dd></div></dl></div></div></section></td></tr>` : ''}`;
+        </tr>${expanded ? `<tr class="detail-row"><td colspan="8"><section class="detail-panel"><div class="detail-hero"><div><span class="detail-eyebrow">xAI Guardian Account</span><h3>${displayName}</h3></div><div class="detail-badges"><span class="status-badge ${statusTone(key)}">${statusLabel(key, item.status)}</span><span class="type-badge">${escapeHTML(accountType)}</span></div></div><div class="detail-grid"><div class="detail-section"><h4>基础信息</h4><dl class="detail-list"><div><dt>Auth Index</dt><dd class="mono">${escapeHTML(item.authIndex || '—')}</dd></div><div><dt>账号类型</dt><dd>${escapeHTML(accountType)}</dd></div><div><dt>调度组</dt><dd>${numberValue(item.scheduleGroup) ?? '—'}</dd></div></dl></div><div class="detail-section"><h4>账号检查状态</h4><dl class="detail-list"><div><dt>状态</dt><dd>${escapeHTML(item.status || '—')}</dd></div><div><dt>优先级</dt><dd>${numberValue(item.priority) ?? '—'}</dd></div><div><dt>最近检查</dt><dd>${formatFullDate(item.lastInspection)}</dd></div></dl></div></div></section></td></tr>` : ''}`;
       }).join('');
-      $('accounts-table').innerHTML = `<table class="data-table account-table"><thead><tr><th>账号</th><th>出口IP</th><th>账号类型</th><th>状态</th><th>优先级</th><th>调度组</th><th>额度窗口</th><th>最后检查</th></tr></thead><tbody>${body || '<tr><td class="empty-cell" colspan="8">没有可展示的最后一次后台账号检查数据。</td></tr>'}</tbody></table>`;
+      $('accounts-table').innerHTML = `<table class="data-table account-table"><thead><tr><th>账号</th><th>出口IP</th><th>账号类型</th><th>状态</th><th>优先级</th><th>调度组</th><th>额度窗口</th><th>最后检查</th></tr></thead><tbody>${body || '<tr><td class="empty-cell" colspan="8">最近一次巡检没有探测候选账号。</td></tr>'}</tbody></table>`;
       $('accounts-page-info').textContent = `第 ${state.page} / ${totalPages} 页，显示 ${filtered.length ? start + 1 : 0} - ${Math.min(start + state.pageSize, filtered.length)} / ${filtered.length}`;
       $('account-page-prev').disabled = state.page <= 1;
       $('account-page-next').disabled = state.page >= totalPages;

@@ -31,42 +31,43 @@ type accountInspectionRun struct {
 }
 
 type accountInspectionResult struct {
-	ID                int64                        `json:"id"`
-	RunID             int64                        `json:"runId"`
-	AccountKey        string                       `json:"accountKey"`
-	FileName          string                       `json:"fileName"`
-	DisplayAccount    string                       `json:"displayAccount"`
-	AuthIndex         string                       `json:"authIndex,omitempty"`
-	AccountID         string                       `json:"accountId,omitempty"`
-	Provider          string                       `json:"provider"`
-	Disabled          bool                         `json:"disabled"`
-	Status            string                       `json:"status,omitempty"`
-	State             string                       `json:"state,omitempty"`
-	Action            string                       `json:"action"`
-	ActionReason      string                       `json:"actionReason"`
-	ActionStatus      string                       `json:"actionStatus,omitempty"`
-	ExecutedAction    string                       `json:"executedAction,omitempty"`
-	ActionError       string                       `json:"actionError,omitempty"`
-	StatusCode        *int                         `json:"statusCode,omitempty"`
-	UsedPercent       *float64                     `json:"usedPercent,omitempty"`
-	IsQuota           bool                         `json:"isQuota"`
-	Error             string                       `json:"error,omitempty"`
-	PlanType          string                       `json:"planType,omitempty"`
+	ID                int64                          `json:"id"`
+	RunID             int64                          `json:"runId"`
+	AccountKey        string                         `json:"accountKey"`
+	FileName          string                         `json:"fileName"`
+	DisplayAccount    string                         `json:"displayAccount"`
+	AuthIndex         string                         `json:"authIndex,omitempty"`
+	AccountID         string                         `json:"accountId,omitempty"`
+	Provider          string                         `json:"provider"`
+	Disabled          bool                           `json:"disabled"`
+	Probed            bool                           `json:"probed"`
+	Status            string                         `json:"status,omitempty"`
+	State             string                         `json:"state,omitempty"`
+	Action            string                         `json:"action"`
+	ActionReason      string                         `json:"actionReason"`
+	ActionStatus      string                         `json:"actionStatus,omitempty"`
+	ExecutedAction    string                         `json:"executedAction,omitempty"`
+	ActionError       string                         `json:"actionError,omitempty"`
+	StatusCode        *int                           `json:"statusCode,omitempty"`
+	UsedPercent       *float64                       `json:"usedPercent,omitempty"`
+	IsQuota           bool                           `json:"isQuota"`
+	Error             string                         `json:"error,omitempty"`
+	PlanType          string                         `json:"planType,omitempty"`
 	QuotaWindows      []accountInspectionQuotaWindow `json:"quotaWindows,omitempty"`
-	MonthlyLimitCents *float64                     `json:"monthlyLimitCents,omitempty"`
-	MonthlyUsedCents  *float64                     `json:"monthlyUsedCents,omitempty"`
-	ErrorKind         string                       `json:"errorKind,omitempty"`
-	ErrorDetail       string                       `json:"errorDetail,omitempty"`
-	ScheduleGroup     *int                         `json:"scheduleGroup,omitempty"`
-	Priority          *int                         `json:"priority,omitempty"`
-	OriginalPriority  *int                         `json:"originalPriority,omitempty"`
-	RecoverAtMS       int64                        `json:"recoverAtMs,omitempty"`
-	AccountType       string                       `json:"accountType,omitempty"`
-	CreatedAtMS       int64                        `json:"createdAtMs"`
+	MonthlyLimitCents *float64                       `json:"monthlyLimitCents,omitempty"`
+	MonthlyUsedCents  *float64                       `json:"monthlyUsedCents,omitempty"`
+	ErrorKind         string                         `json:"errorKind,omitempty"`
+	ErrorDetail       string                         `json:"errorDetail,omitempty"`
+	ScheduleGroup     *int                           `json:"scheduleGroup,omitempty"`
+	Priority          *int                           `json:"priority,omitempty"`
+	OriginalPriority  *int                           `json:"originalPriority,omitempty"`
+	RecoverAtMS       int64                          `json:"recoverAtMs,omitempty"`
+	AccountType       string                         `json:"accountType,omitempty"`
+	CreatedAtMS       int64                          `json:"createdAtMs"`
 }
 
 type accountInspectionResponse struct {
-	Run   *accountInspectionRun   `json:"run"`
+	Run   *accountInspectionRun     `json:"run"`
 	Items []accountInspectionResult `json:"items"`
 }
 
@@ -130,14 +131,14 @@ func (store *guardianStore) insertAccountInspectionResult(result accountInspecti
 	}
 	_, err = store.database.Exec(`INSERT INTO account_inspection_results(
 		run_id, account_key, file_name, display_account, auth_index, account_id, provider,
-		disabled, status, state, action, action_reason, action_status, executed_action,
+		disabled, probed, status, state, action, action_reason, action_status, executed_action,
 		action_error, status_code, used_percent, is_quota, error, plan_type, quota_windows_json,
 		monthly_limit_cents, monthly_used_cents, error_kind, error_detail, schedule_group,
 		priority, original_priority, recover_at_ms, created_at_ms
-	) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+	) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 	ON CONFLICT(run_id, auth_index) DO UPDATE SET
 		account_key=excluded.account_key, file_name=excluded.file_name, display_account=excluded.display_account,
-		account_id=excluded.account_id, provider=excluded.provider, disabled=excluded.disabled,
+		account_id=excluded.account_id, provider=excluded.provider, disabled=excluded.disabled, probed=excluded.probed,
 		status=excluded.status, state=excluded.state, action=excluded.action,
 		action_reason=excluded.action_reason, action_status=excluded.action_status,
 		executed_action=excluded.executed_action, action_error=excluded.action_error,
@@ -148,7 +149,7 @@ func (store *guardianStore) insertAccountInspectionResult(result accountInspecti
 		priority=excluded.priority, original_priority=excluded.original_priority,
 		recover_at_ms=excluded.recover_at_ms, created_at_ms=excluded.created_at_ms`,
 		result.RunID, result.AccountKey, result.FileName, result.DisplayAccount, result.AuthIndex, result.AccountID,
-		result.Provider, result.Disabled, result.Status, result.State, result.Action, result.ActionReason,
+		result.Provider, result.Disabled, result.Probed, result.Status, result.State, result.Action, result.ActionReason,
 		result.ActionStatus, result.ExecutedAction, result.ActionError, nullableInt(result.StatusCode),
 		nullableFloat(result.UsedPercent), result.IsQuota, result.Error, result.PlanType, string(quotaWindows),
 		nullableFloat(result.MonthlyLimitCents), nullableFloat(result.MonthlyUsedCents), result.ErrorKind,
@@ -229,7 +230,7 @@ func (store *guardianStore) accountInspection(runID int64) (accountInspectionRes
 
 func (store *guardianStore) accountInspectionResults(runID int64) ([]accountInspectionResult, error) {
 	rows, err := store.database.Query(`SELECT id, run_id, account_key, file_name, display_account, auth_index, account_id,
-		provider, disabled, status, state, action, action_reason, action_status, executed_action, action_error,
+		provider, disabled, probed, status, state, action, action_reason, action_status, executed_action, action_error,
 		status_code, used_percent, is_quota, error, plan_type, quota_windows_json, monthly_limit_cents,
 		monthly_used_cents, error_kind, error_detail, schedule_group, priority, original_priority, recover_at_ms, created_at_ms
 		FROM account_inspection_results WHERE run_id = ? ORDER BY file_name COLLATE NOCASE, display_account COLLATE NOCASE, auth_index`, runID)
@@ -240,12 +241,12 @@ func (store *guardianStore) accountInspectionResults(runID int64) ([]accountInsp
 	items := make([]accountInspectionResult, 0)
 	for rows.Next() {
 		var item accountInspectionResult
-		var disabled, isQuota int
+		var disabled, probed, isQuota int
 		var statusCode, scheduleGroup, priority, originalPriority sql.NullInt64
 		var usedPercentFloat, monthlyLimitFloat, monthlyUsedFloat sql.NullFloat64
 		var quotaWindowsJSON string
 		if err := rows.Scan(&item.ID, &item.RunID, &item.AccountKey, &item.FileName, &item.DisplayAccount,
-			&item.AuthIndex, &item.AccountID, &item.Provider, &disabled, &item.Status, &item.State, &item.Action,
+			&item.AuthIndex, &item.AccountID, &item.Provider, &disabled, &probed, &item.Status, &item.State, &item.Action,
 			&item.ActionReason, &item.ActionStatus, &item.ExecutedAction, &item.ActionError, &statusCode,
 			&usedPercentFloat, &isQuota, &item.Error, &item.PlanType, &quotaWindowsJSON, &monthlyLimitFloat,
 			&monthlyUsedFloat, &item.ErrorKind, &item.ErrorDetail, &scheduleGroup, &priority, &originalPriority,
@@ -253,6 +254,7 @@ func (store *guardianStore) accountInspectionResults(runID int64) ([]accountInsp
 			return nil, fmt.Errorf("scan account inspection result: %w", err)
 		}
 		item.Disabled = disabled != 0
+		item.Probed = probed != 0
 		item.IsQuota = isQuota != 0
 		if statusCode.Valid {
 			value := int(statusCode.Int64)
@@ -394,7 +396,7 @@ func (store *guardianStore) accountInspectionRealtimeCooldown(authIndex string, 
 
 func (store *guardianStore) countAccountInspectionResults(runID int64) (processed, probed, healthy, quotaExhausted, abnormal, skipped int, err error) {
 	err = store.database.QueryRow(`SELECT COUNT(*),
-		COALESCE(SUM(CASE WHEN action_status <> 'skipped' AND status <> 'skipped' THEN 1 ELSE 0 END), 0),
+		COALESCE(SUM(CASE WHEN probed = 1 THEN 1 ELSE 0 END), 0),
 		COALESCE(SUM(CASE WHEN status = 'healthy' THEN 1 ELSE 0 END), 0),
 		COALESCE(SUM(CASE WHEN is_quota = 1 THEN 1 ELSE 0 END), 0),
 		COALESCE(SUM(CASE WHEN status = 'abnormal' THEN 1 ELSE 0 END), 0),

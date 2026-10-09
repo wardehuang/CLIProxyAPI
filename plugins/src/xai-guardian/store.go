@@ -362,6 +362,7 @@ CREATE TABLE IF NOT EXISTS account_inspection_results (
     account_id TEXT NOT NULL DEFAULT '',
     provider TEXT NOT NULL DEFAULT 'xai',
     disabled INTEGER NOT NULL DEFAULT 0,
+    probed INTEGER NOT NULL DEFAULT 0,
     status TEXT NOT NULL DEFAULT '',
     state TEXT NOT NULL DEFAULT '',
     action TEXT NOT NULL DEFAULT 'keep',
@@ -553,6 +554,9 @@ INSERT OR IGNORE INTO plugin_settings(setting_key, setting_value) VALUES
 	if err := store.ensurePluginLogColumns(); err != nil {
 		return err
 	}
+	if err := store.ensureAccountInspectionResultColumns(); err != nil {
+		return err
+	}
 	if _, err := store.database.Exec(`
 INSERT INTO plugin_settings(setting_key, setting_value)
 SELECT 'probe_retry_count', setting_value FROM plugin_settings
@@ -655,6 +659,42 @@ END`); err != nil {
 	}
 	if _, err := store.database.Exec(`CREATE INDEX IF NOT EXISTS idx_plugin_logs_group ON plugin_logs(category, group_id, id DESC)`); err != nil {
 		return fmt.Errorf("index plugin log group: %w", err)
+	}
+	return nil
+}
+
+func (store *guardianStore) ensureAccountInspectionResultColumns() error {
+	rows, err := store.database.Query(`PRAGMA table_info(account_inspection_results)`)
+	if err != nil {
+		return fmt.Errorf("inspect account inspection result schema: %w", err)
+	}
+	hasProbed := false
+	for rows.Next() {
+		var columnID, notNull, primaryKey int
+		var columnName, columnType string
+		var defaultValue any
+		if err := rows.Scan(&columnID, &columnName, &columnType, &notNull, &defaultValue, &primaryKey); err != nil {
+			rows.Close()
+			return fmt.Errorf("scan account inspection result schema: %w", err)
+		}
+		if columnName == "probed" {
+			hasProbed = true
+		}
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return fmt.Errorf("iterate account inspection result schema: %w", err)
+	}
+	if err := rows.Close(); err != nil {
+		return fmt.Errorf("close account inspection result schema: %w", err)
+	}
+	if !hasProbed {
+		if _, err := store.database.Exec(`ALTER TABLE account_inspection_results ADD COLUMN probed INTEGER NOT NULL DEFAULT 0`); err != nil {
+			return fmt.Errorf("add account inspection result probed column: %w", err)
+		}
+		if _, err := store.database.Exec(`UPDATE account_inspection_results SET probed = 1 WHERE probed = 0 AND status <> 'skipped' AND action_status <> 'skipped'`); err != nil {
+			return fmt.Errorf("backfill account inspection probe candidates: %w", err)
+		}
 	}
 	return nil
 }

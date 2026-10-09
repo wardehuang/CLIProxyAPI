@@ -701,8 +701,19 @@ func mapKeepaliveRound(round keepaliveRound, found bool) any {
 }
 
 func (controller *runtimeController) accountsAPI(store *guardianStore) (int, []byte, error) {
+	inspection, err := store.latestAccountInspection()
+	if err != nil {
+		return http.StatusInternalServerError, nil, err
+	}
 	bindings, err := store.listAuthBindings(0)
-	return jsonAPIResult(publicAccounts(bindings), err)
+	if err != nil {
+		return http.StatusInternalServerError, nil, err
+	}
+	exitIPs := make(map[string]string, len(bindings))
+	for _, binding := range bindings {
+		exitIPs[binding.AuthIndex] = binding.ExitIP
+	}
+	return jsonAPIResult(publicInspectionAccounts(inspection.Items, exitIPs), nil)
 }
 
 func (controller *runtimeController) refreshAccountsAPI(store *guardianStore) (int, []byte, error) {
@@ -883,22 +894,21 @@ func publicIPBatches(batches []ipBatch, retentionDays int) []map[string]any {
 	return items
 }
 
-func publicAccounts(bindings []authBinding) []map[string]any {
-	items := make([]map[string]any, 0, len(bindings))
-	for _, binding := range bindings {
+func publicInspectionAccounts(results []accountInspectionResult, exitIPs map[string]string) []map[string]any {
+	items := make([]map[string]any, 0, len(results))
+	for _, result := range results {
+		if !result.Probed {
+			continue
+		}
 		items = append(items, map[string]any{
-			"authIndex":          binding.AuthIndex,
-			"authName":           binding.AuthName,
-			"slotId":             binding.SlotID,
-			"exitIp":             binding.ExitIP,
-			"status":             binding.Status,
-			"priority":           binding.Priority,
-			"accountType":        binding.AccountType,
-			"scheduleGroup":      binding.ScheduleGroup,
-			"lastInspection":     binding.LastInspection,
-			"proxyWriteAttempts": binding.ProxyWriteAttempts,
-			"proxyWriteError":    sanitizeLogText(binding.ProxyWriteError),
-			"proxyWriteAt":       binding.ProxyWriteAt,
+			"authIndex":      result.AuthIndex,
+			"authName":       firstNonEmpty(result.DisplayAccount, result.FileName),
+			"exitIp":         exitIPs[result.AuthIndex],
+			"status":         result.Status,
+			"priority":       result.Priority,
+			"accountType":    firstNonEmpty(result.AccountType, result.PlanType),
+			"scheduleGroup":  result.ScheduleGroup,
+			"lastInspection": result.CreatedAtMS,
 		})
 	}
 	return items
