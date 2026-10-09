@@ -36,7 +36,7 @@ const (
 	accountInspectionPriorityLegacy       = -3
 	accountInspectionPriorityUnauthorized = -4
 	accountInspectionPriorityDisabled     = -5
-	accountInspectionPriorityBotFlagged   = -6
+	accountInspectionPriorityPermanent    = -6
 	accountInspectionPrioritySSOExpired   = -7
 	accountInspectionPriorityDegraded     = -8
 	accountInspectionPriorityHealthy      = 1
@@ -192,27 +192,69 @@ func runPreparedAccountInspection(ctx context.Context, store *guardianStore, run
 	return runErr
 }
 
+func settlePermanentRealtimeDegradation(store *guardianStore, authIndex string, currentPriority int, coolingUntil int64, degradationCount int) (int, bool, bool, error) {
+	if currentPriority != accountInspectionPriorityPermanent && coolingUntil != degradationPermanentCoolingUntil && degradationCount < 3 {
+		return currentPriority, false, false, nil
+	}
+
+	store.realtimeDegradationLock.Lock()
+	defer store.realtimeDegradationLock.Unlock()
+	entry, err := findXAIAuthEntry(authIndex)
+	if err != nil {
+		return currentPriority, true, false, err
+	}
+	state, hasState, err := store.degradationStateForAuth(authIndex)
+	if err != nil {
+		return entry.Priority, true, false, err
+	}
+	permanent := entry.Priority == accountInspectionPriorityPermanent || (hasState && (state.Count >= 3 || state.CoolingUntil == degradationPermanentCoolingUntil))
+	if !permanent {
+		return entry.Priority, false, false, nil
+	}
+	priorityUpdated := entry.Priority != accountInspectionPriorityPermanent
+	if priorityUpdated {
+		if err := updateXAIAuthPriority(authIndex, accountInspectionPriorityPermanent); err != nil {
+			return entry.Priority, true, false, err
+		}
+	}
+	if err := store.finalizePermanentDegradation(authIndex); err != nil {
+		return accountInspectionPriorityPermanent, true, priorityUpdated, err
+	}
+	return accountInspectionPriorityPermanent, true, priorityUpdated, nil
+}
+
 func inspectXAIAccount(ctx context.Context, store *guardianStore, runID int64, entry pluginapi.HostAuthFileEntry, previous accountInspectionResult, hasPrevious bool) (accountInspectionResult, bool, error) {
 	result := newAccountInspectionResult(runID, entry, previous, hasPrevious)
 	if ctx.Err() != nil {
 		return preserveAccountInspectionResult(result, previous, hasPrevious, "巡检已取消，未发送请求"), false, nil
 	}
 	priority := accountPriorityPointer(entry.Priority)
-	if entry.Disabled || (priority != nil && *priority == accountInspectionPriorityDisabled) {
+	if entry.Priority != accountInspectionPriorityPermanent && (entry.Disabled || (priority != nil && *priority == accountInspectionPriorityDisabled)) {
 		result.Disabled = true
 		return preserveAccountInspectionResult(result, previous, hasPrevious, "账号已停用，未调用测活请求，保持停用状态"), false, nil
 	}
-	if priority != nil && *priority == accountInspectionPriorityBotFlagged {
-		result = preserveAccountInspectionResult(result, previous, hasPrevious, "账号 priority 为 -6，已进入永久跳过巡检状态")
-		result.ErrorKind = "account_abnormal"
-		result.ErrorDetail = previous.ErrorDetail
-		return result, false, nil
-	}
-
 	now := time.Now()
-	coolingUntil, realtimeCooling, err := store.accountInspectionRealtimeCooldown(entry.AuthIndex, now.UnixMilli())
+	coolingUntil, degradationCount, realtimeCooling, err := store.accountInspectionRealtimeCooldown(entry.AuthIndex, now.UnixMilli())
 	if err != nil {
 		return result, false, err
+	}
+	permanentPriority, permanent, priorityUpdated, err := settlePermanentRealtimeDegradation(store, entry.AuthIndex, entry.Priority, coolingUntil, degradationCount)
+	if err != nil {
+		result.Priority = accountInspectionIntPointer(permanentPriority)
+		result.ActionReason = "实时降智永久终态处理失败，自动巡检不会探测该账号"
+		setAccountInspectionPriorityError(&result, err)
+		return result, false, nil
+	}
+	if permanent {
+		result = preserveAccountInspectionResult(result, previous, hasPrevious, "账号 priority 为 -6，永久退出自动巡检；需人工恢复 priority")
+		result.Priority = accountInspectionIntPointer(permanentPriority)
+		if priorityUpdated {
+			result.ActionStatus = "success"
+			result.ExecutedAction = "priority_adjustment"
+		} else {
+			result.ActionStatus = "skipped"
+		}
+		return result, false, nil
 	}
 	if realtimeCooling {
 		result = preserveAccountInspectionResult(result, previous, hasPrevious, fmt.Sprintf("实时降智冷却中，跳过巡检至 %s", time.UnixMilli(coolingUntil).UTC().Format(time.RFC3339)))
@@ -418,6 +460,8 @@ func preserveAccountInspectionResult(result, previous accountInspectionResult, h
 }
 
 func applyAccountInspectionFailure(ctx context.Context, store *guardianStore, result accountInspectionResult, currentPriority *int, outcome xaiInspectionOutcome, inspectionTime time.Time) accountInspectionResult {
+	store.realtimeDegradationLock.Lock()
+	defer store.realtimeDegradationLock.Unlock()
 	if outcome.statusCode > 0 {
 		result.StatusCode = accountInspectionIntPointer(outcome.statusCode)
 	}
@@ -426,6 +470,85 @@ func applyAccountInspectionFailure(ctx context.Context, store *guardianStore, re
 	result.Status = "abnormal"
 	result.State = "failed"
 	result.IsQuota = outcome.quota
+	fallbackPriority := 0
+	if currentPriority != nil {
+		fallbackPriority = *currentPriority
+	}
+	latestPriority, err := getXAIAuthPriority(result.AuthIndex, fallbackPriority)
+	if err != nil {
+		result.Priority = currentPriority
+		result.ActionReason = "读取 Auth priority 失败，未执行自动调整"
+		setAccountInspectionPriorityError(&result, err)
+		result.CreatedAtMS = nowMillis()
+		return result
+	}
+	currentPriority = accountInspectionIntPointer(latestPriority)
+	result.Priority = currentPriority
+	coolingUntil := int64(0)
+	degradationCount := 0
+	realtimeCooling := false
+	if currentPriority == nil || *currentPriority != accountInspectionPriorityPermanent {
+		coolingUntil, degradationCount, realtimeCooling, err = store.accountInspectionRealtimeCooldown(result.AuthIndex, inspectionTime.UnixMilli())
+		if err != nil {
+			result.ActionReason = "读取实时降智恢复状态失败，未执行自动调整"
+			setAccountInspectionPriorityError(&result, err)
+			result.CreatedAtMS = nowMillis()
+			return result
+		}
+	}
+	if (currentPriority != nil && *currentPriority == accountInspectionPriorityPermanent) || coolingUntil == degradationPermanentCoolingUntil || degradationCount >= 3 {
+		if currentPriority == nil || *currentPriority != accountInspectionPriorityPermanent {
+			if err := updateXAIAuthPriority(result.AuthIndex, accountInspectionPriorityPermanent); err != nil {
+				result.ActionReason = "第 3 次实时降智永久终态写入 priority -6 失败"
+				setAccountInspectionPriorityError(&result, err)
+				result.CreatedAtMS = nowMillis()
+				return result
+			}
+			result.ActionStatus = "success"
+			result.ExecutedAction = "priority_adjustment"
+		} else {
+			result.ActionStatus = "none"
+		}
+		result.Priority = accountInspectionIntPointer(accountInspectionPriorityPermanent)
+		result.ActionReason = "第 3 次实时降智进入永久终态，priority 为 -6"
+		result.CreatedAtMS = nowMillis()
+		return result
+	}
+	if currentPriority != nil && *currentPriority == accountInspectionPriorityDegraded {
+		adjustment, hasAdjustment, err := store.realtimeDegradationPriorityAdjustment(result.AuthIndex)
+		if err != nil {
+			result.Priority = currentPriority
+			result.ActionReason = "读取实时降智 priority adjustment 失败，保留 priority -8"
+			setAccountInspectionPriorityError(&result, err)
+			result.CreatedAtMS = nowMillis()
+			return result
+		}
+		if hasAdjustment && adjustment.AdjustedPriority == accountInspectionPriorityDegraded {
+			result.OriginalPriority = adjustment.OriginalPriority
+			result.RecoverAtMS = adjustment.RecoverAtMS
+		}
+		if outcome.quota {
+			result.Status = "quota_exhausted"
+			result.ErrorKind = "quota_exhausted"
+		}
+		result.Priority = currentPriority
+		result.ActionStatus = "none"
+		switch {
+		case coolingUntil == degradationPermanentCoolingUntil:
+			result.ActionReason = "第 3 次实时降智终态待清理，巡检未恢复，保留当前 priority"
+		case realtimeCooling:
+			result.ActionReason = "实时降智冷却中，账号巡检探测未成功，保留 priority -8"
+		case coolingUntil > 0:
+			result.ActionReason = "实时降智冷却已结束，账号巡检探测未成功，保留 priority -8 等待后续巡检"
+		default:
+			result.ActionReason = "实时降智恢复状态缺失，巡检未成功，不自动调整 priority -8"
+		}
+		if !hasAdjustment || adjustment.AdjustedPriority != accountInspectionPriorityDegraded {
+			result.ActionReason += "；priority adjustment 不匹配"
+		}
+		result.CreatedAtMS = nowMillis()
+		return result
+	}
 	if outcome.quota {
 		result.Status = "quota_exhausted"
 		result.ErrorKind = "quota_exhausted"
@@ -505,10 +628,45 @@ func lowerAccountInspectionPriority(ctx context.Context, store *guardianStore, r
 }
 
 func restoreAccountInspectionPriority(ctx context.Context, store *guardianStore, result *accountInspectionResult, currentPriority *int) (*int, *int, int64) {
-	coolingUntil, realtimeCooling, err := store.accountInspectionRealtimeCooldown(result.AuthIndex, nowMillis())
+	store.realtimeDegradationLock.Lock()
+	defer store.realtimeDegradationLock.Unlock()
+	coolingUntil, degradationCount, realtimeCooling, err := store.accountInspectionRealtimeCooldown(result.AuthIndex, nowMillis())
 	if err != nil {
 		setAccountInspectionPriorityError(result, err)
 		return currentPriority, nil, 0
+	}
+	refreshPriority := func() error {
+		fallbackPriority := 0
+		if currentPriority != nil {
+			fallbackPriority = *currentPriority
+		}
+		latestPriority, err := getXAIAuthPriority(result.AuthIndex, fallbackPriority)
+		if err != nil {
+			return err
+		}
+		currentPriority = accountInspectionIntPointer(latestPriority)
+		result.Priority = currentPriority
+		return nil
+	}
+	if coolingUntil == degradationPermanentCoolingUntil || degradationCount >= 3 {
+		if err := refreshPriority(); err != nil {
+			setAccountInspectionPriorityError(result, err)
+			return currentPriority, nil, coolingUntil
+		}
+		if currentPriority == nil || *currentPriority != accountInspectionPriorityPermanent {
+			if err := updateXAIAuthPriority(result.AuthIndex, accountInspectionPriorityPermanent); err != nil {
+				setAccountInspectionPriorityError(result, err)
+				return currentPriority, nil, coolingUntil
+			}
+			result.ActionStatus = "success"
+			result.ExecutedAction = "priority_adjustment"
+		}
+		if err := store.finalizePermanentDegradation(result.AuthIndex); err != nil {
+			setAccountInspectionPriorityError(result, err)
+			return accountInspectionIntPointer(accountInspectionPriorityPermanent), nil, coolingUntil
+		}
+		result.ActionReason = "第 3 次实时降智已永久退出自动巡检；priority 保持 -6，需人工恢复"
+		return accountInspectionIntPointer(accountInspectionPriorityPermanent), nil, 0
 	}
 	if realtimeCooling {
 		if currentPriority == nil || *currentPriority != accountInspectionPriorityDegraded {
@@ -522,10 +680,53 @@ func restoreAccountInspectionPriority(ctx context.Context, store *guardianStore,
 		result.ActionReason = "实时降智冷却中，跳过 priority 恢复"
 		return accountInspectionIntPointer(accountInspectionPriorityDegraded), nil, coolingUntil
 	}
+	realtimeAdjustment, hasRealtimeAdjustment, err := store.realtimeDegradationPriorityAdjustment(result.AuthIndex)
+	if err != nil {
+		setAccountInspectionPriorityError(result, err)
+		return currentPriority, nil, coolingUntil
+	}
 	adjustment, hasAdjustment, err := store.accountInspectionPriorityAdjustment(result.AuthIndex)
 	if err != nil {
 		setAccountInspectionPriorityError(result, err)
-		return currentPriority, nil, 0
+		return currentPriority, nil, coolingUntil
+	}
+	if coolingUntil > 0 || hasRealtimeAdjustment || hasAdjustment || currentPriority == nil || *currentPriority != accountInspectionPriorityHealthy {
+		if err := refreshPriority(); err != nil {
+			setAccountInspectionPriorityError(result, err)
+			return currentPriority, nil, coolingUntil
+		}
+	}
+	if coolingUntil > 0 {
+		isRealtimePriority := currentPriority != nil && *currentPriority == accountInspectionPriorityDegraded
+		isRealtimeAdjustment := hasRealtimeAdjustment && realtimeAdjustment.AdjustedPriority == accountInspectionPriorityDegraded
+		if !isRealtimePriority || !isRealtimeAdjustment {
+			result.ActionReason = "实时降智冷却已结束，但 priority 与 adjustment 不匹配，不自动恢复"
+			result.ActionStatus = "none"
+			return currentPriority, realtimeAdjustment.OriginalPriority, realtimeAdjustment.RecoverAtMS
+		}
+		if err := updateXAIAuthPriority(result.AuthIndex, accountInspectionPriorityHealthy); err != nil {
+			setAccountInspectionPriorityError(result, err)
+			return currentPriority, realtimeAdjustment.OriginalPriority, realtimeAdjustment.RecoverAtMS
+		}
+		result.ActionStatus = "success"
+		result.ExecutedAction = "priority_restore"
+		if err := store.deleteRealtimeDegradationPriorityAdjustment(result.AuthIndex); err != nil {
+			setAccountInspectionPriorityError(result, err)
+			return accountInspectionIntPointer(accountInspectionPriorityHealthy), realtimeAdjustment.OriginalPriority, realtimeAdjustment.RecoverAtMS
+		}
+		result.ActionReason = "实时降智冷却结束且账号巡检探测成功，priority 恢复为 1；连续次数保留"
+		return accountInspectionIntPointer(accountInspectionPriorityHealthy), nil, 0
+	}
+	if hasRealtimeAdjustment {
+		if currentPriority != nil && *currentPriority == realtimeAdjustment.AdjustedPriority {
+			result.ActionReason = "实时降智恢复状态缺失，不自动恢复 priority -8"
+			result.ActionStatus = "none"
+			return currentPriority, realtimeAdjustment.OriginalPriority, realtimeAdjustment.RecoverAtMS
+		}
+		if err := store.deleteRealtimeDegradationPriorityAdjustment(result.AuthIndex); err != nil {
+			setAccountInspectionPriorityError(result, err)
+			return currentPriority, nil, 0
+		}
 	}
 	if hasAdjustment && (currentPriority == nil || *currentPriority != adjustment.AdjustedPriority) {
 		if err := store.deleteAccountInspectionPriorityAdjustment(result.AuthIndex); err != nil {

@@ -102,18 +102,24 @@ func completeXAIStream(_ context.Context, completion pluginapi.XAIStreamCompleti
 
 	reason, degraded := classifyStream(evidence, mutation, completion, settings)
 	if !degraded {
+		degradationCleared := false
 		if authIndex != "" {
-			if err := store.clearDegradationIfRecovered(authIndex); err != nil {
+			degradationCleared, err = applyRealtimeHealthy(store, authIndex)
+			if err != nil {
 				return pluginapi.XAIStreamCompletionResponse{Action: pluginapi.XAIStreamActionFail, Reason: "state_write_failed", StatusCode: http.StatusInternalServerError}, err
 			}
 		}
-		_ = store.appendLog(logLevelInfo, "guard.normal", "xAI 响应通过降智守护", reason)
+		detail := reason
+		if degradationCleared {
+			detail += " consecutive_degradation_cleared=true"
+		}
+		_ = store.appendLog(logLevelInfo, "guard.normal", "xAI 响应通过降智守护", detail)
 		return pluginapi.XAIStreamCompletionResponse{Action: pluginapi.XAIStreamActionFlush}, nil
 	}
 	if authIndex == "" {
 		return pluginapi.XAIStreamCompletionResponse{Action: pluginapi.XAIStreamActionFail, Reason: "missing_auth_index", StatusCode: http.StatusBadGateway}, nil
 	}
-	state, err := store.recordDegradation(authIndex, authName, completion.RequestID, reason)
+	transition, err := applyRealtimeDegradation(store, authIndex, authName, completion.RequestID, reason)
 	if err != nil {
 		return pluginapi.XAIStreamCompletionResponse{Action: pluginapi.XAIStreamActionFail, Reason: "state_write_failed", StatusCode: http.StatusInternalServerError}, err
 	}
@@ -125,7 +131,9 @@ func completeXAIStream(_ context.Context, completion pluginapi.XAIStreamCompleti
 	if err := refreshHealthyAuthDistribution(store); err != nil {
 		_ = store.appendLog(logLevelError, "auth.distribution_failed", "实时守护完成后刷新 auth 分配失败", sanitizeLogText(err.Error()))
 	}
-	detail := fmt.Sprintf("count=%d summary_chars=%d encrypted_bytes=%d output_tokens=%d reasoning_tokens=%d", state.Count, evidence.SummaryChars, evidence.EncryptedBytes, evidence.OutputTokens, evidence.ReasoningTokens)
+	detail := fmt.Sprintf("count=%d priority=%d cooling_until=%d count_advanced=%t waiting_for_inspection=%t permanent=%t summary_chars=%d encrypted_bytes=%d output_tokens=%d reasoning_tokens=%d",
+		transition.State.Count, transition.Priority, transition.State.CoolingUntil, transition.CountAdvanced, transition.WaitingForInspection,
+		transition.Permanent, evidence.SummaryChars, evidence.EncryptedBytes, evidence.OutputTokens, evidence.ReasoningTokens)
 	_ = store.appendLog(logLevelWarn, "guard.degraded", "xAI 响应命中降智守护", reason+" "+detail)
 	return pluginapi.XAIStreamCompletionResponse{
 		Action:     pluginapi.XAIStreamActionRetry,
@@ -133,6 +141,162 @@ func completeXAIStream(_ context.Context, completion pluginapi.XAIStreamCompleti
 		Reason:     reason,
 		StatusCode: http.StatusBadGateway,
 	}, nil
+}
+
+type realtimeDegradationTransition struct {
+	State                degradationState
+	Priority             int
+	CountAdvanced        bool
+	WaitingForInspection bool
+	Permanent            bool
+}
+
+func applyRealtimeDegradation(store *guardianStore, authIndex, authName, requestID, reason string) (realtimeDegradationTransition, error) {
+	store.realtimeDegradationLock.Lock()
+	defer store.realtimeDegradationLock.Unlock()
+
+	entry, err := findXAIAuthEntry(authIndex)
+	if err != nil {
+		return realtimeDegradationTransition{}, err
+	}
+	previousAdjustment, hadPreviousAdjustment, err := store.realtimeDegradationPriorityAdjustment(authIndex)
+	if err != nil {
+		return realtimeDegradationTransition{}, err
+	}
+	previousState, hadPreviousState, err := store.degradationStateForAuth(authIndex)
+	if err != nil {
+		return realtimeDegradationTransition{}, err
+	}
+	currentPriority := entry.Priority
+	if currentPriority == accountInspectionPriorityPermanent {
+		if err := store.finalizePermanentDegradation(authIndex); err != nil {
+			return realtimeDegradationTransition{State: previousState, Priority: currentPriority, Permanent: true}, err
+		}
+		return realtimeDegradationTransition{State: previousState, Priority: currentPriority, Permanent: true}, nil
+	}
+	if hadPreviousState && (previousState.Count >= 3 || previousState.CoolingUntil == degradationPermanentCoolingUntil) {
+		if err := updateXAIAuthPriority(authIndex, accountInspectionPriorityPermanent); err != nil {
+			return realtimeDegradationTransition{State: previousState, Priority: currentPriority, Permanent: true}, err
+		}
+		if err := store.finalizePermanentDegradation(authIndex); err != nil {
+			return realtimeDegradationTransition{State: previousState, Priority: accountInspectionPriorityPermanent, Permanent: true}, err
+		}
+		return realtimeDegradationTransition{State: previousState, Priority: accountInspectionPriorityPermanent, Permanent: true}, nil
+	}
+	if currentPriority == accountInspectionPriorityDegraded && (!hadPreviousAdjustment || previousAdjustment.AdjustedPriority != accountInspectionPriorityDegraded || !hadPreviousState) {
+		return realtimeDegradationTransition{State: previousState, Priority: currentPriority, WaitingForInspection: true}, fmt.Errorf("priority -8 lacks a matching persisted realtime adjustment")
+	}
+
+	now := nowMillis()
+	cooldownExpired := hadPreviousState && previousState.CoolingUntil > 0 && previousState.CoolingUntil <= now
+	if cooldownExpired && (currentPriority != accountInspectionPriorityHealthy || hadPreviousAdjustment) {
+		return realtimeDegradationTransition{State: previousState, Priority: currentPriority, WaitingForInspection: true}, nil
+	}
+	advanceAfterCooldown := !cooldownExpired || (currentPriority == accountInspectionPriorityHealthy && !hadPreviousAdjustment)
+	state, advanced, err := store.recordDegradation(authIndex, authName, requestID, reason, advanceAfterCooldown)
+	if err != nil {
+		return realtimeDegradationTransition{}, err
+	}
+	transition := realtimeDegradationTransition{State: state, Priority: currentPriority, CountAdvanced: advanced}
+	if cooldownExpired && !advanced {
+		transition.WaitingForInspection = false
+		return transition, nil
+	}
+	if state.Count >= 3 {
+		state.Count = 3
+		state.CoolingUntil = degradationPermanentCoolingUntil
+		if err := updateXAIAuthPriority(authIndex, accountInspectionPriorityPermanent); err != nil {
+			return realtimeDegradationTransition{}, err
+		}
+		if err := store.finalizePermanentDegradation(authIndex); err != nil {
+			return realtimeDegradationTransition{State: state, Priority: accountInspectionPriorityPermanent, Permanent: true}, err
+		}
+		return realtimeDegradationTransition{State: state, Priority: accountInspectionPriorityPermanent, Permanent: true}, nil
+	}
+	if currentPriority == accountInspectionPriorityDegraded && hadPreviousAdjustment && previousAdjustment.AdjustedPriority == accountInspectionPriorityDegraded {
+		if previousAdjustment.RecoverAtMS != state.CoolingUntil {
+			previousAdjustment.RecoverAtMS = state.CoolingUntil
+			if err := store.saveRealtimeDegradationPriorityAdjustment(previousAdjustment); err != nil {
+				return realtimeDegradationTransition{}, rollbackRealtimeDegradation(store, authIndex, previousState, hadPreviousState, previousAdjustment, hadPreviousAdjustment, err)
+			}
+		}
+		transition.Priority = accountInspectionPriorityDegraded
+		return transition, nil
+	}
+
+	originalPriority := &currentPriority
+	if hadPreviousAdjustment && (currentPriority == previousAdjustment.AdjustedPriority || previousAdjustment.AdjustedPriority == accountInspectionPriorityDegraded) {
+		originalPriority = previousAdjustment.OriginalPriority
+	}
+	adjustment := accountInspectionPriorityAdjustment{
+		AuthIndex:        authIndex,
+		FileName:         entry.Name,
+		OriginalPriority: originalPriority,
+		AdjustedPriority: accountInspectionPriorityDegraded,
+		RecoverAtMS:      state.CoolingUntil,
+	}
+	if err := store.saveRealtimeDegradationPriorityAdjustment(adjustment); err != nil {
+		return realtimeDegradationTransition{}, rollbackRealtimeDegradation(store, authIndex, previousState, hadPreviousState, previousAdjustment, hadPreviousAdjustment, err)
+	}
+	if currentPriority != accountInspectionPriorityDegraded {
+		if err := updateXAIAuthPriority(authIndex, accountInspectionPriorityDegraded); err != nil {
+			return realtimeDegradationTransition{}, rollbackRealtimeDegradation(store, authIndex, previousState, hadPreviousState, previousAdjustment, hadPreviousAdjustment, err)
+		}
+	}
+	transition.Priority = accountInspectionPriorityDegraded
+	return transition, nil
+}
+
+func rollbackRealtimeDegradation(store *guardianStore, authIndex string, previousState degradationState, hadPreviousState bool, previousAdjustment accountInspectionPriorityAdjustment, hadPreviousAdjustment bool, cause error) error {
+	stateErr := store.restoreDegradationState(authIndex, previousState, hadPreviousState)
+	var adjustmentErr error
+	if hadPreviousAdjustment {
+		adjustmentErr = store.saveRealtimeDegradationPriorityAdjustment(previousAdjustment)
+	} else {
+		adjustmentErr = store.deleteRealtimeDegradationPriorityAdjustment(authIndex)
+	}
+	if stateErr != nil || adjustmentErr != nil {
+		return fmt.Errorf("%w; rollback degradation state error=%v adjustment error=%v", cause, stateErr, adjustmentErr)
+	}
+	return cause
+}
+
+func applyRealtimeHealthy(store *guardianStore, authIndex string) (bool, error) {
+	store.realtimeDegradationLock.Lock()
+	defer store.realtimeDegradationLock.Unlock()
+	state, exists, err := store.degradationStateForAuth(authIndex)
+	if err != nil {
+		return false, err
+	}
+	if !exists {
+		return false, nil
+	}
+	if state.Count >= 3 || state.CoolingUntil == degradationPermanentCoolingUntil {
+		entry, err := findXAIAuthEntry(authIndex)
+		if err != nil {
+			return false, err
+		}
+		if entry.Priority != accountInspectionPriorityPermanent {
+			if err := updateXAIAuthPriority(authIndex, accountInspectionPriorityPermanent); err != nil {
+				return false, err
+			}
+		}
+		if err := store.finalizePermanentDegradation(authIndex); err != nil {
+			return false, err
+		}
+		return false, nil
+	}
+	if state.CoolingUntil <= 0 || state.CoolingUntil > nowMillis() {
+		return false, nil
+	}
+	entry, err := findXAIAuthEntry(authIndex)
+	if err != nil {
+		return false, err
+	}
+	if entry.Priority != accountInspectionPriorityHealthy {
+		return false, nil
+	}
+	return store.clearDegradationIfRecovered(authIndex, entry.Priority)
 }
 
 var errRealtimeGuardCandidateUnavailable = errors.New("realtime guard candidate is unavailable")

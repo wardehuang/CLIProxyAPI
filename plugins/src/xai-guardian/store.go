@@ -249,10 +249,11 @@ type pluginLogList struct {
 }
 
 type guardianStore struct {
-	database              *sql.DB
-	path                  string
-	mutex                 sync.Mutex
-	authDistributionMutex sync.Mutex
+	database                *sql.DB
+	path                    string
+	mutex                   sync.Mutex
+	realtimeDegradationLock sync.Mutex
+	authDistributionMutex   sync.Mutex
 }
 
 func openGuardianStore(path string) (*guardianStore, error) {
@@ -503,6 +504,17 @@ CREATE TABLE IF NOT EXISTS degradation_states (
     last_seen INTEGER NOT NULL DEFAULT 0,
     cooling_until INTEGER NOT NULL DEFAULT 0
 );
+CREATE TABLE IF NOT EXISTS realtime_degradation_priority_adjustments (
+    auth_index TEXT PRIMARY KEY,
+    file_name TEXT NOT NULL DEFAULT '',
+    original_priority INTEGER,
+    adjusted_priority INTEGER NOT NULL,
+    recover_at_ms INTEGER NOT NULL
+);
+INSERT OR IGNORE INTO realtime_degradation_priority_adjustments(auth_index, file_name, original_priority, adjusted_priority, recover_at_ms)
+SELECT auth_index, file_name, original_priority, adjusted_priority, recover_at_ms
+FROM account_inspection_priority_adjustments WHERE adjusted_priority = -8;
+DELETE FROM account_inspection_priority_adjustments WHERE adjusted_priority = -8;
 CREATE TABLE IF NOT EXISTS plugin_logs (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     created_at INTEGER NOT NULL,
@@ -1639,7 +1651,40 @@ func scanAuthBindings(rows *sql.Rows) ([]authBinding, error) {
 	return items, rows.Err()
 }
 
-func (store *guardianStore) recordDegradation(authIndex, authName, requestID, reason string) (degradationState, error) {
+func (store *guardianStore) degradationStateForAuth(authIndex string) (degradationState, bool, error) {
+	store.mutex.Lock()
+	defer store.mutex.Unlock()
+	var state degradationState
+	err := store.database.QueryRow(`SELECT auth_index, auth_name, count, last_reason, last_request_id, last_seen, cooling_until FROM degradation_states WHERE auth_index = ?`, authIndex).Scan(
+		&state.AuthIndex, &state.AuthName, &state.Count, &state.LastReason, &state.LastRequest, &state.LastSeen, &state.CoolingUntil)
+	if err == sql.ErrNoRows {
+		return degradationState{}, false, nil
+	}
+	if err != nil {
+		return degradationState{}, false, fmt.Errorf("read degradation state: %w", err)
+	}
+	return state, true, nil
+}
+
+func (store *guardianStore) restoreDegradationState(authIndex string, previous degradationState, existed bool) error {
+	store.mutex.Lock()
+	defer store.mutex.Unlock()
+	if !existed {
+		if _, err := store.database.Exec(`DELETE FROM degradation_states WHERE auth_index = ?`, authIndex); err != nil {
+			return fmt.Errorf("rollback degradation state: %w", err)
+		}
+		return nil
+	}
+	_, err := store.database.Exec(`INSERT INTO degradation_states(auth_index, auth_name, count, last_reason, last_request_id, last_seen, cooling_until) VALUES (?, ?, ?, ?, ?, ?, ?)
+ON CONFLICT(auth_index) DO UPDATE SET auth_name=excluded.auth_name, count=excluded.count, last_reason=excluded.last_reason, last_request_id=excluded.last_request_id, last_seen=excluded.last_seen, cooling_until=excluded.cooling_until`,
+		previous.AuthIndex, previous.AuthName, previous.Count, previous.LastReason, previous.LastRequest, previous.LastSeen, previous.CoolingUntil)
+	if err != nil {
+		return fmt.Errorf("rollback degradation state: %w", err)
+	}
+	return nil
+}
+
+func (store *guardianStore) recordDegradation(authIndex, authName, requestID, reason string, advanceAfterCooldown bool) (degradationState, bool, error) {
 	store.mutex.Lock()
 	defer store.mutex.Unlock()
 	now := time.Now().UnixMilli()
@@ -1650,11 +1695,15 @@ func (store *guardianStore) recordDegradation(authIndex, authName, requestID, re
 		state.AuthName = authName
 	}
 	if err != nil && err != sql.ErrNoRows {
-		return degradationState{}, fmt.Errorf("read degradation state: %w", err)
+		return degradationState{}, false, fmt.Errorf("read degradation state: %w", err)
 	}
 	duplicateRequest := requestID != "" && requestID == state.LastRequest
-	if !duplicateRequest && state.Count < 3 && (state.CoolingUntil == 0 || state.CoolingUntil <= now) {
+	cooldownExpired := state.CoolingUntil > 0 && state.CoolingUntil <= now
+	advance := state.Count < 3 && (state.CoolingUntil == 0 || (cooldownExpired && advanceAfterCooldown))
+	advanced := false
+	if !duplicateRequest && advance {
 		state.Count++
+		advanced = true
 		switch state.Count {
 		case 1:
 			state.CoolingUntil = now + degradationFirstCooling.Milliseconds()
@@ -1673,9 +1722,9 @@ func (store *guardianStore) recordDegradation(authIndex, authName, requestID, re
 	_, err = store.database.Exec(`INSERT INTO degradation_states(auth_index, auth_name, count, last_reason, last_request_id, last_seen, cooling_until) VALUES (?, ?, ?, ?, ?, ?, ?)
 ON CONFLICT(auth_index) DO UPDATE SET auth_name=CASE WHEN excluded.auth_name <> '' THEN excluded.auth_name ELSE degradation_states.auth_name END, count=excluded.count, last_reason=excluded.last_reason, last_request_id=excluded.last_request_id, last_seen=excluded.last_seen, cooling_until=excluded.cooling_until`, state.AuthIndex, state.AuthName, state.Count, state.LastReason, state.LastRequest, state.LastSeen, state.CoolingUntil)
 	if err != nil {
-		return degradationState{}, fmt.Errorf("save degradation state: %w", err)
+		return degradationState{}, false, fmt.Errorf("save degradation state: %w", err)
 	}
-	return state, nil
+	return state, advanced, nil
 }
 
 func (store *guardianStore) clearDegradation(authIndex string) error {
@@ -1688,25 +1737,30 @@ func (store *guardianStore) clearDegradation(authIndex string) error {
 	return nil
 }
 
-func (store *guardianStore) clearDegradationIfRecovered(authIndex string) error {
+func (store *guardianStore) clearDegradationIfRecovered(authIndex string, priority int) (bool, error) {
 	store.mutex.Lock()
 	defer store.mutex.Unlock()
 	var coolingUntil int64
-	var priority int
-	err := store.database.QueryRow(`SELECT degradation_states.cooling_until, COALESCE(auth_bindings.priority, 0) FROM degradation_states LEFT JOIN auth_bindings ON auth_bindings.auth_index = degradation_states.auth_index WHERE degradation_states.auth_index = ?`, authIndex).Scan(&coolingUntil, &priority)
+	var count int
+	err := store.database.QueryRow(`SELECT cooling_until, count FROM degradation_states WHERE auth_index = ?`, authIndex).Scan(&coolingUntil, &count)
 	if err == sql.ErrNoRows {
-		return nil
+		return false, nil
 	}
 	if err != nil {
-		return fmt.Errorf("read recovered degradation state: %w", err)
+		return false, fmt.Errorf("read recovered degradation state: %w", err)
 	}
-	if priority != 1 || coolingUntil < 0 || (coolingUntil > 0 && coolingUntil > time.Now().UnixMilli()) {
-		return nil
+	if count >= 3 || priority != 1 || coolingUntil < 0 || (coolingUntil > 0 && coolingUntil > time.Now().UnixMilli()) {
+		return false, nil
 	}
-	if _, err := store.database.Exec(`DELETE FROM degradation_states WHERE auth_index = ?`, authIndex); err != nil {
-		return fmt.Errorf("clear recovered degradation state: %w", err)
+	result, err := store.database.Exec(`DELETE FROM degradation_states WHERE auth_index = ?`, authIndex)
+	if err != nil {
+		return false, fmt.Errorf("clear recovered degradation state: %w", err)
 	}
-	return nil
+	deleted, err := result.RowsAffected()
+	if err != nil {
+		return false, fmt.Errorf("read recovered degradation delete result: %w", err)
+	}
+	return deleted == 1, nil
 }
 
 func (store *guardianStore) listDegradations() ([]degradationState, error) {

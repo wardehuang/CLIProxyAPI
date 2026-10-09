@@ -68,15 +68,15 @@ func (m *Manager) UpdateAuthPriority(ctx context.Context, authIndex string, prio
 		m.mu.Unlock()
 		return nil, fmt.Errorf("auth priority update: stale auth generation")
 	}
-	var persistErr error
-	if updater, ok := m.store.(interface {
+	updater, ok := m.store.(interface {
 		UpdatePriorityOnly(context.Context, *Auth, int) error
-	}); ok {
-		persistErr = updater.UpdatePriorityOnly(ctx, updated, priority)
-	} else {
-		_, persistErr = m.store.Save(ctx, updated)
+	})
+	if !ok {
+		persistLock.mu.Unlock()
+		m.mu.Unlock()
+		return nil, fmt.Errorf("auth priority update: store does not support priority-only persistence")
 	}
-	if persistErr != nil {
+	if persistErr := updater.UpdatePriorityOnly(ctx, updated, priority); persistErr != nil {
 		persistLock.mu.Unlock()
 		m.mu.Unlock()
 		return nil, fmt.Errorf("auth priority update: persist priority: %w", persistErr)

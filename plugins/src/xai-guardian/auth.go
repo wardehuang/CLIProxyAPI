@@ -76,6 +76,23 @@ func isXAIAuthEntry(entry pluginapi.HostAuthFileEntry) bool {
 	return strings.EqualFold(strings.TrimSpace(entry.Provider), "xai")
 }
 
+func findXAIAuthEntry(authIndex string) (pluginapi.HostAuthFileEntry, error) {
+	authIndex = strings.TrimSpace(authIndex)
+	if authIndex == "" {
+		return pluginapi.HostAuthFileEntry{}, fmt.Errorf("auth_index is required")
+	}
+	entries, err := listXAIAuthEntries()
+	if err != nil {
+		return pluginapi.HostAuthFileEntry{}, err
+	}
+	for _, entry := range entries {
+		if entry.AuthIndex == authIndex {
+			return entry, nil
+		}
+	}
+	return pluginapi.HostAuthFileEntry{}, fmt.Errorf("persistent xAI auth %s was not found", authIndex)
+}
+
 func authEntryIdentity(entry pluginapi.HostAuthFileEntry) string {
 	if value := strings.TrimSpace(entry.AuthIndex); value != "" {
 		return value
@@ -155,6 +172,15 @@ func getXAIAuthFile(entry pluginapi.HostAuthFileEntry) (xaiAuthFile, error) {
 		Raw:         object,
 		RawJSON:     append(json.RawMessage(nil), response.JSON...),
 	}, nil
+}
+
+func getXAIAuthPriority(authIndex string, fallback int) (int, error) {
+	entry := pluginapi.HostAuthFileEntry{AuthIndex: strings.TrimSpace(authIndex), Priority: fallback}
+	file, err := getXAIAuthFile(entry)
+	if err != nil {
+		return 0, err
+	}
+	return file.Priority, nil
 }
 
 func updateXAIAuthPriority(authIndex string, priority int) error {

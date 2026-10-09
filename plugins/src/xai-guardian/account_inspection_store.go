@@ -382,16 +382,81 @@ func (store *guardianStore) deleteAccountInspectionPriorityAdjustment(authIndex 
 	return nil
 }
 
-func (store *guardianStore) accountInspectionRealtimeCooldown(authIndex string, nowMS int64) (int64, bool, error) {
-	var coolingUntil int64
-	err := store.database.QueryRow(`SELECT cooling_until FROM degradation_states WHERE auth_index = ?`, authIndex).Scan(&coolingUntil)
+func (store *guardianStore) realtimeDegradationPriorityAdjustment(authIndex string) (accountInspectionPriorityAdjustment, bool, error) {
+	var adjustment accountInspectionPriorityAdjustment
+	var originalPriority sql.NullInt64
+	err := store.database.QueryRow(`SELECT auth_index, file_name, original_priority, adjusted_priority, recover_at_ms
+		FROM realtime_degradation_priority_adjustments WHERE auth_index = ?`, authIndex).Scan(
+		&adjustment.AuthIndex, &adjustment.FileName, &originalPriority, &adjustment.AdjustedPriority, &adjustment.RecoverAtMS)
 	if err == sql.ErrNoRows {
-		return 0, false, nil
+		return accountInspectionPriorityAdjustment{}, false, nil
 	}
 	if err != nil {
-		return 0, false, fmt.Errorf("read realtime degradation cooldown: %w", err)
+		return accountInspectionPriorityAdjustment{}, false, fmt.Errorf("read realtime degradation priority adjustment: %w", err)
 	}
-	return coolingUntil, coolingUntil == -1 || coolingUntil > nowMS, nil
+	if originalPriority.Valid {
+		value := int(originalPriority.Int64)
+		adjustment.OriginalPriority = &value
+	}
+	return adjustment, true, nil
+}
+
+func (store *guardianStore) saveRealtimeDegradationPriorityAdjustment(adjustment accountInspectionPriorityAdjustment) error {
+	store.mutex.Lock()
+	defer store.mutex.Unlock()
+	_, err := store.database.Exec(`INSERT INTO realtime_degradation_priority_adjustments(auth_index, file_name, original_priority, adjusted_priority, recover_at_ms)
+		VALUES (?, ?, ?, ?, ?) ON CONFLICT(auth_index) DO UPDATE SET file_name = excluded.file_name,
+		original_priority = excluded.original_priority, adjusted_priority = excluded.adjusted_priority, recover_at_ms = excluded.recover_at_ms`,
+		adjustment.AuthIndex, adjustment.FileName, nullableInt(adjustment.OriginalPriority), adjustment.AdjustedPriority, adjustment.RecoverAtMS)
+	if err != nil {
+		return fmt.Errorf("save realtime degradation priority adjustment: %w", err)
+	}
+	return nil
+}
+
+func (store *guardianStore) deleteRealtimeDegradationPriorityAdjustment(authIndex string) error {
+	store.mutex.Lock()
+	defer store.mutex.Unlock()
+	if _, err := store.database.Exec(`DELETE FROM realtime_degradation_priority_adjustments WHERE auth_index = ?`, authIndex); err != nil {
+		return fmt.Errorf("delete realtime degradation priority adjustment: %w", err)
+	}
+	return nil
+}
+
+func (store *guardianStore) finalizePermanentDegradation(authIndex string) error {
+	store.mutex.Lock()
+	defer store.mutex.Unlock()
+	tx, err := store.database.Begin()
+	if err != nil {
+		return fmt.Errorf("begin permanent degradation cleanup: %w", err)
+	}
+	defer tx.Rollback()
+	if _, err := tx.Exec(`DELETE FROM realtime_degradation_priority_adjustments WHERE auth_index = ?`, authIndex); err != nil {
+		return fmt.Errorf("delete permanent realtime degradation priority adjustment: %w", err)
+	}
+	if _, err := tx.Exec(`DELETE FROM account_inspection_priority_adjustments WHERE auth_index = ?`, authIndex); err != nil {
+		return fmt.Errorf("delete permanent account inspection priority adjustment: %w", err)
+	}
+	if _, err := tx.Exec(`DELETE FROM degradation_states WHERE auth_index = ?`, authIndex); err != nil {
+		return fmt.Errorf("delete permanent degradation state: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit permanent degradation cleanup: %w", err)
+	}
+	return nil
+}
+
+func (store *guardianStore) accountInspectionRealtimeCooldown(authIndex string, nowMS int64) (int64, int, bool, error) {
+	var coolingUntil int64
+	var count int
+	err := store.database.QueryRow(`SELECT cooling_until, count FROM degradation_states WHERE auth_index = ?`, authIndex).Scan(&coolingUntil, &count)
+	if err == sql.ErrNoRows {
+		return 0, 0, false, nil
+	}
+	if err != nil {
+		return 0, 0, false, fmt.Errorf("read realtime degradation cooldown: %w", err)
+	}
+	return coolingUntil, count, coolingUntil == degradationPermanentCoolingUntil || coolingUntil > nowMS, nil
 }
 
 func (store *guardianStore) countAccountInspectionResults(runID int64) (processed, probed, healthy, quotaExhausted, abnormal, skipped int, err error) {

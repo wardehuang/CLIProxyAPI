@@ -449,7 +449,7 @@
     <section class="view" data-view="inspection" role="tabpanel">
       <section class="panel server-panel">
         <div class="panel-header">
-          <div><h2 class="panel-title">xAI Auth 账号巡检</h2><p class="panel-subtitle">按 CPA-Manager-Plus 账号巡检语义检查 Auth 文件及计费状态。</p></div>
+          <div><h2 class="panel-title">xAI Auth 账号巡检</h2><p class="panel-subtitle">按插件内巡检逻辑检查 Auth 文件及计费状态。</p></div>
           <div class="panel-extra"><button class="primary-button" id="run-inspection" type="button">立即巡检</button></div>
         </div>
         <div class="help-text">仅检查 xAI Auth 账号；billing 请求遵守 CPA 规范，不设响应阶段 timeout。巡检只调整 priority，不修改 schedule_group。</div>
@@ -805,7 +805,7 @@ socks5h://proxy.example:1080"></textarea>
     function renderMode() {
       const descriptions = {
         accounts: ['账号状态', '只显示最近一次账号巡检的探测候选及该次巡检结果；没有候选时显示空列表。'],
-        inspection: ['服务端巡检', '检查 xAI Auth 账号状态、额度和计费响应，并按 Manager 语义调整 priority。'],
+        inspection: ['服务端巡检', '检查 xAI Auth 账号状态、额度和计费响应，并按插件内降智状态机调整 priority。'],
         guard: ['降智守护', '查看降智记录、守护策略和插件日志。']
       };
       document.querySelectorAll('[data-mode]').forEach((button) => {
