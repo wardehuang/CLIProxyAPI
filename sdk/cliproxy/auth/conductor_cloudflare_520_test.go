@@ -493,6 +493,14 @@ func TestIsCloudflareChallengeResultError_Excludes5xx(t *testing.T) {
 		}
 	}
 
+	err429 := &Error{
+		HTTPStatus: http.StatusTooManyRequests,
+		Message:    "cf-mitigated: challenge",
+	}
+	if isCloudflareChallengeResultError(err429) {
+		t.Fatal("429 must use the fixed rate-limit cooldown, not Cloudflare challenge cooldown")
+	}
+
 	err403 := &Error{
 		HTTPStatus: 403,
 		Message:    "cf-mitigated: challenge",

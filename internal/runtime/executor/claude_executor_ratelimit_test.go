@@ -467,7 +467,7 @@ func TestClaudeExecutor_AuthManager_CredentialScopeBlocksAllModelsAndAliases(t *
 		t.Fatalf("failed to register auth: %v", errRegister)
 	}
 
-	// 1. Initial request on sonnet triggers 429 and records 7d cooldown
+	// 1. Initial request on sonnet triggers 429 with a 7d Retry-After; CPA applies its fixed 30m cooldown.
 	payload := []byte(`{"messages":[{"role":"user","content":[{"type":"text","text":"hi"}]}]}`)
 	_, err := manager.Execute(context.Background(), []string{"claude"}, cliproxyexecutor.Request{
 		Model:   "claude-3-5-sonnet-20241022",

@@ -872,43 +872,16 @@ func (m *Manager) MarkResult(ctx context.Context, result Result) {
 						case 429:
 							var next time.Time
 							var credentialNext time.Time
-							backoffLevel := state.Quota.BackoffLevel
-							if result.CredentialScope {
-								backoffLevel = 0
-								if auth.Quota.Exceeded && auth.Quota.Reason == "credential_quota" {
-									backoffLevel = auth.Quota.BackoffLevel
-								}
-							}
 							if !disableCooling {
-								if result.RetryAfter != nil {
-									cooldown := *result.RetryAfter
-									if cooldown < minQuotaCooldownFloor {
-										cooldown = minQuotaCooldownFloor
-									}
-									next = now.Add(cooldown).Round(0)
-								} else {
-									quotaForFailure := state.Quota
-									if result.CredentialScope {
-										if auth.Quota.Exceeded && auth.Quota.Reason == "credential_quota" {
-											quotaForFailure = auth.Quota
-										} else {
-											quotaForFailure.NextRecoverAt = time.Time{}
-											quotaForFailure.BackoffLevel = 0
-										}
-									}
-									next, backoffLevel = quotaCooldownAfterFailure(quotaForFailure, now)
-								}
+								next = now.Add(quotaRateLimitCooldown)
 								credentialNext = next
-								if state.Quota.Exceeded && state.Quota.NextRecoverAt.After(next) {
-									next = state.Quota.NextRecoverAt
-								}
 							}
 							state.NextRetryAfter = next
 							applyCooldownFields(&state.Quota, QuotaState{
 								Exceeded:      true,
 								Reason:        "quota",
 								NextRecoverAt: next,
-								BackoffLevel:  backoffLevel,
+								BackoffLevel:  0,
 							})
 							if result.CredentialScope && !disableCooling {
 								for _, otherState := range auth.ModelStates {
@@ -916,13 +889,15 @@ func (m *Manager) MarkResult(ctx context.Context, result Result) {
 										otherState.Unavailable = true
 										otherState.Status = StatusError
 										otherQuotaNext := credentialNext
-										if otherState.Quota.Exceeded && otherState.Quota.NextRecoverAt.After(otherQuotaNext) {
+										priorRateLimit := otherState.Quota.Exceeded &&
+											(otherState.Quota.Reason == "quota" || otherState.Quota.Reason == "credential_quota")
+										if otherState.Quota.Exceeded && !priorRateLimit && otherState.Quota.NextRecoverAt.After(otherQuotaNext) {
 											otherQuotaNext = otherState.Quota.NextRecoverAt
 										}
 										otherRetryAfter := otherQuotaNext
-										// Propagation only extends a sibling's still-live
-										// per-model deadline; it never shortens one.
-										if !otherState.NextRetryAfter.IsZero() && otherState.NextRetryAfter.After(otherRetryAfter) {
+										// Reset prior rate-limit windows while retaining an unrelated,
+										// still-live per-model cooldown.
+										if !priorRateLimit && !otherState.NextRetryAfter.IsZero() && otherState.NextRetryAfter.After(otherRetryAfter) {
 											otherRetryAfter = otherState.NextRetryAfter
 										}
 										otherState.NextRetryAfter = otherRetryAfter
@@ -930,20 +905,16 @@ func (m *Manager) MarkResult(ctx context.Context, result Result) {
 											Exceeded:      true,
 											Reason:        "credential_quota",
 											NextRecoverAt: otherQuotaNext,
-											BackoffLevel:  backoffLevel,
+											BackoffLevel:  0,
 										})
 									}
 								}
 								auth.Unavailable = true
 								authNext := credentialNext
-								if auth.Quota.Exceeded && auth.Quota.Reason == "credential_quota" &&
-									auth.Quota.NextRecoverAt.After(authNext) {
-									authNext = auth.Quota.NextRecoverAt
-								}
 								auth.Quota.Exceeded = true
 								auth.Quota.Reason = "credential_quota"
 								auth.Quota.NextRecoverAt = authNext
-								auth.Quota.BackoffLevel = backoffLevel
+								auth.Quota.BackoffLevel = 0
 								auth.NextRetryAfter = authNext
 							}
 						case 408, 500, 502, 503, 504, 520, 521, 522, 523, 524, 525, 526:
@@ -963,10 +934,8 @@ func (m *Manager) MarkResult(ctx context.Context, result Result) {
 						state.NextRetryAfter = now.Add(transientErrorCooldown)
 						state.Unavailable = true
 					}
-					// A later failure only extends a still-live cooldown; it never
-					// shortens one. A deliberate zero write (disableCooling) still
-					// clears the deadline.
-					if !state.NextRetryAfter.IsZero() && prevModelRetryAfter.After(state.NextRetryAfter) && prevModelRetryAfter.After(now) {
+					// Non-429 failures never shorten a still-live cooldown. A 429 resets its rate-limit window to 30 minutes; disableCooling still clears it.
+					if statusCode != http.StatusTooManyRequests && !state.NextRetryAfter.IsZero() && prevModelRetryAfter.After(state.NextRetryAfter) && prevModelRetryAfter.After(now) {
 						state.NextRetryAfter = prevModelRetryAfter
 					}
 					auth.Status = StatusError
@@ -1873,10 +1842,11 @@ func isCloudflareChallengeError(err error) bool {
 }
 
 // isCloudflareChallengeResultError checks whether err is a Cloudflare bot/waf challenge.
+// HTTP 429 is always handled by the fixed rate-limit cooldown.
 // Responses with HTTP status >= 500 represent upstream gateway/origin failures
 // (such as Cloudflare 520-526) and are excluded from challenge classification.
 func isCloudflareChallengeResultError(err *Error) bool {
-	if err == nil {
+	if err == nil || statusCodeFromResult(err) == http.StatusTooManyRequests {
 		return false
 	}
 	if status := statusCodeFromResult(err); status >= 500 {
@@ -2272,20 +2242,10 @@ func applyAuthFailureState(auth *Auth, resultErr *Error, retryAfter *time.Durati
 			auth.Quota.Reason = "quota"
 			var next time.Time
 			if !disableCooling {
-				if retryAfter != nil {
-					cooldown := *retryAfter
-					if cooldown < minQuotaCooldownFloor {
-						cooldown = minQuotaCooldownFloor
-					}
-					next = now.Add(cooldown).Round(0)
-				} else {
-					next, auth.Quota.BackoffLevel = quotaCooldownAfterFailure(auth.Quota, now)
-				}
-				if auth.Quota.Exceeded && auth.Quota.NextRecoverAt.After(next) {
-					next = auth.Quota.NextRecoverAt
-				}
+				next = now.Add(quotaRateLimitCooldown)
 			}
 			auth.Quota.NextRecoverAt = next
+			auth.Quota.BackoffLevel = 0
 			auth.NextRetryAfter = next
 		case 408, 500, 502, 503, 504, 520, 521, 522, 523, 524, 525, 526:
 			auth.StatusMessage = "transient upstream error"
@@ -2299,32 +2259,14 @@ func applyAuthFailureState(auth *Auth, resultErr *Error, retryAfter *time.Durati
 			auth.Unavailable = !auth.NextRetryAfter.IsZero()
 		}
 	}
-	// A later failure only extends a still-live credential cooldown; a
-	// deliberate zero write (disableCooling) still clears it.
-	if !auth.NextRetryAfter.IsZero() && prevAuthRetryAfter.After(auth.NextRetryAfter) && prevAuthRetryAfter.After(now) {
+	// Non-429 failures never shorten a still-live credential cooldown. A 429 resets its rate-limit window to 30 minutes.
+	if statusCode != http.StatusTooManyRequests && !auth.NextRetryAfter.IsZero() && prevAuthRetryAfter.After(auth.NextRetryAfter) && prevAuthRetryAfter.After(now) {
 		auth.NextRetryAfter = prevAuthRetryAfter
 	}
 	if resultErr != nil && resultErr.Code == ErrorCodeForceCooldown && auth.NextRetryAfter.IsZero() {
 		auth.NextRetryAfter = now.Add(transientErrorCooldown)
 		auth.Unavailable = true
 	}
-}
-
-// quotaCooldownAfterFailure returns the recovery deadline and backoff level for
-// a quota failure observed at now. Failures that land while a previous quota
-// window is still open reuse that window instead of escalating, so a burst of
-// concurrent in-flight failures advances the backoff ladder at most once per
-// window.
-func quotaCooldownAfterFailure(quota QuotaState, now time.Time) (time.Time, int) {
-	if quota.NextRecoverAt.After(now) {
-		return quota.NextRecoverAt, quota.BackoffLevel
-	}
-	cooldown, nextLevel := nextQuotaCooldown(quota.BackoffLevel, false)
-	var next time.Time
-	if cooldown > 0 {
-		next = now.Add(cooldown).Round(0)
-	}
-	return next, nextLevel
 }
 
 // nextQuotaCooldown returns the next cooldown duration and updated backoff level for repeated quota errors.

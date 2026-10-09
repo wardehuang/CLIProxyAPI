@@ -9,8 +9,8 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/registry"
 )
 
-// Later failure writes must never shorten a still-live cooldown; they may only
-// extend it (#5501). A deliberate zero write (disableCooling) still clears.
+// Non-429 failure writes must never shorten a still-live cooldown; they may only
+// extend it (#5501). A 429 resets its rate-limit window to the fixed duration.
 
 func newCooldownMonotonicManager(t *testing.T, models ...string) (*Manager, *Auth) {
 	t.Helper()
@@ -37,23 +37,23 @@ func TestManager_MarkResult_CredentialScopeKeepsLongerSiblingDeadline(t *testing
 
 	m, auth := newCooldownMonotonicManager(t, "model-a", "model-b")
 
-	// Long per-model deadline on model-b: a 401 (~30m) or 404 (12h).
+	// Model B has a longer per-model deadline from a 404.
 	m.MarkResult(context.Background(), Result{
 		AuthID: auth.ID, Provider: auth.Provider, Model: "model-b",
-		Success: false, Error: &Error{HTTPStatus: http.StatusUnauthorized, Message: "long 401"},
+		Success: false, Error: &Error{HTTPStatus: http.StatusNotFound, Message: "model not found"},
 	})
 	before := time.Now()
 	sibling, _ := m.GetByID(auth.ID)
 	bState := existingModelState(sibling, canonicalModelKey("model-b"))
-	if bState == nil || bState.NextRetryAfter.Before(before.Add(25*time.Minute)) {
+	if bState == nil || bState.NextRetryAfter.Before(before.Add(11*time.Hour)) {
 		t.Fatalf("precondition failed: model-b long deadline missing: %+v", bState)
 	}
 
-	// Shorter credential-scoped 429 on model-a must not shorten model-b.
-	short := 5 * time.Minute
+	// Credential-scoped 429 uses the fixed 30-minute cooldown without shortening model B.
+	retryAfter := 5 * time.Minute
 	m.MarkResult(context.Background(), Result{
 		AuthID: auth.ID, Provider: auth.Provider, Model: "model-a",
-		Success: false, RetryAfter: &short, CredentialScope: true,
+		Success: false, RetryAfter: &retryAfter, CredentialScope: true,
 		Error: &Error{HTTPStatus: http.StatusTooManyRequests, Message: "credential 429"},
 	})
 
@@ -62,18 +62,17 @@ func TestManager_MarkResult_CredentialScopeKeepsLongerSiblingDeadline(t *testing
 	if bStateAfter == nil {
 		t.Fatal("model-b state missing after sibling failure")
 	}
-	if bStateAfter.NextRetryAfter.Before(before.Add(25 * time.Minute)) {
+	if bStateAfter.NextRetryAfter.Before(before.Add(11 * time.Hour)) {
 		t.Fatalf("credential-scoped failure shortened model-b deadline to %v", bStateAfter.NextRetryAfter.Sub(before))
 	}
 
-	// Model A should only be blocked for the 5-minute credential quota, not elevated to Model B's 30m deadline.
-	blockedA, _, _ := isAuthBlockedForModel(updated, "model-a", before.Add(6*time.Minute))
+	blockedA, _, _ := isAuthBlockedForModel(updated, "model-a", before.Add(31*time.Minute))
 	if blockedA {
-		t.Fatalf("model-a should have unblocked after its 5m credential quota, but is still blocked")
+		t.Fatal("model-a remained blocked beyond the fixed 30-minute credential cooldown")
 	}
-	blockedB, _, _ := isAuthBlockedForModel(updated, "model-b", before.Add(6*time.Minute))
+	blockedB, _, _ := isAuthBlockedForModel(updated, "model-b", before.Add(31*time.Minute))
 	if !blockedB {
-		t.Fatalf("model-b should still be blocked after 6 minutes due to its 30m deadline")
+		t.Fatal("model-b should remain blocked by its longer per-model deadline")
 	}
 }
 
@@ -94,11 +93,11 @@ func TestManager_MarkResult_CredentialScope_DoesNotPromoteSiblingDeadlineToQuota
 	})
 	before := time.Now()
 
-	// 2. Model A gets a credential-scoped 429 (5m deadline).
-	short := 5 * time.Minute
+	// 2. Model A gets a credential-scoped 429 (fixed 30-minute deadline).
+	retryAfter := 5 * time.Minute
 	m.MarkResult(context.Background(), Result{
 		AuthID: auth.ID, Provider: auth.Provider, Model: "model-a",
-		Success: false, RetryAfter: &short, CredentialScope: true,
+		Success: false, RetryAfter: &retryAfter, CredentialScope: true,
 		Error: &Error{HTTPStatus: http.StatusTooManyRequests, Message: "credential 429"},
 	})
 
@@ -111,40 +110,36 @@ func TestManager_MarkResult_CredentialScope_DoesNotPromoteSiblingDeadlineToQuota
 	if bState1.NextRetryAfter.Before(before.Add(11 * time.Hour)) {
 		t.Fatalf("model-b NextRetryAfter shortened: %v", bState1.NextRetryAfter.Sub(before))
 	}
-	// Model B's Quota.NextRecoverAt must be ~5m, NOT 12h!
-	if bState1.Quota.NextRecoverAt.After(before.Add(10 * time.Minute)) {
-		t.Fatalf("model-b Quota.NextRecoverAt was incorrectly elevated to %v", bState1.Quota.NextRecoverAt.Sub(before))
+	if bState1.Quota.NextRecoverAt.Before(before.Add(29*time.Minute)) || bState1.Quota.NextRecoverAt.After(before.Add(31*time.Minute)) {
+		t.Fatalf("model-b Quota.NextRecoverAt should be the fixed 30-minute deadline: %v", bState1.Quota.NextRecoverAt.Sub(before))
 	}
 
-	// 3. A subsequent in-flight request on Model B also returns credential-scoped 429 (5m).
+	// 3. A subsequent in-flight request on Model B also returns credential-scoped 429.
 	m.MarkResult(context.Background(), Result{
-		AuthID: auth.ID, Provider: auth.Provider, Model: "model-b",
-		Success: false, RetryAfter: &short, CredentialScope: true,
-		Error: &Error{HTTPStatus: http.StatusTooManyRequests, Message: "credential 429"},
+		AuthID: auth.ID, Provider: auth.Provider, Model: "model-b", CredentialScope: true,
+		Error: &Error{HTTPStatus: http.StatusTooManyRequests, Message: "credential quota exceeded again"},
 	})
 
+	secondFailureAt := time.Now()
 	snap2, _ := m.GetByID(auth.ID)
-	// Model A must NOT have been elevated to 12h!
 	aState2 := existingModelState(snap2, canonicalModelKey("model-a"))
 	if aState2 == nil {
 		t.Fatal("model-a state missing")
 	}
-	if aState2.NextRetryAfter.After(before.Add(10 * time.Minute)) {
-		t.Fatalf("model-a was incorrectly elevated to 12h: NextRetryAfter=%v", aState2.NextRetryAfter.Sub(before))
+	if aState2.NextRetryAfter.Before(secondFailureAt.Add(29*time.Minute)) || aState2.NextRetryAfter.After(secondFailureAt.Add(31*time.Minute)) {
+		t.Fatalf("model-a did not receive the fixed 30-minute credential cooldown: %v", aState2.NextRetryAfter.Sub(secondFailureAt))
 	}
-	if snap2.Quota.NextRecoverAt.After(before.Add(10 * time.Minute)) {
-		t.Fatalf("auth.Quota.NextRecoverAt was incorrectly elevated to 12h: %v", snap2.Quota.NextRecoverAt.Sub(before))
+	if snap2.Quota.NextRecoverAt.Before(secondFailureAt.Add(29*time.Minute)) || snap2.Quota.NextRecoverAt.After(secondFailureAt.Add(31*time.Minute)) {
+		t.Fatalf("auth quota did not receive the fixed 30-minute credential cooldown: %v", snap2.Quota.NextRecoverAt.Sub(secondFailureAt))
 	}
 
-	// Model A should unblock after 6 minutes.
-	blockedA, _, _ := isAuthBlockedForModel(snap2, "model-a", before.Add(6*time.Minute))
+	blockedA, _, _ := isAuthBlockedForModel(snap2, "model-a", secondFailureAt.Add(31*time.Minute))
 	if blockedA {
-		t.Fatalf("model-a should be unblocked after 6m, but is blocked")
+		t.Fatal("model-a should unblock after the fixed 30-minute credential cooldown")
 	}
-	// Model B should still be blocked after 6 minutes.
-	blockedB, _, _ := isAuthBlockedForModel(snap2, "model-b", before.Add(6*time.Minute))
+	blockedB, _, _ := isAuthBlockedForModel(snap2, "model-b", secondFailureAt.Add(31*time.Minute))
 	if !blockedB {
-		t.Fatalf("model-b should still be blocked after 6m")
+		t.Fatal("model-b should remain blocked by its independent 12-hour deadline")
 	}
 }
 
@@ -302,7 +297,7 @@ func TestManager_MarkResult_CredentialScopeDoesNotInheritModelQuotaDeadline(t *t
 				m.MarkResult(ctx, Result{AuthID: auth.ID, Provider: auth.Provider, Model: model, Success: true})
 			}
 
-			before := time.Now()
+			firstFailureAt := time.Now()
 			modelOnlyRetry := 8 * 24 * time.Hour
 			m.MarkResult(ctx, Result{
 				AuthID: auth.ID, Provider: auth.Provider, Model: "claude-fable-5-1",
@@ -311,14 +306,17 @@ func TestManager_MarkResult_CredentialScopeDoesNotInheritModelQuotaDeadline(t *t
 			})
 
 			modelOnlyAuth, _ := m.GetByID(auth.ID)
-			if modelOnlyAuth.Quota.Reason != "quota" || !modelOnlyAuth.Quota.NextRecoverAt.After(before.Add(7*24*time.Hour)) {
-				t.Fatalf("precondition failed: model quota deadline was not aggregated: quota=%+v", modelOnlyAuth.Quota)
+			if modelOnlyAuth.Quota.Reason != "quota" ||
+				modelOnlyAuth.Quota.NextRecoverAt.Before(firstFailureAt.Add(29*time.Minute)) ||
+				modelOnlyAuth.Quota.NextRecoverAt.After(firstFailureAt.Add(31*time.Minute)) {
+				t.Fatalf("model-only quota did not use fixed 30-minute cooldown: quota=%+v", modelOnlyAuth.Quota)
 			}
 			if blocked, _, _ := isAuthBlockedForModel(modelOnlyAuth, "claude-opus-5-5", time.Now()); blocked {
 				t.Fatal("model-only cooldown should not block an unrelated model")
 			}
 
 			credentialRetry := 3 * time.Hour
+			credentialFailureAt := time.Now()
 			m.MarkResult(ctx, Result{
 				AuthID: auth.ID, Provider: auth.Provider, Model: testCase.credentialModel,
 				RetryAfter: &credentialRetry, CredentialScope: true,
@@ -326,41 +324,38 @@ func TestManager_MarkResult_CredentialScopeDoesNotInheritModelQuotaDeadline(t *t
 			})
 
 			updated, _ := m.GetByID(auth.ID)
-			minCredentialDeadline := before.Add(credentialRetry - time.Hour)
-			maxCredentialDeadline := before.Add(credentialRetry + time.Hour)
 			if updated.Quota.Reason != "credential_quota" ||
-				updated.Quota.NextRecoverAt.Before(minCredentialDeadline) ||
-				updated.Quota.NextRecoverAt.After(maxCredentialDeadline) {
-				t.Fatalf("credential cooldown inherited a model-only deadline: reason=%q deadline=%v (in %v)",
-					updated.Quota.Reason, updated.Quota.NextRecoverAt, updated.Quota.NextRecoverAt.Sub(before))
+				updated.Quota.NextRecoverAt.Before(credentialFailureAt.Add(29*time.Minute)) ||
+				updated.Quota.NextRecoverAt.After(credentialFailureAt.Add(31*time.Minute)) {
+				t.Fatalf("credential cooldown inherited a model-only deadline or Retry-After: reason=%q deadline=%v (in %v)",
+					updated.Quota.Reason, updated.Quota.NextRecoverAt, updated.Quota.NextRecoverAt.Sub(credentialFailureAt))
 			}
 
-			opusBlocked, _, opusNext := isAuthBlockedForModel(updated, "claude-opus-5-5", before.Add(credentialRetry+time.Minute))
+			opusBlocked, _, opusNext := isAuthBlockedForModel(updated, "claude-opus-5-5", credentialFailureAt.Add(31*time.Minute))
 			if opusBlocked {
-				t.Fatalf("opus remained blocked beyond credential cooldown: next=%v (in %v)", opusNext, opusNext.Sub(before))
+				t.Fatalf("opus remained blocked beyond credential cooldown: next=%v (in %v)", opusNext, opusNext.Sub(credentialFailureAt))
 			}
-			fableBlocked, _, fableNext := isAuthBlockedForModel(updated, "claude-fable-5-1", before.Add(credentialRetry+time.Minute))
-			if !fableBlocked || !fableNext.After(before.Add(7*24*time.Hour)) {
-				t.Fatalf("model-only cooldown was not retained for Fable: blocked=%v next=%v", fableBlocked, fableNext)
+			fableBlocked, _, fableNext := isAuthBlockedForModel(updated, "claude-fable-5-1", credentialFailureAt.Add(31*time.Minute))
+			if fableBlocked {
+				t.Fatalf("model-only cooldown was not limited to 30 minutes: next=%v", fableNext)
 			}
 
-			credentialDeadline := updated.Quota.NextRecoverAt
-			shorterCredentialRetry := 30 * time.Minute
+			secondRetryHint := 30 * time.Minute
+			secondFailureAt := time.Now()
 			m.MarkResult(ctx, Result{
 				AuthID: auth.ID, Provider: auth.Provider, Model: "claude-sonnet-4",
-				RetryAfter: &shorterCredentialRetry, CredentialScope: true,
-				Error: &Error{HTTPStatus: http.StatusTooManyRequests, Message: "shorter shared window rejection"},
+				RetryAfter: &secondRetryHint, CredentialScope: true,
+				Error: &Error{HTTPStatus: http.StatusTooManyRequests, Message: "another shared window rejection"},
 			})
 			updated, _ = m.GetByID(auth.ID)
-			if !updated.Quota.NextRecoverAt.Equal(credentialDeadline) {
-				t.Fatalf("later credential-scoped cooldown shortened the active credential deadline: got=%v want=%v",
-					updated.Quota.NextRecoverAt, credentialDeadline)
+			if updated.Quota.NextRecoverAt.Before(secondFailureAt.Add(29*time.Minute)) || updated.Quota.NextRecoverAt.After(secondFailureAt.Add(31*time.Minute)) {
+				t.Fatalf("later credential-scoped 429 did not reset to 30 minutes: deadline=%v", updated.Quota.NextRecoverAt)
 			}
 		})
 	}
 }
 
-func TestManager_MarkResult_CredentialScopeBackoffPersistsAcrossWindows(t *testing.T) {
+func TestManager_MarkResult_CredentialScopeResetsExpiredBackoffToFixedCooldown(t *testing.T) {
 	withQuotaCooldownEnabled(t)
 
 	m, auth := newCooldownMonotonicManager(t, "model-a", "model-b")
@@ -371,8 +366,8 @@ func TestManager_MarkResult_CredentialScopeBackoffPersistsAcrossWindows(t *testi
 	})
 
 	updated, _ := m.GetByID(auth.ID)
-	if updated.Quota.BackoffLevel != 1 {
-		t.Fatalf("first credential quota failure did not retain backoff level 1: quota=%+v", updated.Quota)
+	if updated.Quota.BackoffLevel != 0 {
+		t.Fatalf("fixed cooldown must not retain a backoff level: quota=%+v", updated.Quota)
 	}
 
 	expired := time.Now().Add(-time.Minute)
@@ -395,26 +390,26 @@ func TestManager_MarkResult_CredentialScopeBackoffPersistsAcrossWindows(t *testi
 	})
 
 	updated, _ = m.GetByID(auth.ID)
-	if updated.Quota.BackoffLevel != 2 {
-		t.Fatalf("second credential quota failure did not advance backoff to level 2: quota=%+v", updated.Quota)
+	if updated.Quota.BackoffLevel != 0 {
+		t.Fatalf("second 429 changed the fixed cooldown backoff level: quota=%+v", updated.Quota)
 	}
-	if updated.Quota.NextRecoverAt.Before(secondFailureAt.Add(2 * quotaBackoffBase)) {
-		t.Fatalf("second credential quota failure did not use the next backoff window: deadline=%v", updated.Quota.NextRecoverAt)
+	if updated.Quota.NextRecoverAt.Before(secondFailureAt.Add(29*time.Minute)) || updated.Quota.NextRecoverAt.After(secondFailureAt.Add(31*time.Minute)) {
+		t.Fatalf("second 429 did not use the fixed 30-minute cooldown: deadline=%v", updated.Quota.NextRecoverAt)
 	}
 }
 
-func TestManager_MarkResult_CredentialScopeDoesNotInheritModelBackoffLevel(t *testing.T) {
+func TestManager_MarkResult_CredentialScopeUsesFixedCooldown(t *testing.T) {
 	withQuotaCooldownEnabled(t)
 
 	retryAfter := 10 * time.Second
+	longRetryAfter := 3 * time.Hour
 	tests := []struct {
-		name                 string
-		retryAfter           *time.Duration
-		wantBackoffLevel     int
-		wantCooldownDuration time.Duration
+		name       string
+		retryAfter *time.Duration
 	}{
-		{name: "without_retry_hint", wantBackoffLevel: 1, wantCooldownDuration: quotaBackoffBase},
-		{name: "with_retry_hint", retryAfter: &retryAfter, wantCooldownDuration: retryAfter},
+		{name: "without_retry_hint"},
+		{name: "with_short_retry_hint", retryAfter: &retryAfter},
+		{name: "with_long_retry_hint", retryAfter: &longRetryAfter},
 	}
 	for _, testCase := range tests {
 		t.Run(testCase.name, func(t *testing.T) {
@@ -427,27 +422,23 @@ func TestManager_MarkResult_CredentialScopeDoesNotInheritModelBackoffLevel(t *te
 
 			modelOnlyAuth, _ := m.GetByID(auth.ID)
 			modelState := existingModelState(modelOnlyAuth, canonicalModelKey("model-a"))
-			if modelOnlyAuth.Quota.Reason != "quota" || modelState == nil || modelState.Quota.BackoffLevel != 1 {
-				t.Fatalf("precondition failed: model-only quota/backoff missing: auth=%+v state=%+v", modelOnlyAuth.Quota, modelState)
+			if modelOnlyAuth.Quota.Reason != "quota" || modelState == nil || modelState.Quota.BackoffLevel != 0 {
+				t.Fatalf("precondition failed: model-only fixed quota cooldown missing: auth=%+v state=%+v", modelOnlyAuth.Quota, modelState)
 			}
 
-			secondFailureStarted := time.Now()
+			secondFailureAt := time.Now()
 			m.MarkResult(ctx, Result{
 				AuthID: auth.ID, Provider: auth.Provider, Model: "model-a", RetryAfter: testCase.retryAfter,
 				CredentialScope: true,
 				Error:           &Error{HTTPStatus: http.StatusTooManyRequests, Message: "credential quota exceeded"},
 			})
-			secondFailureCompleted := time.Now()
 
 			updated, _ := m.GetByID(auth.ID)
-			if updated.Quota.BackoffLevel != testCase.wantBackoffLevel {
-				t.Fatalf("credential cooldown inherited model backoff: got level %d, want %d", updated.Quota.BackoffLevel, testCase.wantBackoffLevel)
+			if updated.Quota.BackoffLevel != 0 {
+				t.Fatalf("credential cooldown changed fixed backoff level: got %d", updated.Quota.BackoffLevel)
 			}
-			minDeadline := secondFailureStarted.Add(testCase.wantCooldownDuration)
-			maxDeadline := secondFailureCompleted.Add(testCase.wantCooldownDuration)
-			if updated.Quota.NextRecoverAt.Before(minDeadline) || updated.Quota.NextRecoverAt.After(maxDeadline) {
-				t.Fatalf("credential cooldown deadline=%v, want between %v and %v",
-					updated.Quota.NextRecoverAt, minDeadline, maxDeadline)
+			if updated.Quota.NextRecoverAt.Before(secondFailureAt.Add(29*time.Minute)) || updated.Quota.NextRecoverAt.After(secondFailureAt.Add(31*time.Minute)) {
+				t.Fatalf("credential cooldown ignored fixed 30-minute duration: deadline=%v", updated.Quota.NextRecoverAt)
 			}
 		})
 	}

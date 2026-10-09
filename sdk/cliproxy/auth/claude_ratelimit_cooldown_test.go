@@ -12,7 +12,7 @@ import (
 
 func TestAuthManager_ConcurrentSuccessDoesNotClearActiveCredentialCooldown(t *testing.T) {
 	now := time.Now()
-	sevenDayReset := now.Add(7 * 24 * time.Hour)
+	fixedReset := now.Add(30 * time.Minute)
 
 	manager := NewManager(nil, nil, nil)
 
@@ -38,7 +38,7 @@ func TestAuthManager_ConcurrentSuccessDoesNotClearActiveCredentialCooldown(t *te
 		t.Fatalf("register auth: %v", err)
 	}
 
-	// 1. Request A fails with 7d credential-scoped cooldown
+	// 1. Request A returns a 7d Retry-After; CPA applies its fixed 30-minute credential cooldown.
 	sevenDayDuration := 7 * 24 * time.Hour
 	manager.MarkResult(context.Background(), Result{
 		AuthID:          auth.ID,
@@ -63,18 +63,20 @@ func TestAuthManager_ConcurrentSuccessDoesNotClearActiveCredentialCooldown(t *te
 	if !ok || updatedAuth == nil {
 		t.Fatal("auth not found")
 	}
-	if !updatedAuth.Quota.Exceeded || !updatedAuth.Quota.NextRecoverAt.After(now.Add(6*24*time.Hour)) {
-		t.Fatalf("auth quota was cleared or shortened by concurrent success: quota=%+v", updatedAuth.Quota)
+	if !updatedAuth.Quota.Exceeded ||
+		updatedAuth.Quota.NextRecoverAt.Before(now.Add(29*time.Minute)) ||
+		updatedAuth.Quota.NextRecoverAt.After(now.Add(31*time.Minute)) {
+		t.Fatalf("auth quota was cleared or not set to the fixed 30-minute cooldown: quota=%+v", updatedAuth.Quota)
 	}
 
-	// Selecting any model on this credential must be blocked locally
+	// Selecting any model on this credential must be blocked for the fixed 30-minute window.
 	for _, m := range []string{"claude-3-5-sonnet-20241022", "claude-3-opus-20240229", "claude-3-7-sonnet-20250219"} {
 		blocked, reason, next := isAuthBlockedForModel(updatedAuth, m, time.Now())
 		if !blocked {
-			t.Fatalf("model %q was unblocked despite active 7d credential cooldown", m)
+			t.Fatalf("model %q was unblocked despite active credential cooldown", m)
 		}
-		if reason != blockReasonCooldown || next.Before(sevenDayReset.Add(-time.Minute)) {
-			t.Fatalf("model %q block reason=%v next=%v, want cooldown ~7d", m, reason, next)
+		if reason != blockReasonCooldown || next.Before(fixedReset.Add(-time.Minute)) || next.After(fixedReset.Add(time.Minute)) {
+			t.Fatalf("model %q block reason=%v next=%v, want cooldown near 30m", m, reason, next)
 		}
 	}
 }
@@ -131,8 +133,10 @@ func TestAuthManager_UpdatePreservesActiveCredentialCooldown(t *testing.T) {
 	if !ok || persistedAuth == nil {
 		t.Fatal("auth not found after update")
 	}
-	if !persistedAuth.Quota.Exceeded || persistedAuth.Quota.Reason != "credential_quota" || !persistedAuth.Quota.NextRecoverAt.After(now.Add(6*24*time.Hour)) {
-		t.Fatalf("credential cooldown was lost after Update: quota=%+v", persistedAuth.Quota)
+	if !persistedAuth.Quota.Exceeded || persistedAuth.Quota.Reason != "credential_quota" ||
+		persistedAuth.Quota.NextRecoverAt.Before(now.Add(29*time.Minute)) ||
+		persistedAuth.Quota.NextRecoverAt.After(now.Add(31*time.Minute)) {
+		t.Fatalf("credential cooldown was lost or changed by Update: quota=%+v", persistedAuth.Quota)
 	}
 
 	blocked, reason, _ := isAuthBlockedForModel(persistedAuth, "claude-3-5-sonnet-20241022", time.Now())
@@ -262,6 +266,7 @@ func TestAuthManager_CooldownPersistenceAcrossRestore(t *testing.T) {
 		t.Fatalf("register auth: %v", err)
 	}
 
+	cooldownStarted := time.Now()
 	futureCooldown := 7 * 24 * time.Hour
 	manager.MarkResult(context.Background(), Result{
 		AuthID:          auth.ID,
@@ -297,8 +302,10 @@ func TestAuthManager_CooldownPersistenceAcrossRestore(t *testing.T) {
 	if !ok || restoredAuth == nil {
 		t.Fatal("restored auth not found")
 	}
-	if !restoredAuth.Quota.Exceeded || restoredAuth.Quota.NextRecoverAt.Before(time.Now().Add(6*24*time.Hour)) {
-		t.Fatalf("restored auth quota was not preserved: quota=%+v", restoredAuth.Quota)
+	if !restoredAuth.Quota.Exceeded ||
+		restoredAuth.Quota.NextRecoverAt.Before(cooldownStarted.Add(29*time.Minute)) ||
+		restoredAuth.Quota.NextRecoverAt.After(cooldownStarted.Add(31*time.Minute)) {
+		t.Fatalf("restored auth quota did not preserve the fixed 30-minute cooldown: quota=%+v", restoredAuth.Quota)
 	}
 }
 

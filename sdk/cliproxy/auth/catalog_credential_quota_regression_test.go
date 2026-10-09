@@ -27,6 +27,7 @@ func TestCredentialQuotaKeepsHealthyCatalogAcrossRestart(t *testing.T) {
 	for _, model := range models {
 		m.MarkResult(ctx, Result{AuthID: "audit-quota-oauth", Provider: "codex", Model: model.ID, Success: true})
 	}
+	failureAt := time.Now()
 	retry := 3 * time.Hour
 	m.MarkResult(ctx, Result{
 		AuthID: "audit-quota-oauth", Provider: "codex", Model: "audit-sol",
@@ -34,6 +35,9 @@ func TestCredentialQuotaKeepsHealthyCatalogAcrossRestart(t *testing.T) {
 		RetryAfter: &retry, CredentialScope: true,
 	})
 	oauth, _ := m.GetByID("audit-quota-oauth")
+	if oauth.Quota.NextRecoverAt.Before(failureAt.Add(29*time.Minute)) || oauth.Quota.NextRecoverAt.After(failureAt.Add(31*time.Minute)) {
+		t.Fatalf("credential quota did not use the fixed 30-minute cooldown: %v", oauth.Quota.NextRecoverAt.Sub(failureAt))
+	}
 	listed := map[string]bool{}
 	for _, model := range r.GetAvailableModels("openai") {
 		id, _ := model["id"].(string)

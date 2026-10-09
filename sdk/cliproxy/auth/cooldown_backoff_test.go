@@ -32,7 +32,7 @@ func quotaResult(authID, model string) Result {
 	}
 }
 
-func TestMarkResultQuotaBackoffEscalatesOncePerWindow(t *testing.T) {
+func TestMarkResultQuotaUsesFixedCooldown(t *testing.T) {
 	withQuotaCooldownEnabled(t)
 
 	manager := NewManager(nil, nil, nil)
@@ -45,52 +45,53 @@ func TestMarkResultQuotaBackoffEscalatesOncePerWindow(t *testing.T) {
 		t.Fatalf("Register returned error: %v", errRegister)
 	}
 
+	firstFailureAt := time.Now()
 	manager.MarkResult(context.Background(), quotaResult(auth.ID, "gpt-5"))
 	first, ok := manager.GetByID(auth.ID)
 	if !ok || first == nil || first.ModelStates["gpt-5"] == nil {
 		t.Fatalf("expected model state after first failure")
 	}
 	firstState := first.ModelStates["gpt-5"]
-	if firstState.Quota.BackoffLevel != 1 {
-		t.Fatalf("expected BackoffLevel 1 after first failure, got %d", firstState.Quota.BackoffLevel)
+	if firstState.Quota.BackoffLevel != 0 {
+		t.Fatalf("expected fixed cooldown backoff level 0, got %d", firstState.Quota.BackoffLevel)
 	}
-	if !firstState.Quota.NextRecoverAt.After(time.Now()) {
-		t.Fatalf("expected open cooldown window after first failure, got %v", firstState.Quota.NextRecoverAt)
+	if firstState.Quota.NextRecoverAt.Before(firstFailureAt.Add(29*time.Minute)) || firstState.Quota.NextRecoverAt.After(firstFailureAt.Add(31*time.Minute)) {
+		t.Fatalf("expected fixed 30-minute cooldown, got %v", firstState.Quota.NextRecoverAt.Sub(firstFailureAt))
 	}
 
-	// A second in-flight failure lands while the first window is still open.
+	secondFailureAt := time.Now()
 	manager.MarkResult(context.Background(), quotaResult(auth.ID, "gpt-5"))
 	second, ok := manager.GetByID(auth.ID)
 	if !ok || second == nil || second.ModelStates["gpt-5"] == nil {
 		t.Fatalf("expected model state after second failure")
 	}
 	secondState := second.ModelStates["gpt-5"]
-	if secondState.Quota.BackoffLevel != 1 {
-		t.Fatalf("expected BackoffLevel to stay 1 for in-window failure, got %d", secondState.Quota.BackoffLevel)
+	if secondState.Quota.BackoffLevel != 0 {
+		t.Fatalf("expected backoff level to stay 0, got %d", secondState.Quota.BackoffLevel)
 	}
-	if !secondState.Quota.NextRecoverAt.Equal(firstState.Quota.NextRecoverAt) {
-		t.Fatalf("expected NextRecoverAt to stay %v for in-window failure, got %v", firstState.Quota.NextRecoverAt, secondState.Quota.NextRecoverAt)
+	if secondState.Quota.NextRecoverAt.Before(secondFailureAt.Add(29*time.Minute)) || secondState.Quota.NextRecoverAt.After(secondFailureAt.Add(31*time.Minute)) {
+		t.Fatalf("second 429 did not reset to fixed 30-minute cooldown: %v", secondState.Quota.NextRecoverAt.Sub(secondFailureAt))
 	}
-	if !secondState.NextRetryAfter.Equal(firstState.NextRetryAfter) {
-		t.Fatalf("expected NextRetryAfter to stay %v for in-window failure, got %v", firstState.NextRetryAfter, secondState.NextRetryAfter)
+	if !secondState.NextRetryAfter.Equal(secondState.Quota.NextRecoverAt) {
+		t.Fatalf("NextRetryAfter = %v, want fixed quota deadline %v", secondState.NextRetryAfter, secondState.Quota.NextRecoverAt)
 	}
 }
 
-func TestMarkResultQuotaBackoffEscalatesAfterWindowExpiry(t *testing.T) {
+func TestMarkResultQuotaReplacesLongerPriorCooldown(t *testing.T) {
 	withQuotaCooldownEnabled(t)
 
-	expired := time.Now().Add(-time.Second)
+	priorDeadline := time.Now().Add(7 * 24 * time.Hour)
 	manager := NewManager(nil, nil, nil)
 	auth := &Auth{
-		ID:       "auth-quota-expired",
+		ID:       "auth-quota-prior-longer",
 		Provider: "codex",
 		Metadata: map[string]any{"type": "codex"},
 		ModelStates: map[string]*ModelState{
 			"gpt-5": {
 				Status:         StatusError,
 				Unavailable:    true,
-				NextRetryAfter: expired,
-				Quota:          QuotaState{Exceeded: true, Reason: "quota", NextRecoverAt: expired, BackoffLevel: 3},
+				NextRetryAfter: priorDeadline,
+				Quota:          QuotaState{Exceeded: true, Reason: "quota", NextRecoverAt: priorDeadline, BackoffLevel: 3},
 			},
 		},
 	}
@@ -98,60 +99,127 @@ func TestMarkResultQuotaBackoffEscalatesAfterWindowExpiry(t *testing.T) {
 		t.Fatalf("Register returned error: %v", errRegister)
 	}
 
+	failureAt := time.Now()
 	manager.MarkResult(context.Background(), quotaResult(auth.ID, "gpt-5"))
 	updated, ok := manager.GetByID(auth.ID)
 	if !ok || updated == nil || updated.ModelStates["gpt-5"] == nil {
 		t.Fatalf("expected model state after failure")
 	}
 	state := updated.ModelStates["gpt-5"]
-	if state.Quota.BackoffLevel != 4 {
-		t.Fatalf("expected BackoffLevel 4 after post-window failure, got %d", state.Quota.BackoffLevel)
+	if state.Quota.BackoffLevel != 0 {
+		t.Fatalf("expected fixed cooldown backoff level 0, got %d", state.Quota.BackoffLevel)
 	}
-	if !state.Quota.NextRecoverAt.After(time.Now()) {
-		t.Fatalf("expected a fresh cooldown window, got %v", state.Quota.NextRecoverAt)
+	if state.Quota.NextRecoverAt.Before(failureAt.Add(29*time.Minute)) || state.Quota.NextRecoverAt.After(failureAt.Add(31*time.Minute)) {
+		t.Fatalf("prior long cooldown was not replaced by fixed 30-minute duration: %v", state.Quota.NextRecoverAt.Sub(failureAt))
+	}
+	if state.NextRetryAfter.Before(failureAt.Add(29*time.Minute)) || state.NextRetryAfter.After(failureAt.Add(31*time.Minute)) {
+		t.Fatalf("prior long retry deadline was not replaced: %v", state.NextRetryAfter.Sub(failureAt))
 	}
 }
 
-func TestApplyAuthFailureStateQuotaBackoffOncePerWindow(t *testing.T) {
+func TestCredentialScope429ResetsPriorRateLimitCooldowns(t *testing.T) {
+	withQuotaCooldownEnabled(t)
+
+	priorDeadline := time.Now().Add(7 * 24 * time.Hour)
+	independentModelDeadline := time.Now().Add(12 * time.Hour)
+	manager := NewManager(nil, nil, nil)
+	auth := &Auth{
+		ID:             "auth-credential-quota-fixed",
+		Provider:       "codex",
+		Metadata:       map[string]any{"type": "codex"},
+		Unavailable:    true,
+		NextRetryAfter: priorDeadline,
+		Quota: QuotaState{
+			Exceeded: true, Reason: "credential_quota", NextRecoverAt: priorDeadline, BackoffLevel: 4,
+		},
+		ModelStates: map[string]*ModelState{
+			"model-a": {
+				Status: StatusError, Unavailable: true, NextRetryAfter: priorDeadline,
+				Quota: QuotaState{Exceeded: true, Reason: "quota", NextRecoverAt: priorDeadline, BackoffLevel: 4},
+			},
+			"model-b": {
+				Status: StatusError, Unavailable: true, NextRetryAfter: priorDeadline,
+				Quota: QuotaState{Exceeded: true, Reason: "credential_quota", NextRecoverAt: priorDeadline, BackoffLevel: 4},
+			},
+			"model-c": {
+				Status: StatusError, Unavailable: true, NextRetryAfter: independentModelDeadline,
+			},
+		},
+	}
+	if _, errRegister := manager.Register(WithSkipPersist(context.Background()), auth); errRegister != nil {
+		t.Fatalf("Register returned error: %v", errRegister)
+	}
+
+	failureAt := time.Now()
+	retryAfter := 7 * 24 * time.Hour
+	result := quotaResult(auth.ID, "model-a")
+	result.CredentialScope = true
+	result.RetryAfter = &retryAfter
+	manager.MarkResult(context.Background(), result)
+
+	updated, ok := manager.GetByID(auth.ID)
+	if !ok || updated == nil {
+		t.Fatal("expected auth after credential-scoped 429")
+	}
+	if updated.Quota.NextRecoverAt.Before(failureAt.Add(29*time.Minute)) || updated.Quota.NextRecoverAt.After(failureAt.Add(31*time.Minute)) ||
+		updated.NextRetryAfter.Before(failureAt.Add(29*time.Minute)) || updated.NextRetryAfter.After(failureAt.Add(31*time.Minute)) {
+		t.Fatalf("credential cooldown did not reset to 30 minutes: quota=%v retry=%v", updated.Quota.NextRecoverAt, updated.NextRetryAfter)
+	}
+	for _, model := range []string{"model-a", "model-b"} {
+		state := updated.ModelStates[model]
+		if state.Quota.NextRecoverAt.Before(failureAt.Add(29*time.Minute)) || state.Quota.NextRecoverAt.After(failureAt.Add(31*time.Minute)) ||
+			state.NextRetryAfter.Before(failureAt.Add(29*time.Minute)) || state.NextRetryAfter.After(failureAt.Add(31*time.Minute)) {
+			t.Fatalf("model %s retained prior rate-limit deadline: quota=%v retry=%v", model, state.Quota.NextRecoverAt, state.NextRetryAfter)
+		}
+	}
+	if updated.ModelStates["model-c"].NextRetryAfter.Before(failureAt.Add(11 * time.Hour)) {
+		t.Fatalf("credential 429 shortened model-c's independent cooldown: %v", updated.ModelStates["model-c"].NextRetryAfter)
+	}
+}
+
+func TestApplyAuthFailureStateQuotaUsesFixedCooldown(t *testing.T) {
 	now := time.Now()
 	quotaErr := &Error{Code: "rate_limit", Message: "quota", HTTPStatus: http.StatusTooManyRequests}
 	auth := &Auth{ID: "auth-level-quota"}
 
 	applyAuthFailureState(auth, quotaErr, nil, now, false)
-	if auth.Quota.BackoffLevel != 1 {
-		t.Fatalf("expected BackoffLevel 1 after first failure, got %d", auth.Quota.BackoffLevel)
+	if auth.Quota.BackoffLevel != 0 {
+		t.Fatalf("expected fixed cooldown backoff level 0, got %d", auth.Quota.BackoffLevel)
 	}
 	firstRecover := auth.Quota.NextRecoverAt
-	if !firstRecover.Equal(now.Add(time.Second)) {
-		t.Fatalf("expected first window to close at %v, got %v", now.Add(time.Second), firstRecover)
+	if !firstRecover.Equal(now.Add(quotaRateLimitCooldown)) {
+		t.Fatalf("expected first cooldown to close at %v, got %v", now.Add(quotaRateLimitCooldown), firstRecover)
 	}
 
-	// In-window failure keeps the current window and level.
-	applyAuthFailureState(auth, quotaErr, nil, now.Add(100*time.Millisecond), false)
-	if auth.Quota.BackoffLevel != 1 {
-		t.Fatalf("expected BackoffLevel to stay 1 for in-window failure, got %d", auth.Quota.BackoffLevel)
+	// A later 429 resets the fixed duration from its own occurrence.
+	secondFailureAt := now.Add(100 * time.Millisecond)
+	applyAuthFailureState(auth, quotaErr, nil, secondFailureAt, false)
+	if auth.Quota.BackoffLevel != 0 {
+		t.Fatalf("expected backoff level 0 for repeated 429, got %d", auth.Quota.BackoffLevel)
 	}
-	if !auth.Quota.NextRecoverAt.Equal(firstRecover) {
-		t.Fatalf("expected NextRecoverAt to stay %v for in-window failure, got %v", firstRecover, auth.Quota.NextRecoverAt)
-	}
-
-	// A failure after the window expired escalates to the next level.
-	applyAuthFailureState(auth, quotaErr, nil, now.Add(2*time.Second), false)
-	if auth.Quota.BackoffLevel != 2 {
-		t.Fatalf("expected BackoffLevel 2 after post-window failure, got %d", auth.Quota.BackoffLevel)
-	}
-	if !auth.Quota.NextRecoverAt.Equal(now.Add(4 * time.Second)) {
-		t.Fatalf("expected second window to close at %v, got %v", now.Add(4*time.Second), auth.Quota.NextRecoverAt)
+	if !auth.Quota.NextRecoverAt.Equal(secondFailureAt.Add(quotaRateLimitCooldown)) {
+		t.Fatalf("expected repeated cooldown to close at %v, got %v", secondFailureAt.Add(quotaRateLimitCooldown), auth.Quota.NextRecoverAt)
 	}
 
-	// A provider supplied retry hint always takes effect, even in-window.
+	// Retry-After does not override the fixed 30-minute duration.
 	retryAfter := 10 * time.Second
-	applyAuthFailureState(auth, quotaErr, &retryAfter, now.Add(3*time.Second), false)
-	if auth.Quota.BackoffLevel != 2 {
-		t.Fatalf("expected BackoffLevel to stay 2 with retry hint, got %d", auth.Quota.BackoffLevel)
+	hintedFailureAt := now.Add(time.Minute)
+	applyAuthFailureState(auth, quotaErr, &retryAfter, hintedFailureAt, false)
+	if auth.Quota.BackoffLevel != 0 {
+		t.Fatalf("expected backoff level 0 with retry hint, got %d", auth.Quota.BackoffLevel)
 	}
-	if !auth.Quota.NextRecoverAt.Equal(now.Add(13 * time.Second)) {
-		t.Fatalf("expected retry hint window to close at %v, got %v", now.Add(13*time.Second), auth.Quota.NextRecoverAt)
+	if !auth.Quota.NextRecoverAt.Equal(hintedFailureAt.Add(quotaRateLimitCooldown)) {
+		t.Fatalf("expected fixed cooldown to close at %v, got %v", hintedFailureAt.Add(quotaRateLimitCooldown), auth.Quota.NextRecoverAt)
+	}
+
+	priorDeadline := now.Add(7 * 24 * time.Hour)
+	auth.NextRetryAfter = priorDeadline
+	auth.Quota.NextRecoverAt = priorDeadline
+	longRetryAfter := 7 * 24 * time.Hour
+	resetAt := now.Add(2 * time.Minute)
+	applyAuthFailureState(auth, quotaErr, &longRetryAfter, resetAt, false)
+	if !auth.Quota.NextRecoverAt.Equal(resetAt.Add(quotaRateLimitCooldown)) || !auth.NextRetryAfter.Equal(resetAt.Add(quotaRateLimitCooldown)) {
+		t.Fatalf("existing cooldown or Retry-After overrode fixed 30-minute deadline: quota=%v retry=%v", auth.Quota.NextRecoverAt, auth.NextRetryAfter)
 	}
 }
 
