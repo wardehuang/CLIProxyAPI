@@ -26,6 +26,61 @@ type inspectionScheduleConfig struct {
 	DailyTime       string
 }
 
+type inspectionScheduleStatus struct {
+	Enabled         bool   `json:"enabled"`
+	Mode            string `json:"mode"`
+	IntervalSeconds int    `json:"intervalSeconds"`
+	DailyTime       string `json:"dailyTime"`
+	NextRunAtMS     int64  `json:"nextRunAtMs"`
+}
+
+type inspectionScheduleClock struct {
+	mutex   sync.RWMutex
+	nextRun time.Time
+}
+
+func (clock *inspectionScheduleClock) setNextRun(nextRun time.Time) {
+	clock.mutex.Lock()
+	clock.nextRun = nextRun
+	clock.mutex.Unlock()
+}
+
+func (clock *inspectionScheduleClock) nextRunAt() time.Time {
+	clock.mutex.RLock()
+	defer clock.mutex.RUnlock()
+	return clock.nextRun
+}
+
+func (controller *runtimeController) currentInspectionScheduleStatus(settings pluginSettings) (inspectionScheduleStatus, error) {
+	schedule := inspectionScheduleFromSettings(settings)
+	status := inspectionScheduleStatus{
+		Enabled:         schedule.Enabled,
+		Mode:            schedule.Mode,
+		IntervalSeconds: schedule.IntervalSeconds,
+		DailyTime:       schedule.DailyTime,
+	}
+	if !schedule.Enabled {
+		return status, nil
+	}
+	nextRun := controller.inspectionScheduleClock.nextRunAt()
+	if nextRun.IsZero() {
+		switch schedule.Mode {
+		case inspectionScheduleModeInterval:
+			nextRun = time.Now().Add(time.Duration(schedule.IntervalSeconds) * time.Second)
+		case inspectionScheduleModeDailyTime:
+			var err error
+			nextRun, err = nextInspectionDailyTime(time.Now(), schedule.DailyTime)
+			if err != nil {
+				return inspectionScheduleStatus{}, err
+			}
+		default:
+			return inspectionScheduleStatus{}, fmt.Errorf("unsupported inspection schedule mode %q", schedule.Mode)
+		}
+	}
+	status.NextRunAtMS = nextRun.UnixMilli()
+	return status, nil
+}
+
 func inspectionScheduleFromSettings(settings pluginSettings) inspectionScheduleConfig {
 	return inspectionScheduleConfig{
 		Enabled:         settings.InspectionScheduleEnabled,
@@ -44,6 +99,7 @@ type runtimeController struct {
 	refreshProxyBatchGroup    sync.WaitGroup
 	inspectionCancel          context.CancelFunc
 	inspectionScheduleUpdates chan inspectionScheduleConfig
+	inspectionScheduleClock   inspectionScheduleClock
 	manualInspectionCancel    context.CancelFunc
 	inspectionGroup           sync.WaitGroup
 	probeCancel               context.CancelFunc
@@ -184,6 +240,7 @@ func (controller *runtimeController) stopWorkersLocked() {
 	}
 	controller.inspectionGroup.Wait()
 	controller.inspectionScheduleUpdates = nil
+	controller.inspectionScheduleClock.setNextRun(time.Time{})
 	if controller.probeCancel != nil {
 		controller.probeCancel()
 		controller.probeGroup.Wait()
@@ -209,6 +266,8 @@ func (controller *runtimeController) startInspectionWorkerLocked(schedule inspec
 	controller.inspectionScheduleUpdates = make(chan inspectionScheduleConfig, 1)
 	scheduleUpdates := controller.inspectionScheduleUpdates
 	store := controller.store
+	scheduleClock := &controller.inspectionScheduleClock
+	scheduleClock.setNextRun(time.Time{})
 	controller.inspectionGroup.Add(1)
 	go func() {
 		defer controller.inspectionGroup.Done()
@@ -228,18 +287,22 @@ func (controller *runtimeController) startInspectionWorkerLocked(schedule inspec
 		}
 		resetSchedule := func(next inspectionScheduleConfig) error {
 			stopSchedule()
+			scheduleClock.setNextRun(time.Time{})
 			if !next.Enabled {
 				return nil
 			}
 			switch next.Mode {
 			case inspectionScheduleModeInterval:
-				ticker = time.NewTicker(time.Duration(next.IntervalSeconds) * time.Second)
+				interval := time.Duration(next.IntervalSeconds) * time.Second
+				ticker = time.NewTicker(interval)
+				scheduleClock.setNextRun(time.Now().Add(interval))
 				scheduleChannel = ticker.C
 			case inspectionScheduleModeDailyTime:
 				nextRun, err := nextInspectionDailyTime(time.Now(), next.DailyTime)
 				if err != nil {
 					return err
 				}
+				scheduleClock.setNextRun(nextRun)
 				timer = time.NewTimer(time.Until(nextRun))
 				scheduleChannel = timer.C
 			default:
@@ -262,7 +325,7 @@ func (controller *runtimeController) startInspectionWorkerLocked(schedule inspec
 					_ = store.appendLog(logLevelError, "inspection.schedule_failed", "自动服务端巡检调度配置无效", sanitizeLogText(err.Error()))
 					return
 				}
-			case <-scheduleChannel:
+			case scheduledAt := <-scheduleChannel:
 				select {
 				case next := <-scheduleUpdates:
 					schedule = next
@@ -272,6 +335,17 @@ func (controller *runtimeController) startInspectionWorkerLocked(schedule inspec
 					}
 					continue
 				default:
+				}
+				switch schedule.Mode {
+				case inspectionScheduleModeInterval:
+					scheduleClock.setNextRun(scheduledAt.Add(time.Duration(schedule.IntervalSeconds) * time.Second))
+				case inspectionScheduleModeDailyTime:
+					nextRun, err := nextInspectionDailyTime(time.Now(), schedule.DailyTime)
+					if err != nil {
+						_ = store.appendLog(logLevelError, "inspection.schedule_failed", "自动服务端巡检调度配置无效", sanitizeLogText(err.Error()))
+						return
+					}
+					scheduleClock.setNextRun(nextRun)
 				}
 				if err := runInspection(workerContext, store); err != nil {
 					_ = store.appendLog(logLevelError, "inspection.worker_failed", "自动服务端巡检失败", sanitizeLogText(err.Error()))
@@ -305,6 +379,7 @@ func nextInspectionDailyTime(now time.Time, dailyTime string) (time.Time, error)
 }
 
 func (controller *runtimeController) setInspectionScheduleLocked(schedule inspectionScheduleConfig) {
+	controller.inspectionScheduleClock.setNextRun(time.Time{})
 	if controller.inspectionCancel == nil {
 		if schedule.Enabled {
 			controller.startInspectionWorkerLocked(schedule)
@@ -406,11 +481,7 @@ func (controller *runtimeController) api(method, path string, query url.Values, 
 		return controller.updateSettings(store, body)
 	}
 	if method == http.MethodGet && path == "/api/inspection/settings" {
-		settings, err := store.settings()
-		if err != nil {
-			return http.StatusInternalServerError, nil, err
-		}
-		return jsonAPIResult(publicInspectionSettings(settings), nil)
+		return controller.inspectionSettingsAPI(store)
 	}
 	if method == http.MethodPut && path == "/api/inspection/settings" {
 		return controller.updateInspectionSettings(store, body)
@@ -831,7 +902,33 @@ func (controller *runtimeController) updateInspectionSettings(store *guardianSto
 		return http.StatusInternalServerError, nil, err
 	}
 	_ = store.appendLog(logLevelInfo, "inspection.settings_updated", "服务端巡检配置已保存", fmt.Sprintf("enabled=%t mode=%s interval_seconds=%d daily_time=%s concurrency=%d timeout_seconds=%d", persistedSettings.InspectionScheduleEnabled, persistedSettings.InspectionScheduleMode, persistedSettings.InspectionIntervalSeconds, persistedSettings.InspectionDailyTime, persistedSettings.InspectionWorkerCount, persistedSettings.InspectionTimeoutSeconds))
-	return jsonAPIResult(publicInspectionSettings(persistedSettings), nil)
+	response, err := controller.inspectionSettingsResponse(persistedSettings)
+	if err != nil {
+		return http.StatusInternalServerError, nil, err
+	}
+	return jsonAPIResult(response, nil)
+}
+
+func (controller *runtimeController) inspectionSettingsAPI(store *guardianStore) (int, []byte, error) {
+	settings, err := store.settings()
+	if err != nil {
+		return http.StatusInternalServerError, nil, err
+	}
+	response, err := controller.inspectionSettingsResponse(settings)
+	if err != nil {
+		return http.StatusInternalServerError, nil, err
+	}
+	return jsonAPIResult(response, nil)
+}
+
+func (controller *runtimeController) inspectionSettingsResponse(settings pluginSettings) (map[string]any, error) {
+	schedule, err := controller.currentInspectionScheduleStatus(settings)
+	if err != nil {
+		return nil, err
+	}
+	response := publicInspectionSettings(settings)
+	response["nextRunAtMs"] = schedule.NextRunAtMS
+	return response, nil
 }
 
 func (controller *runtimeController) keepaliveAPI(store *guardianStore) (int, []byte, error) {
@@ -956,19 +1053,35 @@ func (controller *runtimeController) startAccountInspectionAPI(store *guardianSt
 
 func (controller *runtimeController) inspectionAPI(store *guardianStore, query url.Values) (int, []byte, error) {
 	runIDValue := strings.TrimSpace(query.Get("runId"))
-	if runIDValue == "" {
-		response, err := store.latestAccountInspection()
-		return jsonAPIResult(response, err)
+	var runID int64
+	if runIDValue != "" {
+		parsedRunID, err := strconv.ParseInt(runIDValue, 10, 64)
+		if err != nil || parsedRunID <= 0 {
+			return http.StatusBadRequest, nil, fmt.Errorf("invalid account inspection run ID")
+		}
+		runID = parsedRunID
 	}
-	runID, err := strconv.ParseInt(runIDValue, 10, 64)
-	if err != nil || runID <= 0 {
-		return http.StatusBadRequest, nil, fmt.Errorf("invalid account inspection run ID")
+	settings, err := store.settings()
+	if err != nil {
+		return http.StatusInternalServerError, nil, err
 	}
-	response, err := store.accountInspection(runID)
-	if errors.Is(err, sql.ErrNoRows) {
-		return http.StatusNotFound, nil, fmt.Errorf("account inspection run not found")
+	schedule, err := controller.currentInspectionScheduleStatus(settings)
+	if err != nil {
+		return http.StatusInternalServerError, nil, err
 	}
-	return jsonAPIResult(response, err)
+	var response accountInspectionResponse
+	if runID == 0 {
+		response, err = store.latestAccountInspection()
+	} else {
+		response, err = store.accountInspection(runID)
+		if errors.Is(err, sql.ErrNoRows) {
+			return http.StatusNotFound, nil, fmt.Errorf("account inspection run not found")
+		}
+	}
+	if err != nil {
+		return http.StatusInternalServerError, nil, err
+	}
+	return jsonAPIResult(map[string]any{"run": response.Run, "items": response.Items, "schedule": schedule}, nil)
 }
 
 func (controller *runtimeController) addIPBatch(store *guardianStore, body []byte) (int, []byte, error) {

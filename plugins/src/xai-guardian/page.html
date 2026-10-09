@@ -322,7 +322,17 @@
     .run-stat small { display: block; color: var(--text-tertiary); font-size: 11px; }
     .run-stat strong { display: block; margin-top: 5px; font-size: 18px; }
     .settings-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px; }
-    .inspection-config-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+    .inspection-config-layout { display: grid; gap: 14px; }
+    .inspection-config-section { display: grid; gap: 12px; padding: 14px; border: 1px solid var(--border-color); border-radius: 14px; background: color-mix(in srgb, var(--bg-primary) 82%, var(--bg-tertiary)); }
+    .inspection-config-section-head { display: grid; gap: 4px; }
+    .inspection-config-section-head h3 { margin: 0; font-size: 13px; }
+    .inspection-config-section-head p { margin: 0; color: var(--text-tertiary); font-size: 12px; }
+    .inspection-config-schedule-grid, .inspection-config-value-grid, .inspection-config-runtime-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
+    .inspection-toggle-row { min-height: 38px; }
+    .settings-field .inspection-toggle-row { font-size: 13px; }
+    .inspection-config-note { display: flex; align-items: center; padding: 10px 12px; border: 1px solid var(--border-color); border-radius: 10px; color: var(--text-tertiary); background: var(--bg-tertiary); font-size: 12px; line-height: 1.55; }
+    .inspection-schedule-summary { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    .inspection-schedule-summary .run-stat strong { overflow-wrap: anywhere; font-size: 15px; }
     .probe-settings-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); }
     .settings-field { display: grid; gap: 6px; }
     .settings-field label { color: var(--text-secondary); font-size: 12px; font-weight: 700; }
@@ -384,6 +394,7 @@
     .degradation-report-details pre { max-height: 300px; overflow: auto; margin: 0; padding: 10px 12px; border-top: 1px solid var(--border-color); white-space: pre-wrap; overflow-wrap: anywhere; font: 11px/1.55 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
     .degradation-threshold-note { color: var(--text-secondary); font-size: 11px; line-height: 1.5; }
     .binding-modal { width: min(1120px, 100%); max-height: calc(100vh - 40px); overflow: hidden; }
+    .inspection-settings-modal { width: min(780px, 100%); max-height: calc(100vh - 40px); overflow: auto; }
     .binding-modal-body { min-width: 0; overflow: auto; }
     .binding-summary { padding: 12px 14px; border: 1px solid var(--border-color); border-radius: 12px; color: var(--text-secondary); background: var(--bg-tertiary); }
     .binding-table { min-width: 780px; }
@@ -416,6 +427,7 @@
       .segmented-tab { flex: 1 1 0; padding-inline: 10px; }
       .mode-switch-copy { margin: 10px 2px 2px; }
       .summary-grid, .server-summary-grid, .settings-grid, .probe-settings-grid, .detail-grid, .run-summary { grid-template-columns: 1fr; }
+      .inspection-config-schedule-grid, .inspection-config-value-grid, .inspection-config-runtime-grid { grid-template-columns: 1fr; }
       .degradation-result-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
       .degradation-report-fields { grid-template-columns: 1fr; }
       .guard-tabs { width: 100%; }
@@ -485,6 +497,7 @@
           <div><h2 class="panel-title">xAI Auth 账号巡检</h2><p class="panel-subtitle">按插件内巡检逻辑检查 Auth 文件及计费状态。</p></div>
           <div class="panel-extra"><button class="secondary-button" id="open-inspection-settings" type="button">配置</button><button class="primary-button" id="run-inspection" type="button">立即巡检</button></div>
         </div>
+        <div class="run-summary inspection-schedule-summary" id="inspection-schedule-status" aria-live="polite"></div>
         <div class="help-text">每个 Auth 整轮使用可配置超时；巡检请求使用对应 auth JSON 的 proxy_url 与 headers（同名覆盖默认头）。header 值不支持请求上下文占位符。巡检只调整 priority，不修改 schedule_group。</div>
         <div id="inspection-error" class="message error hidden"></div>
         <div class="server-summary-grid" id="inspection-summary"></div>
@@ -702,7 +715,7 @@ socks5h://proxy.example:1080"></textarea>
   </div>
 
   <div class="modal-layer" id="inspection-settings-modal" hidden>
-    <section class="modal" role="dialog" aria-modal="true" aria-labelledby="inspection-settings-title">
+    <section class="modal inspection-settings-modal" role="dialog" aria-modal="true" aria-labelledby="inspection-settings-title">
       <div class="modal-head">
         <div>
           <h2 id="inspection-settings-title">服务端巡检配置</h2>
@@ -711,17 +724,36 @@ socks5h://proxy.example:1080"></textarea>
         <button class="secondary-button" type="button" data-close-modal="inspection-settings-modal" aria-label="关闭">关闭</button>
       </div>
       <div class="modal-body">
-        <div class="settings-grid inspection-config-grid">
-          <div class="settings-field">
-            <label for="inspection-schedule-enabled-setting">自动巡检</label>
-            <label class="settings-checkbox-field" for="inspection-schedule-enabled-setting"><input id="inspection-schedule-enabled-setting" type="checkbox">开启自动巡检</label>
-            <span class="settings-help">关闭后不自动触发；手动巡检仍可用</span>
-          </div>
-          <div class="settings-field"><label for="inspection-schedule-mode-setting">调度方式</label><select class="settings-input" id="inspection-schedule-mode-setting"><option value="interval">按频率</option><option value="daily_time">每天定时</option></select><span class="settings-help">保存后立即更新计划</span></div>
-          <div class="settings-field" id="inspection-frequency-field"><label for="inspection-interval-setting">巡检频率（秒）</label><input class="settings-input" id="inspection-interval-setting" type="number" min="0" max="86400" step="1"><span class="settings-help">开启且按频率时需 1–86400 秒</span></div>
-          <div class="settings-field" id="inspection-daily-field" hidden><label for="inspection-daily-time-setting">每天定时（北京时间）</label><input class="settings-input" id="inspection-daily-time-setting" type="time" step="60"><span class="settings-help">每天一次；默认 04:00（Asia/Shanghai）</span></div>
-          <div class="settings-field"><label for="inspection-concurrency-setting">巡检并发</label><input class="settings-input" id="inspection-concurrency-setting" type="number" min="1" max="64" step="1"><span class="settings-help">默认 4；范围 1–64</span></div>
-          <div class="settings-field"><label for="inspection-timeout-setting">每个 Auth 整轮超时（秒）</label><input class="settings-input" id="inspection-timeout-setting" type="number" min="1" max="600" step="1"><span class="settings-help">默认 60；范围 1–600</span></div>
+        <div class="inspection-config-layout">
+          <section class="inspection-config-section" aria-labelledby="inspection-schedule-section-title">
+            <div class="inspection-config-section-head">
+              <h3 id="inspection-schedule-section-title">自动巡检计划</h3>
+              <p>选择是否自动运行，以及触发时间。</p>
+            </div>
+            <div class="inspection-config-schedule-grid">
+              <div class="settings-field">
+                <label for="inspection-schedule-enabled-setting">是否启用定时巡检</label>
+                <label class="settings-checkbox-field inspection-toggle-row" for="inspection-schedule-enabled-setting"><input id="inspection-schedule-enabled-setting" type="checkbox">开启自动巡检</label>
+                <span class="settings-help">关闭后不自动触发；手动巡检仍可用</span>
+              </div>
+              <div class="settings-field"><label for="inspection-schedule-mode-setting">调度方式</label><select class="settings-input" id="inspection-schedule-mode-setting"><option value="interval">按频率</option><option value="daily_time">每天定时</option></select><span class="settings-help">保存后立即更新计划</span></div>
+            </div>
+            <div class="inspection-config-value-grid">
+              <div class="settings-field" id="inspection-frequency-field"><label for="inspection-interval-setting">巡检频率（秒）</label><input class="settings-input" id="inspection-interval-setting" type="number" min="0" max="86400" step="1"><span class="settings-help">开启且按频率时需 1–86400 秒</span></div>
+              <div class="settings-field" id="inspection-daily-field" hidden><label for="inspection-daily-time-setting">每天定时（北京时间）</label><input class="settings-input" id="inspection-daily-time-setting" type="time" step="60"><span class="settings-help">每天一次；默认 04:00（Asia/Shanghai）</span></div>
+              <div class="inspection-config-note" id="inspection-schedule-mode-hint">按选择的计划自动触发服务端巡检。</div>
+            </div>
+          </section>
+          <section class="inspection-config-section" aria-labelledby="inspection-runtime-section-title">
+            <div class="inspection-config-section-head">
+              <h3 id="inspection-runtime-section-title">巡检执行参数</h3>
+              <p>控制同时处理的 Auth 数量与单 Auth 的整轮时限。</p>
+            </div>
+            <div class="inspection-config-runtime-grid">
+              <div class="settings-field"><label for="inspection-concurrency-setting">巡检并发</label><input class="settings-input" id="inspection-concurrency-setting" type="number" min="1" max="64" step="1"><span class="settings-help">默认 4；范围 1–64</span></div>
+              <div class="settings-field"><label for="inspection-timeout-setting">每个 Auth 整轮超时（秒）</label><input class="settings-input" id="inspection-timeout-setting" type="number" min="1" max="600" step="1"><span class="settings-help">默认 60；范围 1–600</span></div>
+            </div>
+          </section>
         </div>
         <div class="settings-help">每个 Auth 整轮共用一个 deadline，巡检 HTTP 请求可取消；Host 同步回调不可中断，阻塞时无法保证硬性截断。请求默认头由 auth JSON 的 headers 同名覆盖；值以 $ 开头的请求上下文占位符不支持。</div>
         <div id="inspection-settings-message" class="message" aria-live="polite"></div>
@@ -814,7 +846,7 @@ socks5h://proxy.example:1080"></textarea>
       window.parent.postMessage({type:'cpa-plugin-api-request', requestId, endpoint:apiEndpoint, method:'POST', body:payload}, '*');
     });
     const state = {
-      accounts: [], inspection: {run: null, items: []}, inspectionRuns: [], selectedInspectionRunID: 0, inspectionFollowLatest: true, inspectionFilter: 'all', inspectionKeyword: '', inspectionPage: 1, inspectionPageSize: 20, inspectionPollTimer: 0, guardNodes: [], batches: [], batchNodes: [], degradation: [], logs: [], logGroups: {batch_probe: [], keepalive_probe: [], revive_probe: []}, settings: null, keepalive: null,
+      accounts: [], inspection: {run: null, items: [], schedule: null}, inspectionRuns: [], selectedInspectionRunID: 0, inspectionFollowLatest: true, inspectionFilter: 'all', inspectionKeyword: '', inspectionPage: 1, inspectionPageSize: 20, inspectionPollTimer: 0, guardNodes: [], batches: [], batchNodes: [], degradation: [], logs: [], logGroups: {batch_probe: [], keepalive_probe: [], revive_probe: []}, settings: null, keepalive: null,
       summary: null,
       mode: 'accounts', guardTab: 'ips', logCategory: 'realtime_guard', logStatus: 'connected', selectedLogGroupIDs: {batch_probe: '', keepalive_probe: '', revive_probe: ''}, logSearch: '', logMax: 0, selectedBatchID: '', filter: 'all', guardStatusFilter: 'healthy', mask: 'full', page: 1, pageSize: 100,
       keyword: '', expandedAccount: '', accountDegradationProbeAuthIndex: '', guardSortKey: 'latency', guardSortDirection: 'asc', authBindingDetail: null, busy: false, pageRefreshTimer: 0, settingsDirty: false, settingsRevision: 0
@@ -833,6 +865,12 @@ socks5h://proxy.example:1080"></textarea>
       if (!timestamp) return '—';
       const date = new Date(timestamp);
       return Number.isNaN(date.getTime()) ? '—' : date.toLocaleString('zh-CN', {year:'numeric', month:'2-digit', day:'2-digit', hour:'2-digit', minute:'2-digit', second:'2-digit', hour12:false});
+    };
+    const formatBeijingDate = (value) => {
+      const timestamp = numberValue(value);
+      if (!timestamp) return '—';
+      const date = new Date(timestamp);
+      return Number.isNaN(date.getTime()) ? '—' : date.toLocaleString('zh-CN', {timeZone:'Asia/Shanghai', year:'numeric', month:'2-digit', day:'2-digit', hour:'2-digit', minute:'2-digit', hour12:false});
     };
     const maskAccount = (value) => String(value || '').replace(/(^.{2}).*(@.*$)/, '$1***$2');
     const setMessage = (id, text, error) => {
@@ -1159,12 +1197,33 @@ socks5h://proxy.example:1080"></textarea>
       return windows.length ? windows.join('<br>') : '—';
     };
 
+    function renderInspectionSchedule() {
+      const schedule = state.inspection.schedule;
+      if (!schedule) {
+        $('inspection-schedule-status').innerHTML = '<div class="run-stat"><small>定时巡检状态</small><strong>读取中</strong></div><div class="run-stat"><small>下一次巡检时间（北京时间）</small><strong>读取中</strong></div>';
+        return;
+      }
+      const stateLabel = schedule.enabled ? '已开启' : '未开启';
+      const stateTone = schedule.enabled ? 'status-good' : 'status-warn';
+      const planLabel = schedule.mode === 'interval'
+        ? `按频率 · 每 ${schedule.intervalSeconds} 秒`
+        : `每天 ${schedule.dailyTime}（北京时间）`;
+      const nextRunTimestamp = numberValue(schedule.nextRunAtMs);
+      const nextRunLabel = !schedule.enabled
+        ? '未安排'
+        : nextRunTimestamp !== null && nextRunTimestamp <= Date.now()
+          ? '本轮完成后立即执行'
+          : formatBeijingDate(schedule.nextRunAtMs);
+      $('inspection-schedule-status').innerHTML = `<div class="run-stat"><small>定时巡检状态</small><strong><span class="status-badge ${stateTone}">${stateLabel}</span></strong><span class="subline">${escapeHTML(planLabel)}</span></div><div class="run-stat"><small>下一次巡检时间（北京时间）</small><strong>${escapeHTML(nextRunLabel)}</strong></div>`;
+    }
+
     function renderInspectionHistory() {
       const rows = state.inspectionRuns.map((run) => `<tr class="${Number(run.id) === Number(state.selectedInspectionRunID) ? 'selected' : ''}"><td><button class="secondary-button inspection-history-button" type="button" data-inspection-run-id="${run.id}">#${run.id}</button></td><td>${run.triggerType === 'manual' ? '手动' : '自动'}</td><td><span class="status-badge ${run.status === 'completed' ? 'status-good' : run.status === 'running' ? 'status-violet' : 'status-bad'}">${escapeHTML(inspectionRunStatusLabel(run.status))}</span></td><td>${run.processedCount} / ${run.totalFiles}</td><td>${formatFullDate(run.startedAtMs)}</td><td>${formatFullDate(run.finishedAtMs)}</td></tr>`).join('');
       $('inspection-history').innerHTML = `<table class="data-table inspection-history-table"><thead><tr><th>运行</th><th>触发方式</th><th>状态</th><th>已处理 / 总数</th><th>开始时间</th><th>完成时间</th></tr></thead><tbody>${rows || '<tr><td class="empty-cell" colspan="6">暂无账号巡检记录。</td></tr>'}</tbody></table>`;
     }
 
     function renderInspection() {
+      renderInspectionSchedule();
       const run = state.inspection.run;
       const items = state.inspection.items || [];
       const disabledCount = items.filter((item) => item.disabled).length;
@@ -1485,6 +1544,11 @@ socks5h://proxy.example:1080"></textarea>
       }
     }
 
+    async function refreshInspectionSchedule() {
+      state.inspection.schedule = await api('/api/inspection/settings');
+      renderInspectionSchedule();
+    }
+
     async function refreshLogs() {
       try {
       if (!state.settings) return;
@@ -1563,6 +1627,9 @@ socks5h://proxy.example:1080"></textarea>
       const mode = $('inspection-schedule-mode-setting').value;
       $('inspection-frequency-field').hidden = mode !== 'interval';
       $('inspection-daily-field').hidden = mode !== 'daily_time';
+      $('inspection-schedule-mode-hint').textContent = mode === 'daily_time'
+        ? '每天按北京时间执行；若当天时刻已过，次日执行。'
+        : '保存后按设定间隔触发；手动巡检不受此计划影响。';
     }
 
     function fillInspectionSettingsForm(settings) {
@@ -1619,6 +1686,8 @@ socks5h://proxy.example:1080"></textarea>
       try {
         const saved = await api('/api/inspection/settings', 'PUT', {enabled, mode, dailyTime, intervalSeconds, concurrency, timeoutSeconds});
         fillInspectionSettingsForm(saved);
+        state.inspection.schedule = saved;
+        renderInspectionSchedule();
         $('inspection-settings-modal').hidden = true;
         showToast('巡检配置已保存，定时计划立即更新；当前巡检不取消，新并发与超时从下一轮生效。');
       } catch (error) {
@@ -1781,6 +1850,11 @@ socks5h://proxy.example:1080"></textarea>
     renderGuardTab();
     refreshAll();
     window.setInterval(updateKeepaliveCountdown, 1000);
+    window.setInterval(() => {
+      if (!state.busy && document.visibilityState === 'visible' && state.mode === 'inspection') {
+        refreshInspectionSchedule().catch((error) => setMessage('inspection-error', error.message, true));
+      }
+    }, 30000);
   })();
   </script>
 </body>
