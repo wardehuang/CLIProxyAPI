@@ -19,6 +19,8 @@ import (
 const (
 	defaultDatabasePath                                 = "/opt/cli-proxy-api/plugin-data/xai-guardian/xai-guardian.sqlite3"
 	defaultInspectionIntervalSeconds                    = 0
+	defaultInspectionWorkerCount                        = 4
+	defaultInspectionTimeoutSeconds                     = 60
 	defaultWorkerCount                                  = 4
 	defaultScheduleGroupCount                           = 4
 	defaultDebugEnabled                                 = false
@@ -45,6 +47,8 @@ const (
 	defaultRealtimeGuardBurstMaxVisibleTokens           = 32
 	defaultRealtimeGuardBurstMaxWindowMS                = 1000
 	maxInspectionIntervalSeconds                        = 86400
+	maxInspectionWorkerCount                            = 64
+	maxInspectionTimeoutSeconds                         = 600
 	maxProbeWorkers                                     = 64
 	maxScheduleGroupCount                               = 1000
 	maxRefreshIntervalSeconds                           = 3600
@@ -100,6 +104,8 @@ type pluginSettings struct {
 	DebugEnabled                                 bool
 	RefreshIntervalSeconds                       int
 	InspectionIntervalSeconds                    int
+	InspectionWorkerCount                        int
+	InspectionTimeoutSeconds                     int
 	KeepaliveWorkerCount                         int
 	KeepaliveIntervalSeconds                     int
 	ReviveIntervalSeconds                        int
@@ -531,6 +537,8 @@ CREATE TABLE IF NOT EXISTS plugin_logs (
 CREATE INDEX IF NOT EXISTS idx_plugin_logs_created ON plugin_logs(created_at DESC, id DESC);
 INSERT OR IGNORE INTO plugin_settings(setting_key, setting_value) VALUES
     ('inspection_interval_seconds', '0'),
+    ('inspection_worker_count', '4'),
+    ('inspection_timeout_seconds', '60'),
     ('worker_count', '4'),
     ('schedule_group_count', '4'),
     ('debug_enabled', '0'),
@@ -902,6 +910,10 @@ func (store *guardianStore) settings() (pluginSettings, error) {
 				settings.RefreshIntervalSeconds = parsed
 			case "inspection_interval_seconds":
 				settings.InspectionIntervalSeconds = parsed
+			case "inspection_worker_count":
+				settings.InspectionWorkerCount = parsed
+			case "inspection_timeout_seconds":
+				settings.InspectionTimeoutSeconds = parsed
 			case "keepalive_worker_count":
 				settings.KeepaliveWorkerCount = parsed
 			case "keepalive_interval_seconds":
@@ -962,6 +974,8 @@ func (store *guardianStore) setSettings(settings pluginSettings) error {
 		"debug_enabled":                                      strconv.FormatBool(settings.DebugEnabled),
 		"refresh_interval_seconds":                           strconv.Itoa(settings.RefreshIntervalSeconds),
 		"inspection_interval_seconds":                        strconv.Itoa(settings.InspectionIntervalSeconds),
+		"inspection_worker_count":                            strconv.Itoa(settings.InspectionWorkerCount),
+		"inspection_timeout_seconds":                         strconv.Itoa(settings.InspectionTimeoutSeconds),
 		"keepalive_worker_count":                             strconv.Itoa(settings.KeepaliveWorkerCount),
 		"keepalive_interval_seconds":                         strconv.Itoa(settings.KeepaliveIntervalSeconds),
 		"revive_interval_seconds":                            strconv.Itoa(settings.ReviveIntervalSeconds),
@@ -1004,6 +1018,12 @@ ON CONFLICT(setting_key) DO UPDATE SET setting_value = excluded.setting_value`, 
 func validateSettings(settings pluginSettings) error {
 	if settings.InspectionIntervalSeconds < 0 || settings.InspectionIntervalSeconds > maxInspectionIntervalSeconds {
 		return fmt.Errorf("inspection interval is out of range")
+	}
+	if settings.InspectionWorkerCount < 1 || settings.InspectionWorkerCount > maxInspectionWorkerCount {
+		return fmt.Errorf("inspection worker count is out of range")
+	}
+	if settings.InspectionTimeoutSeconds < 1 || settings.InspectionTimeoutSeconds > maxInspectionTimeoutSeconds {
+		return fmt.Errorf("inspection timeout is out of range")
 	}
 	if settings.WorkerCount < 1 || settings.WorkerCount > maxProbeWorkers {
 		return fmt.Errorf("probe worker count is out of range")

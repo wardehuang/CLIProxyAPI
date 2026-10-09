@@ -7,6 +7,8 @@ func defaultPluginSettings() pluginSettings {
 		DebugEnabled:                                 defaultDebugEnabled,
 		RefreshIntervalSeconds:                       defaultRefreshIntervalSeconds,
 		InspectionIntervalSeconds:                    defaultInspectionIntervalSeconds,
+		InspectionWorkerCount:                        defaultInspectionWorkerCount,
+		InspectionTimeoutSeconds:                     defaultInspectionTimeoutSeconds,
 		KeepaliveWorkerCount:                         defaultKeepaliveWorkerCount,
 		KeepaliveIntervalSeconds:                     defaultKeepaliveIntervalSeconds,
 		ReviveIntervalSeconds:                        defaultReviveIntervalSeconds,

@@ -34,8 +34,10 @@ type streamEvidence struct {
 	ReasoningMetadataError bool
 	CompletedFunctionCalls int
 	FunctionCallNames      []string
+	FunctionCallToolNames  []string
 	CompletedMessage       bool
 	RefusalDetected        bool
+	ReasoningDelta         bool
 	BurstDump              bool
 	StreamError            string
 	CompletedEvent         bool
@@ -621,7 +623,7 @@ func applyStreamEvent(evidence *streamEvidence, eventName string, value any) {
 	if eventName == "response.completed" {
 		evidence.CompletedEvent = true
 	}
-	if eventName == "response.completed" || eventName == "response.incomplete" {
+	if eventName == "response.completed" || eventName == "response.incomplete" || eventName == "response.failed" {
 		evidence.TerminalEvent = true
 	}
 	if strings.Contains(stringifyLower(value), "burst_dump") {
@@ -631,6 +633,9 @@ func applyStreamEvent(evidence *streamEvidence, eventName string, value any) {
 		recordFunctionCall(evidence, object)
 	}
 	if strings.Contains(eventName, "reasoning") {
+		if strings.HasSuffix(eventName, ".delta") && eventTextLength(object) > 0 {
+			evidence.ReasoningDelta = true
+		}
 		if itemID, ok := object["item_id"]; ok {
 			recordReasoningItemID(evidence, stringValue(itemID))
 		}
@@ -832,6 +837,7 @@ func recordFunctionCall(evidence *streamEvidence, object map[string]any) {
 	}
 	evidence.CompletedFunctionCalls++
 	evidence.FunctionCallNames = append(evidence.FunctionCallNames, callID)
+	evidence.FunctionCallToolNames = append(evidence.FunctionCallToolNames, name)
 }
 
 func readUsage(evidence *streamEvidence, value any) {

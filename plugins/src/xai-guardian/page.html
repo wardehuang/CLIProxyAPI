@@ -265,7 +265,7 @@
     .detail-badges { display: flex; flex-wrap: wrap; gap: 8px; }
     .detail-badges .status-badge, .detail-badges .type-badge, .detail-badges .number-badge { margin: 0; }
     .detail-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; }
-    .detail-actions { display: flex; justify-content: flex-end; }
+    .detail-actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 8px; }
     .detail-section { min-width: 0; padding: 13px; border: 1px solid var(--border-color); border-radius: 13px; background: color-mix(in srgb, var(--bg-primary) 78%, transparent); }
     .detail-section h4 { margin: 0 0 10px; font-size: 13px; }
     .detail-list { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px 14px; margin: 0; }
@@ -322,6 +322,7 @@
     .run-stat small { display: block; color: var(--text-tertiary); font-size: 11px; }
     .run-stat strong { display: block; margin-top: 5px; font-size: 18px; }
     .settings-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px; }
+    .inspection-config-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); }
     .probe-settings-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); }
     .settings-field { display: grid; gap: 6px; }
     .settings-field label { color: var(--text-secondary); font-size: 12px; font-weight: 700; }
@@ -357,15 +358,31 @@
     .modal-input { width: 100%; min-height: 180px; resize: vertical; padding: 12px 14px; border: 1px solid var(--border-color); border-radius: 12px; outline: none; background: var(--bg-tertiary); color: var(--text-primary); line-height: 1.6; }
     .modal-input:focus { border-color: var(--primary-color); box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--primary-color) 24%, transparent); }
     .modal-actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 8px; }
-    .degradation-check-modal { max-height: calc(100vh - 40px); overflow: auto; }
+    .degradation-check-modal { width: min(1060px, 100%); max-height: calc(100vh - 40px); overflow: auto; }
     .degradation-prompt { padding: 11px 13px; border: 1px solid var(--border-color); border-radius: 12px; color: var(--text-secondary); background: var(--bg-tertiary); line-height: 1.6; }
-    .degradation-result { display: grid; gap: 12px; }
-    .degradation-result-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; }
+    .degradation-result { display: grid; gap: 14px; }
+    .degradation-report-head { display: grid; gap: 4px; padding: 14px; border: 1px solid var(--border-color); border-radius: 12px; background: var(--bg-tertiary); }
+    .degradation-report-brand { color: var(--primary-color); font-size: 12px; font-weight: 800; letter-spacing: .04em; }
+    .degradation-report-title { margin: 0; font-size: 17px; }
+    .degradation-report-account { color: var(--text-secondary); overflow-wrap: anywhere; }
+    .degradation-report-caption { color: var(--text-secondary); font-size: 12px; }
+    .degradation-result-grid { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 8px; }
+    .degradation-result-grid.secondary { grid-template-columns: repeat(4, minmax(0, 1fr)); }
     .degradation-result-metric { min-width: 0; padding: 10px; border: 1px solid var(--border-color); border-radius: 11px; background: var(--bg-tertiary); }
     .degradation-result-metric small { display: block; color: var(--text-secondary); font-size: 11px; }
     .degradation-result-metric strong { display: block; margin-top: 4px; overflow-wrap: anywhere; font-size: 13px; }
+    .degradation-report-fields { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; }
+    .degradation-report-field { min-width: 0; display: grid; gap: 4px; padding: 9px 11px; border: 1px solid var(--border-color); border-radius: 10px; background: var(--bg-tertiary); }
+    .degradation-report-field small { color: var(--text-secondary); font-size: 11px; }
+    .degradation-report-field strong { overflow-wrap: anywhere; font-size: 12px; font-weight: 600; }
+    .degradation-report-section { display: grid; gap: 8px; }
+    .degradation-report-section h4 { margin: 0; font-size: 13px; }
     .degradation-result-evidence { display: flex; flex-wrap: wrap; gap: 8px; }
     .degradation-answer { max-height: 220px; overflow: auto; margin: 0; padding: 11px 13px; border: 1px solid var(--border-color); border-radius: 12px; color: var(--text-primary); background: var(--bg-tertiary); white-space: pre-wrap; overflow-wrap: anywhere; }
+    .degradation-report-details { border: 1px solid var(--border-color); border-radius: 11px; background: var(--bg-tertiary); }
+    .degradation-report-details summary { padding: 10px 12px; color: var(--text-primary); font-size: 12px; font-weight: 700; cursor: pointer; }
+    .degradation-report-details pre { max-height: 300px; overflow: auto; margin: 0; padding: 10px 12px; border-top: 1px solid var(--border-color); white-space: pre-wrap; overflow-wrap: anywhere; font: 11px/1.55 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+    .degradation-threshold-note { color: var(--text-secondary); font-size: 11px; line-height: 1.5; }
     .binding-modal { width: min(1120px, 100%); max-height: calc(100vh - 40px); overflow: hidden; }
     .binding-modal-body { min-width: 0; overflow: auto; }
     .binding-summary { padding: 12px 14px; border: 1px solid var(--border-color); border-radius: 12px; color: var(--text-secondary); background: var(--bg-tertiary); }
@@ -389,6 +406,8 @@
       .account-summary-grid { grid-template-columns: repeat(4, minmax(0, 1fr)); }
       .server-summary-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
       .settings-grid, .probe-settings-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+      .degradation-result-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+      .degradation-report-fields { grid-template-columns: repeat(2, minmax(0, 1fr)); }
     }
     @container xai-guardian-page (max-width: 720px) {
       .page { padding: 18px 14px 32px; }
@@ -398,6 +417,7 @@
       .mode-switch-copy { margin: 10px 2px 2px; }
       .summary-grid, .server-summary-grid, .settings-grid, .probe-settings-grid, .detail-grid, .run-summary { grid-template-columns: 1fr; }
       .degradation-result-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+      .degradation-report-fields { grid-template-columns: 1fr; }
       .guard-tabs { width: 100%; }
       .guard-tab { flex: 1 1 0; padding-inline: 10px; }
       .account-panel, .server-panel, .guard-panel { padding: 12px; border-radius: 18px; }
@@ -463,9 +483,9 @@
       <section class="panel server-panel">
         <div class="panel-header">
           <div><h2 class="panel-title">xAI Auth 账号巡检</h2><p class="panel-subtitle">按插件内巡检逻辑检查 Auth 文件及计费状态。</p></div>
-          <div class="panel-extra"><button class="primary-button" id="run-inspection" type="button">立即巡检</button></div>
+          <div class="panel-extra"><button class="secondary-button" id="open-inspection-settings" type="button">配置</button><button class="primary-button" id="run-inspection" type="button">立即巡检</button></div>
         </div>
-        <div class="help-text">仅检查 xAI Auth 账号；billing 请求遵守 CPA 规范，不设响应阶段 timeout。巡检只调整 priority，不修改 schedule_group。</div>
+        <div class="help-text">每个 Auth 整轮使用可配置超时；巡检请求使用对应 auth JSON 的 proxy_url 与 headers（同名覆盖默认头）。header 值不支持请求上下文占位符。巡检只调整 priority，不修改 schedule_group。</div>
         <div id="inspection-error" class="message error hidden"></div>
         <div class="server-summary-grid" id="inspection-summary"></div>
         <div class="data-panel">
@@ -675,6 +695,31 @@ socks5h://proxy.example:1080"></textarea>
         <div class="modal-actions">
           <button class="secondary-button" type="button" data-close-modal="refresh-proxy-modal">取消</button>
           <button class="primary-button" id="submit-refresh-proxy" type="button">循环写入</button>
+        </div>
+      </div>
+    </section>
+  </div>
+
+  <div class="modal-layer" id="inspection-settings-modal" hidden>
+    <section class="modal" role="dialog" aria-modal="true" aria-labelledby="inspection-settings-title">
+      <div class="modal-head">
+        <div>
+          <h2 id="inspection-settings-title">服务端巡检配置</h2>
+          <p>配置保存到插件 SQLite。自动触发使用固定间隔；间隔填 0 关闭自动巡检，手动巡检仍可用。</p>
+        </div>
+        <button class="secondary-button" type="button" data-close-modal="inspection-settings-modal" aria-label="关闭">关闭</button>
+      </div>
+      <div class="modal-body">
+        <div class="settings-grid inspection-config-grid">
+          <div class="settings-field"><label for="inspection-interval-setting">定时巡检间隔（秒）</label><input class="settings-input" id="inspection-interval-setting" type="number" min="0" max="86400" step="1"><span class="settings-help">0 关闭自动；范围 0–86400</span></div>
+          <div class="settings-field"><label for="inspection-concurrency-setting">巡检并发</label><input class="settings-input" id="inspection-concurrency-setting" type="number" min="1" max="64" step="1"><span class="settings-help">默认 4；范围 1–64</span></div>
+          <div class="settings-field"><label for="inspection-timeout-setting">每个 Auth 整轮超时（秒）</label><input class="settings-input" id="inspection-timeout-setting" type="number" min="1" max="600" step="1"><span class="settings-help">默认 60；范围 1–600</span></div>
+        </div>
+        <div class="settings-help">每个 Auth 整轮共用一个 deadline，巡检 HTTP 请求可取消；Host 同步回调不可中断，阻塞时无法保证硬性截断。请求默认头由 auth JSON 的 headers 同名覆盖；值以 $ 开头的请求上下文占位符不支持。</div>
+        <div id="inspection-settings-message" class="message" aria-live="polite"></div>
+        <div class="modal-actions">
+          <button class="secondary-button" type="button" data-close-modal="inspection-settings-modal">取消</button>
+          <button class="primary-button" id="save-inspection-settings" type="button">保存配置</button>
         </div>
       </div>
     </section>
@@ -907,13 +952,101 @@ socks5h://proxy.example:1080"></textarea>
     }
 
     function renderAccountDegradationProbeResult(result) {
+      const metrics = result.metrics;
+      const thresholds = result.thresholds;
       const classificationLabel = result.classification === 'degraded' ? '降智' : result.classification === 'normal' ? '正常' : '无法判定';
       const classificationTone = result.classification === 'degraded' ? 'status-bad' : result.classification === 'normal' ? 'status-good' : 'status-warn';
-      const hasAnswer = result.answer.trim() !== '';
-      const answerTone = hasAnswer ? (result.answerMatchesExpected ? 'status-good' : 'status-warn') : 'status-warn';
-      const answerMatchLabel = hasAnswer ? (result.answerMatchesExpected ? `命中 ${result.expectedAnswer}` : `未命中 ${result.expectedAnswer}`) : '无可核对答案';
-      const evidence = result.classification === 'unknown' ? '' : `<div class="degradation-result-evidence"><span class="status-badge ${result.isRealThinking ? 'status-good' : 'status-warn'}">思考证据：${result.isRealThinking ? '有' : '无'}</span><span class="status-badge ${result.completedToolCallEvidence ? 'status-good' : 'status-warn'}">工具调用证据：${result.completedToolCallEvidence ? '有' : '无'}</span><span class="status-badge ${result.completedMutationEvidence ? 'status-good' : 'status-warn'}">修改证据：${result.completedMutationEvidence ? '有' : '无'}</span><span class="status-badge ${result.burstDump ? 'status-good' : 'status-warn'}">burst_dump：${result.burstDump ? '命中' : '未命中'}</span></div>`;
-      return `<div class="degradation-result"><div class="degradation-prompt">探针题：「${escapeHTML(result.prompt)}」期望答案：${escapeHTML(result.expectedAnswer)}</div><div class="detail-badges"><span class="status-badge ${classificationTone}">实时守护判定：${classificationLabel}</span><span class="status-badge ${answerTone}">答案核对：${answerMatchLabel}</span></div><div class="muted">实时守护原因：<span class="mono">${escapeHTML(result.reason)}</span></div><div class="degradation-result-grid"><div class="degradation-result-metric"><small>HTTP 状态</small><strong>${result.statusCode || '—'}</strong></div><div class="degradation-result-metric"><small>终态事件</small><strong>${result.terminalEvent ? '收到' : '未收到'}</strong></div><div class="degradation-result-metric"><small>输出 token</small><strong>${result.outputTokens}</strong></div><div class="degradation-result-metric"><small>思考 token</small><strong>${result.reasoningTokens}</strong></div><div class="degradation-result-metric"><small>摘要字符</small><strong>${result.summaryChars}</strong></div><div class="degradation-result-metric"><small>加密字节</small><strong>${result.encryptedBytes}</strong></div></div>${evidence}<div class="detail-section"><h4>模型正文</h4><pre class="degradation-answer">${escapeHTML(result.answer || '（没有可见正文）')}</pre></div><div class="help-text">答案核对只显示是否包含期望数字，不参与实时守护降智判定。</div></div>`;
+      const hasAnswer = String(metrics.answer || '').trim() !== '';
+      const answerTone = hasAnswer ? (metrics.answerMatchesExpected ? 'status-good' : 'status-warn') : 'status-warn';
+      const answerMatchLabel = metrics.answerMatchesExpected ? '是' : '否';
+      const formatMilliseconds = (value) => numberValue(value) === null ? '—' : `${numberValue(value)} ms`;
+      const formatSecondsThreshold = (value, active) => `${Number(value || 0)} s${active ? '' : '（未参与当前分类）'}`;
+      const formatReportTime = (value) => {
+        const date = new Date(value);
+        return Number.isNaN(date.getTime()) ? '—' : date.toLocaleString('zh-CN', {year:'numeric', month:'2-digit', day:'2-digit', hour:'2-digit', minute:'2-digit', second:'2-digit', hour12:false});
+      };
+      const field = (label, value) => `<div class="degradation-report-field"><small>${escapeHTML(label)}</small><strong>${escapeHTML(value ?? '—')}</strong></div>`;
+      const metric = (label, value) => `<div class="degradation-result-metric"><small>${escapeHTML(label)}</small><strong>${escapeHTML(value ?? '—')}</strong></div>`;
+      const stringify = (value) => escapeHTML(JSON.stringify(value ?? {}, null, 2));
+      const tools = Array.isArray(metrics.tools) && metrics.tools.length ? metrics.tools.join(', ') : '—';
+      const responseType = ({body:'正文', tools:'工具调用', body_and_tools:'正文 + 工具调用', empty:'—'}[metrics.responseType] || metrics.responseType || '—');
+      const encryptedExpectedBytes = Number(metrics.reasoningTokens || 0) * Number(thresholds.encryptedBytesPerReasoningToken || 0);
+      const qualityLabel = ({degraded:'degraded', normal:'normal', unknown:'unknown'}[result.classification] || result.classification || 'unknown');
+      const requestError = result.failureKind || result.reason || '—';
+      const upstreamResponseTitle = result.statusCode >= 400 ? '上游响应正文（SSE / JSON）' : '上游流式响应（SSE）';
+      const truncatedNote = result.responseBodyTruncated ? '<div class="degradation-threshold-note">响应正文已截断；下方显示保留部分。</div>' : '';
+      const thresholdFields = [
+        field('Soft TPS', thresholds.softTps == null ? '未使用' : thresholds.softTps),
+        field('Hard TPS', thresholds.hardTps == null ? '未使用' : thresholds.hardTps),
+        field('TTFB 阈值', formatSecondsThreshold(thresholds.ttfbSeconds, thresholds.ttfbActive)),
+        field('生成耗时阈值', formatSecondsThreshold(thresholds.generationSeconds, thresholds.generationActive)),
+        field('最低 Output tokens', thresholds.minOutputTokens),
+        field('Summary 字符阈值', thresholds.minSummaryChars),
+        field('Encrypted 最低字节', thresholds.minEncryptedBytes),
+        field('每个 reasoning token 字节系数', thresholds.encryptedBytesPerReasoningToken),
+        field('Burst 最低 reasoning tokens', thresholds.burstMinReasoningTokens),
+        field('Burst 可见 tokens 上限', thresholds.burstMaxVisibleTokens),
+        field('Burst 窗口上限', `${thresholds.burstMaxWindowMs} ms`)
+      ].join('');
+      return `<div class="degradation-result">
+        <header class="degradation-report-head">
+          <strong class="degradation-report-brand">wXAi Stream Check</strong>
+          <h3 class="degradation-report-title">降智检测结果</h3>
+          <div class="degradation-report-account">${escapeHTML(result.account || result.authIndex)}</div>
+          <div class="detail-badges"><span class="status-badge ${classificationTone}">${result.classification === 'unknown' ? '× ' : ''}${classificationLabel}</span><span class="status-badge ${answerTone}">答案（应为 ${escapeHTML(metrics.expectedAnswer)}）：${answerMatchLabel}</span></div>
+          <div class="degradation-report-caption">使用 xAI IP Switcher 当前 Realtime Guard 阈值判定</div>
+        </header>
+        <div class="degradation-result-grid secondary">
+          ${metric('HTTP 状态', result.status || '—')}
+          ${metric('首字节 TTFB', formatMilliseconds(result.timing.ttfbMs))}
+          ${metric('首生成', formatMilliseconds(result.timing.firstGenerationMs))}
+          ${metric('生成耗时', formatMilliseconds(result.timing.generationMs))}
+          ${metric('Total', formatMilliseconds(result.timing.totalMs))}
+          ${metric('TPS', Number(result.timing.tps || 0).toFixed(2))}
+        </div>
+        <div class="degradation-report-fields">
+          ${field('Check ID', result.checkId)}
+          ${field('检测时间', formatReportTime(result.detectedAt))}
+          ${field('Endpoint', result.endpoint)}
+          ${field('模型', result.model)}
+          ${field('流式请求', `stream=${Boolean(result.stream)}`)}
+          ${field('代理来源', result.proxySource)}
+          ${field('代理地址', result.proxyAddress || '直连')}
+          ${field('质量等级', qualityLabel)}
+          ${field('判定原因', requestError)}
+          ${field('Realtime Guard 原因', result.reason)}
+          ${field('Output tokens', metrics.outputTokens)}
+          ${field('Reasoning tokens', metrics.reasoningTokens)}
+          ${field('判定 tokens（Output + Reasoning）', metrics.evaluatedTokens)}
+          ${field('Visible tokens', metrics.visibleTokens)}
+          ${field('是否有 thinking_delta', metrics.hasThinkingDelta ? '是' : '否')}
+          ${field('真实 Thinking', metrics.isRealThinking ? '是' : '否')}
+          ${field('Thinking 原因', metrics.thinkingReason)}
+          ${field('Summary 字符', metrics.summaryChars)}
+          ${field('Encrypted', `${metrics.encryptedBytes}/${encryptedExpectedBytes} bytes`)}
+          ${field('Encrypted 判定下限', `${metrics.effectiveEncryptedFloor} bytes`)}
+          ${field('响应类型', responseType)}
+          ${field('正文字符', metrics.bodyChars)}
+          ${field('已完成正文', metrics.completedBodyCount)}
+          ${field('已完成工具调用', metrics.completedToolCalls)}
+          ${field('工具', tools)}
+          ${field('Refusal', metrics.refusal ? '是' : '否')}
+          ${field('可见倾倒窗口', formatMilliseconds(metrics.visibleDumpWindowMs))}
+          ${field(`答案（应为 ${metrics.expectedAnswer}）`, hasAnswer ? metrics.answer : '—')}
+          ${field('答案核对', answerMatchLabel)}
+          ${field('错误码', result.errorCode || '—')}
+          ${field('错误信息', result.errorText || '—')}
+          ${field('终态事件', result.terminalEvent ? '已收到' : '未收到')}
+        </div>
+        <section class="degradation-report-section"><h4>Realtime Guard 阈值</h4><div class="degradation-report-fields">${thresholdFields}</div><div class="degradation-threshold-note">TPS 是本次响应的观测值。当前插件分类器不使用 Soft TPS / Hard TPS；TTFB 与生成耗时阈值为已保存设置，但不参与当前分类。</div></section>
+        <section class="degradation-report-section"><h4>请求与上游证据</h4>
+          <details class="degradation-report-details"><summary>请求体</summary><pre>${escapeHTML(result.requestBody || '{}')}</pre></details>
+          <details class="degradation-report-details"><summary>请求头（敏感值已脱敏）</summary><pre>${stringify(result.requestHeaders)}</pre></details>
+          <details class="degradation-report-details"><summary>上游响应头（敏感值已脱敏）</summary><pre>${stringify(result.upstreamResponseHeaders)}</pre></details>
+          <details class="degradation-report-details"><summary>${escapeHTML(upstreamResponseTitle)}</summary><pre>${escapeHTML(result.upstreamResponse || '—')}</pre>${truncatedNote}</details>
+        </section>
+        <div class="help-text">答案核对只作提示，不参与实时守护判定。授权头、Cookie、代理凭据和响应正文中的敏感值已脱敏。</div>
+      </div>`;
     }
 
     function openAccountDegradationProbe(authIndex, accountName) {
@@ -1381,6 +1514,55 @@ socks5h://proxy.example:1080"></textarea>
         return false;
       }
     }
+    function fillInspectionSettingsForm(settings) {
+      $('inspection-interval-setting').value = settings.intervalSeconds;
+      $('inspection-concurrency-setting').value = settings.concurrency;
+      $('inspection-timeout-setting').value = settings.timeoutSeconds;
+    }
+
+    async function openInspectionSettings() {
+      $('inspection-interval-setting').value = '';
+      $('inspection-concurrency-setting').value = '';
+      $('inspection-timeout-setting').value = '';
+      $('inspection-settings-modal').hidden = false;
+      setMessage('inspection-settings-message', '');
+      setBusy(true, '读取服务端巡检配置…');
+      try {
+        fillInspectionSettingsForm(await api('/api/inspection/settings'));
+      } catch (error) {
+        setMessage('inspection-settings-message', error.message, true);
+      } finally {
+        setBusy(false);
+      }
+    }
+
+    async function saveInspectionSettings() {
+      const intervalRaw = $('inspection-interval-setting').value.trim();
+      const concurrencyRaw = $('inspection-concurrency-setting').value.trim();
+      const timeoutRaw = $('inspection-timeout-setting').value.trim();
+      const intervalSeconds = intervalRaw === '' ? NaN : Number(intervalRaw);
+      const concurrency = concurrencyRaw === '' ? NaN : Number(concurrencyRaw);
+      const timeoutSeconds = timeoutRaw === '' ? NaN : Number(timeoutRaw);
+      if (!Number.isInteger(intervalSeconds) || intervalSeconds < 0 || intervalSeconds > 86400 ||
+          !Number.isInteger(concurrency) || concurrency < 1 || concurrency > 64 ||
+          !Number.isInteger(timeoutSeconds) || timeoutSeconds < 1 || timeoutSeconds > 600) {
+        setMessage('inspection-settings-message', '参数超出范围：间隔 0–86400 秒，并发 1–64，单 Auth 超时 1–600 秒。', true);
+        return;
+      }
+      setMessage('inspection-settings-message', '');
+      setBusy(true, '保存服务端巡检配置…');
+      try {
+        const saved = await api('/api/inspection/settings', 'PUT', {intervalSeconds, concurrency, timeoutSeconds});
+        fillInspectionSettingsForm(saved);
+        $('inspection-settings-modal').hidden = true;
+        showToast('巡检配置已保存；定时计划立即更新，当前巡检不取消。新并发与超时从下一轮生效。');
+      } catch (error) {
+        setMessage('inspection-settings-message', error.message, true);
+      } finally {
+        setBusy(false);
+      }
+    }
+
     async function refreshAll() { await Promise.all([refreshAccounts(), refreshInspection(), refreshGuard()]); }
 
     function setBusy(value, message) {
@@ -1414,6 +1596,8 @@ socks5h://proxy.example:1080"></textarea>
       if (target.dataset.filter) { state.filter = target.dataset.filter; state.page = 1; document.querySelectorAll('[data-filter]').forEach((item) => item.classList.toggle('active', item.dataset.filter === state.filter)); renderAccountTable(); return; }
       if (target.dataset.mask) { state.mask = target.dataset.mask; document.querySelectorAll('[data-mask]').forEach((item) => item.classList.toggle('active', item.dataset.mask === state.mask)); renderAccountTable(); renderDegradation(); return; }
       if (target.dataset.clearAuth) { setBusy(true, '清除降智记录中…'); try { await api('/api/degradation/clear', 'POST', {authIndex:target.dataset.clearAuth}); await refreshGuard(); await refreshAccounts(); setMessage('settings-message', '降智记录已清除。'); } catch (error) { setMessage('settings-message', error.message, true); } finally { setBusy(false); } return; }
+      if (target.id === 'open-inspection-settings') { await openInspectionSettings(); return; }
+      if (target.id === 'save-inspection-settings') { await saveInspectionSettings(); return; }
       if (target.id === 'run-inspection') {
         setBusy(true, '启动 xAI Auth 账号巡检…');
         try {

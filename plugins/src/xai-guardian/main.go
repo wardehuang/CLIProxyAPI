@@ -316,13 +316,12 @@ func parsePluginConfig(raw []byte) (pluginConfig, error) {
 		if err := yaml.Unmarshal(raw, &fields); err != nil {
 			return pluginConfig{}, fmt.Errorf("decode plugin config fields: %w", err)
 		}
-		_, config.inspectionIntervalSet = fields["inspection_interval_seconds"]
+		if _, exists := fields["inspection_interval_seconds"]; exists {
+			return pluginConfig{}, fmt.Errorf("inspection_interval_seconds moved to the 服务端巡检配置页")
+		}
 	}
 	if strings.TrimSpace(config.DatabasePath) == "" {
 		config.DatabasePath = defaultDatabasePath
-	}
-	if config.inspectionIntervalSet && (config.InspectionIntervalSeconds < 0 || config.InspectionIntervalSeconds > maxInspectionIntervalSeconds) {
-		return pluginConfig{}, fmt.Errorf("inspection_interval_seconds must be between 0 and %d", maxInspectionIntervalSeconds)
 	}
 	return config, nil
 }
@@ -337,7 +336,6 @@ func pluginRegistration() registration {
 			GitHubRepository: "https://github.com/router-for-me/CLIProxyAPI",
 			ConfigFields: []pluginapi.ConfigField{
 				{Name: "database_path", Type: pluginapi.ConfigFieldTypeString, Description: "Plugin-owned SQLite path. Credentials are never stored here."},
-				{Name: "inspection_interval_seconds", Type: pluginapi.ConfigFieldTypeInteger, Description: "Automatic server inspection interval; 0 disables the worker."},
 			},
 		},
 		Capabilities: registrationCapabilities{ManagementAPI: true, Scheduler: true, SchedulerAcrossPriorities: true, RequestLifecyclePlugin: true, XAIStreamGuard: true},
@@ -412,13 +410,13 @@ func isAllowedUIPath(method, path string) bool {
 	switch method {
 	case http.MethodGet:
 		switch path {
-		case "/api/summary", "/api/schedule-groups/counters", "/api/settings", "/api/accounts", "/api/batch-nodes", "/api/batches", "/api/inspection", "/api/inspection/runs", "/api/keepalive", "/api/degradation", "/api/logs", "/api/logs/groups", "/api/auths/refresh-proxy-urls/status":
+		case "/api/summary", "/api/schedule-groups/counters", "/api/settings", "/api/accounts", "/api/batch-nodes", "/api/batches", "/api/inspection", "/api/inspection/settings", "/api/inspection/runs", "/api/keepalive", "/api/degradation", "/api/logs", "/api/logs/groups", "/api/auths/refresh-proxy-urls/status":
 			return true
 		default:
 			return (strings.HasPrefix(path, "/api/batches/") && strings.HasSuffix(path, "/nodes")) || (strings.HasPrefix(path, "/api/nodes/") && strings.HasSuffix(path, "/auth-bindings"))
 		}
 	case http.MethodPut:
-		return path == "/api/settings"
+		return path == "/api/settings" || path == "/api/inspection/settings"
 	case http.MethodPost:
 		if path == "/api/accounts/refresh" || path == "/api/accounts/degradation-check" || path == "/api/batches" || path == "/api/inspection" || path == "/api/keepalive/run" || path == "/api/degradation/clear" || path == "/api/auths/refresh-proxy-urls" {
 			return true

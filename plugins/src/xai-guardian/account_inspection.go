@@ -18,7 +18,6 @@ import (
 )
 
 const (
-	accountInspectionWorkerCount  = 4
 	accountInspectionBodyLimit    = 1024 * 1024
 	accountInspectionDetailLimit  = 400
 	accountInspectionProbeURL     = "https://cli-chat-proxy.grok.com/v1/billing"
@@ -109,9 +108,13 @@ func finishAccountInspectionPreparation(store *guardianStore, runID int64, cause
 }
 
 func runPreparedAccountInspection(ctx context.Context, store *guardianStore, runID int64, entries []pluginapi.HostAuthFileEntry, previousResults map[string]accountInspectionResult) error {
+	settings, err := store.settings()
+	if err != nil {
+		return finishAccountInspectionPreparation(store, runID, err)
+	}
 	jobs := make(chan pluginapi.HostAuthFileEntry, len(entries))
 	results := make(chan accountInspectionWorkResult, len(entries))
-	workerCount := min(accountInspectionWorkerCount, len(entries))
+	workerCount := min(settings.InspectionWorkerCount, len(entries))
 	var workers sync.WaitGroup
 	for worker := 0; worker < workerCount; worker++ {
 		workers.Add(1)
@@ -119,7 +122,9 @@ func runPreparedAccountInspection(ctx context.Context, store *guardianStore, run
 			defer workers.Done()
 			for entry := range jobs {
 				previous, hasPrevious := previousResults[entry.AuthIndex]
-				item, probed, inspectErr := inspectXAIAccount(ctx, store, runID, entry, previous, hasPrevious)
+				inspectionContext, cancelInspection := context.WithTimeout(ctx, time.Duration(settings.InspectionTimeoutSeconds)*time.Second)
+				item, probed, inspectErr := inspectXAIAccount(inspectionContext, store, runID, entry, previous, hasPrevious)
+				cancelInspection()
 				results <- accountInspectionWorkResult{result: item, probed: probed, err: inspectErr}
 			}
 		}()
@@ -326,7 +331,7 @@ func inspectXAIAccount(ctx context.Context, store *guardianStore, runID int64, e
 	snapshot := xaiBillingSnapshot{quotaWindows: []accountInspectionQuotaWindow{}}
 	monthlyProbed := false
 	if accountType == "unknown" {
-		monthly, outcome := probeXAIAccountBilling(ctx, client, accountInspectionProbeURL, accessToken, billingUserID)
+		monthly, outcome := probeXAIAccountBilling(ctx, client, accountInspectionProbeURL, accessToken, billingUserID, file.Raw)
 		monthlyProbed = true
 		if !outcome.alive {
 			result = applyAccountInspectionFailure(ctx, store, result, priority, outcome, now)
@@ -343,7 +348,7 @@ func inspectXAIAccount(ctx context.Context, store *guardianStore, runID int64, e
 
 	var outcome xaiInspectionOutcome
 	if accountType == "super" && monthlyProbed {
-		credits, creditsOutcome := probeXAIAccountBilling(ctx, client, accountInspectionCreditsURL, accessToken, billingUserID)
+		credits, creditsOutcome := probeXAIAccountBilling(ctx, client, accountInspectionCreditsURL, accessToken, billingUserID, file.Raw)
 		mergeXAIAccountBilling(&snapshot, credits)
 		outcome = creditsOutcome
 	} else if accountType == "super" {
@@ -356,14 +361,14 @@ func inspectXAIAccount(ctx context.Context, store *guardianStore, runID int64, e
 			outcome  xaiInspectionOutcome
 		}, 2)
 		go func() {
-			value, response := probeXAIAccountBilling(ctx, client, accountInspectionProbeURL, accessToken, billingUserID)
+			value, response := probeXAIAccountBilling(ctx, client, accountInspectionProbeURL, accessToken, billingUserID, file.Raw)
 			monthlyResult <- struct {
 				snapshot xaiBillingSnapshot
 				outcome  xaiInspectionOutcome
 			}{value, response}
 		}()
 		go func() {
-			value, response := probeXAIAccountBilling(ctx, client, accountInspectionCreditsURL, accessToken, billingUserID)
+			value, response := probeXAIAccountBilling(ctx, client, accountInspectionCreditsURL, accessToken, billingUserID, file.Raw)
 			creditsResult <- struct {
 				snapshot xaiBillingSnapshot
 				outcome  xaiInspectionOutcome
@@ -379,7 +384,7 @@ func inspectXAIAccount(ctx context.Context, store *guardianStore, runID int64, e
 			outcome = credits.outcome
 		}
 	} else {
-		credits, creditsOutcome := probeXAIAccountBilling(ctx, client, accountInspectionCreditsURL, accessToken, billingUserID)
+		credits, creditsOutcome := probeXAIAccountBilling(ctx, client, accountInspectionCreditsURL, accessToken, billingUserID, file.Raw)
 		mergeXAIAccountBilling(&snapshot, credits)
 		outcome = creditsOutcome
 	}
@@ -755,8 +760,8 @@ func restoreAccountInspectionPriority(ctx context.Context, store *guardianStore,
 	return accountInspectionIntPointer(accountInspectionPriorityHealthy), nil, 0
 }
 
-func probeXAIAccountBilling(ctx context.Context, client *http.Client, endpoint, accessToken, userID string) (xaiBillingSnapshot, xaiInspectionOutcome) {
-	response, err := performXAIAccountBillingRequest(ctx, client, endpoint, accessToken, userID)
+func probeXAIAccountBilling(ctx context.Context, client *http.Client, endpoint, accessToken, userID string, rawAuth map[string]any) (xaiBillingSnapshot, xaiInspectionOutcome) {
+	response, err := performXAIAccountBillingRequest(ctx, client, endpoint, accessToken, userID, rawAuth)
 	if err != nil {
 		return xaiBillingSnapshot{}, xaiInspectionOutcome{errorKind: "request_error", detail: sanitizeLogText(err.Error())}
 	}
@@ -777,7 +782,7 @@ func probeXAIAccountBilling(ctx context.Context, client *http.Client, endpoint, 
 	return snapshot, outcome
 }
 
-func performXAIAccountBillingRequest(ctx context.Context, client *http.Client, endpoint, accessToken, userID string) (xaiInspectionResponse, error) {
+func performXAIAccountBillingRequest(ctx context.Context, client *http.Client, endpoint, accessToken, userID string, rawAuth map[string]any) (xaiInspectionResponse, error) {
 	request, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
 	if err != nil {
 		return xaiInspectionResponse{}, err
@@ -789,6 +794,9 @@ func performXAIAccountBillingRequest(ctx context.Context, client *http.Client, e
 	request.Header.Set("User-Agent", accountInspectionUserAgent)
 	if userID = strings.TrimSpace(userID); userID != "" {
 		request.Header.Set("x-userid", userID)
+	}
+	if err := applyXAIAuthJSONHeaders(request, rawAuth); err != nil {
+		return xaiInspectionResponse{}, err
 	}
 	response, err := client.Do(request)
 	if err != nil {
@@ -828,9 +836,11 @@ func newAccountInspectionHTTPClient(proxyURL string) (*http.Client, error) {
 		if err != nil {
 			return nil, fmt.Errorf("auth proxy_url 格式无效")
 		}
-		transport.DialContext = func(_ context.Context, network, address string) (net.Conn, error) {
-			return dialer.Dial(network, address)
+		contextDialer, ok := dialer.(proxy.ContextDialer)
+		if !ok {
+			return nil, fmt.Errorf("auth SOCKS proxy does not support context-aware dialing")
 		}
+		transport.DialContext = contextDialer.DialContext
 	default:
 		return nil, fmt.Errorf("auth proxy_url 协议不受支持")
 	}

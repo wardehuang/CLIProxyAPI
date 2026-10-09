@@ -26,6 +26,7 @@ type runtimeController struct {
 	refreshProxyBatchCancel   context.CancelFunc
 	refreshProxyBatchGroup    sync.WaitGroup
 	inspectionCancel          context.CancelFunc
+	inspectionScheduleUpdates chan int
 	manualInspectionCancel    context.CancelFunc
 	inspectionGroup           sync.WaitGroup
 	probeCancel               context.CancelFunc
@@ -75,9 +76,6 @@ func (controller *runtimeController) configure(config pluginConfig) error {
 	settings, err := controller.store.settings()
 	if err != nil {
 		return err
-	}
-	if config.inspectionIntervalSet {
-		settings.InspectionIntervalSeconds = config.InspectionIntervalSeconds
 	}
 	if err := controller.store.setSettings(settings); err != nil {
 		return err
@@ -168,6 +166,7 @@ func (controller *runtimeController) stopWorkersLocked() {
 		controller.manualInspectionCancel = nil
 	}
 	controller.inspectionGroup.Wait()
+	controller.inspectionScheduleUpdates = nil
 	if controller.probeCancel != nil {
 		controller.probeCancel()
 		controller.probeGroup.Wait()
@@ -190,23 +189,69 @@ func (controller *runtimeController) stopWorkersLocked() {
 func (controller *runtimeController) startInspectionWorkerLocked(intervalSeconds int) {
 	workerContext, cancel := context.WithCancel(context.Background())
 	controller.inspectionCancel = cancel
+	controller.inspectionScheduleUpdates = make(chan int, 1)
+	scheduleUpdates := controller.inspectionScheduleUpdates
 	store := controller.store
 	controller.inspectionGroup.Add(1)
 	go func() {
 		defer controller.inspectionGroup.Done()
-		ticker := time.NewTicker(time.Duration(intervalSeconds) * time.Second)
-		defer ticker.Stop()
+		var ticker *time.Ticker
+		var tickerChannel <-chan time.Time
+		resetTicker := func(interval int) {
+			if ticker != nil {
+				ticker.Stop()
+				ticker = nil
+			}
+			tickerChannel = nil
+			if interval > 0 {
+				ticker = time.NewTicker(time.Duration(interval) * time.Second)
+				tickerChannel = ticker.C
+			}
+		}
+		defer func() {
+			if ticker != nil {
+				ticker.Stop()
+			}
+		}()
+		resetTicker(intervalSeconds)
 		for {
 			select {
 			case <-workerContext.Done():
 				return
-			case <-ticker.C:
+			case interval := <-scheduleUpdates:
+				resetTicker(interval)
+			case <-tickerChannel:
+				select {
+				case interval := <-scheduleUpdates:
+					resetTicker(interval)
+					continue
+				default:
+				}
 				if err := runInspection(workerContext, store); err != nil {
 					_ = store.appendLog(logLevelError, "inspection.worker_failed", "自动服务端巡检失败", sanitizeLogText(err.Error()))
 				}
 			}
 		}
 	}()
+}
+
+func (controller *runtimeController) setInspectionWorkerIntervalLocked(intervalSeconds int) {
+	if controller.inspectionCancel == nil {
+		if intervalSeconds > 0 {
+			controller.startInspectionWorkerLocked(intervalSeconds)
+		}
+		return
+	}
+	updates := controller.inspectionScheduleUpdates
+	select {
+	case updates <- intervalSeconds:
+	default:
+		select {
+		case <-updates:
+		default:
+		}
+		updates <- intervalSeconds
+	}
 }
 
 func (controller *runtimeController) startKeepaliveWorkerLocked(settings pluginSettings) {
@@ -290,6 +335,16 @@ func (controller *runtimeController) api(method, path string, query url.Values, 
 	}
 	if (method == http.MethodPut || method == http.MethodPost) && path == "/api/settings" {
 		return controller.updateSettings(store, body)
+	}
+	if method == http.MethodGet && path == "/api/inspection/settings" {
+		settings, err := store.settings()
+		if err != nil {
+			return http.StatusInternalServerError, nil, err
+		}
+		return jsonAPIResult(publicInspectionSettings(settings), nil)
+	}
+	if method == http.MethodPut && path == "/api/inspection/settings" {
+		return controller.updateInspectionSettings(store, body)
 	}
 	if method == http.MethodGet && path == "/api/auths/refresh-proxy-urls/status" {
 		return controller.authRefreshProxyBatchStatusAPI(query.Get("jobId"))
@@ -589,6 +644,11 @@ func (controller *runtimeController) updateSettings(store *guardianStore, body [
 	if err := json.Unmarshal(body, &payload); err != nil {
 		return http.StatusBadRequest, nil, err
 	}
+	controller.mutex.Lock()
+	defer controller.mutex.Unlock()
+	if controller.store != store {
+		return http.StatusServiceUnavailable, nil, fmt.Errorf("plugin is stopping")
+	}
 	currentSettings, err := store.settings()
 	if err != nil {
 		return http.StatusInternalServerError, nil, err
@@ -599,6 +659,8 @@ func (controller *runtimeController) updateSettings(store *guardianStore, body [
 		DebugEnabled:                                 payload.DebugEnabled,
 		RefreshIntervalSeconds:                       payload.RefreshIntervalSeconds,
 		InspectionIntervalSeconds:                    currentSettings.InspectionIntervalSeconds,
+		InspectionWorkerCount:                        currentSettings.InspectionWorkerCount,
+		InspectionTimeoutSeconds:                     currentSettings.InspectionTimeoutSeconds,
 		KeepaliveWorkerCount:                         payload.KeepaliveWorkerCount,
 		KeepaliveIntervalSeconds:                     payload.KeepaliveIntervalSeconds,
 		ReviveIntervalSeconds:                        payload.ReviveIntervalSeconds,
@@ -622,8 +684,6 @@ func (controller *runtimeController) updateSettings(store *guardianStore, body [
 		IPBatchRetentionDays:                         payload.IPBatchRetentionDays,
 	}
 	slotSettingsChanged := currentSettings.HealthySlotCount != settings.HealthySlotCount || currentSettings.HealthyCandidateSlotCount != settings.HealthyCandidateSlotCount || currentSettings.HealthySlotMaxAgeMinutes != settings.HealthySlotMaxAgeMinutes
-	controller.mutex.Lock()
-	defer controller.mutex.Unlock()
 	if settings.ScheduleGroupCount != currentSettings.ScheduleGroupCount && controller.scheduleGroups.hasBusy() {
 		return http.StatusConflict, nil, errScheduleGroupCountBusy
 	}
@@ -653,6 +713,42 @@ func (controller *runtimeController) updateSettings(store *guardianStore, body [
 	}
 	_ = store.appendLog(logLevelInfo, "settings.updated", "插件配置已保存", "")
 	return jsonAPIResult(publicSettings(persistedSettings), nil)
+}
+
+func (controller *runtimeController) updateInspectionSettings(store *guardianStore, body []byte) (int, []byte, error) {
+	var payload struct {
+		IntervalSeconds *int `json:"intervalSeconds"`
+		Concurrency     *int `json:"concurrency"`
+		TimeoutSeconds  *int `json:"timeoutSeconds"`
+	}
+	if err := json.Unmarshal(body, &payload); err != nil {
+		return http.StatusBadRequest, nil, err
+	}
+	if payload.IntervalSeconds == nil || payload.Concurrency == nil || payload.TimeoutSeconds == nil {
+		return jsonAPIError(http.StatusBadRequest, "invalid_inspection_settings", "intervalSeconds、concurrency 和 timeoutSeconds 均为必填项")
+	}
+	controller.mutex.Lock()
+	defer controller.mutex.Unlock()
+	if controller.store != store {
+		return jsonAPIError(http.StatusServiceUnavailable, "plugin_stopping", "插件正在停止，未保存巡检配置")
+	}
+	settings, err := store.settings()
+	if err != nil {
+		return http.StatusInternalServerError, nil, err
+	}
+	settings.InspectionIntervalSeconds = *payload.IntervalSeconds
+	settings.InspectionWorkerCount = *payload.Concurrency
+	settings.InspectionTimeoutSeconds = *payload.TimeoutSeconds
+	if err := store.setSettings(settings); err != nil {
+		return http.StatusBadRequest, nil, err
+	}
+	controller.setInspectionWorkerIntervalLocked(settings.InspectionIntervalSeconds)
+	persistedSettings, err := store.settings()
+	if err != nil {
+		return http.StatusInternalServerError, nil, err
+	}
+	_ = store.appendLog(logLevelInfo, "inspection.settings_updated", "服务端巡检配置已保存", fmt.Sprintf("interval_seconds=%d concurrency=%d timeout_seconds=%d", persistedSettings.InspectionIntervalSeconds, persistedSettings.InspectionWorkerCount, persistedSettings.InspectionTimeoutSeconds))
+	return jsonAPIResult(publicInspectionSettings(persistedSettings), nil)
 }
 
 func (controller *runtimeController) keepaliveAPI(store *guardianStore) (int, []byte, error) {
@@ -856,8 +952,8 @@ func jsonAPIError(status int, code, message string) (int, []byte, error) {
 func publicSettings(settings pluginSettings) map[string]any {
 	return map[string]any{
 		"workerCount": settings.WorkerCount, "scheduleGroupCount": settings.ScheduleGroupCount, "debugEnabled": settings.DebugEnabled, "refreshIntervalSeconds": settings.RefreshIntervalSeconds,
-		"inspectionIntervalSeconds": settings.InspectionIntervalSeconds,
-		"keepaliveWorkerCount":      settings.KeepaliveWorkerCount, "keepaliveIntervalSeconds": settings.KeepaliveIntervalSeconds,
+		"inspectionIntervalSeconds": settings.InspectionIntervalSeconds, "inspectionWorkerCount": settings.InspectionWorkerCount, "inspectionTimeoutSeconds": settings.InspectionTimeoutSeconds,
+		"keepaliveWorkerCount": settings.KeepaliveWorkerCount, "keepaliveIntervalSeconds": settings.KeepaliveIntervalSeconds,
 		"reviveIntervalSeconds": settings.ReviveIntervalSeconds, "probeRetryCount": settings.ProbeRetryCount, "maxReviveFailureCount": settings.MaxReviveFailureCount,
 		"healthySlotCount": settings.HealthySlotCount, "healthyCandidateSlotCount": settings.HealthyCandidateSlotCount, "healthySlotMaxAgeMinutes": settings.HealthySlotMaxAgeMinutes,
 		"realtimeGuardTTFBSeconds": settings.RealtimeGuardTTFBSeconds, "realtimeGuardGenerationSeconds": settings.RealtimeGuardGenerationSeconds,
@@ -867,6 +963,14 @@ func publicSettings(settings pluginSettings) map[string]any {
 		"realtimeGuardMinOutputTokens": settings.RealtimeGuardMinOutputTokens, "realtimeGuardBurstMinReasoningTokens": settings.RealtimeGuardBurstMinReasoningTokens,
 		"realtimeGuardBurstMaxVisibleTokens": settings.RealtimeGuardBurstMaxVisibleTokens, "realtimeGuardBurstMaxWindowMs": settings.RealtimeGuardBurstMaxWindowMS,
 		"ipBatchRetentionDays": settings.IPBatchRetentionDays,
+	}
+}
+
+func publicInspectionSettings(settings pluginSettings) map[string]any {
+	return map[string]any{
+		"intervalSeconds": settings.InspectionIntervalSeconds,
+		"concurrency":     settings.InspectionWorkerCount,
+		"timeoutSeconds":  settings.InspectionTimeoutSeconds,
 	}
 }
 
