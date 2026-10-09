@@ -239,7 +239,7 @@ func handleMethod(method string, request []byte) ([]byte, error) {
 			Resources: []pluginapi.ResourceRoute{{
 				Path:        resourcePath,
 				Menu:        "详细日志",
-				Description: "查看服务器运行日志和下载单个请求日志文件",
+				Description: "查看服务器日志和全部请求日志，并按需下载单个文件",
 			}},
 		})
 	case pluginabi.MethodManagementHandle:
@@ -341,7 +341,7 @@ func handleUIProxy(request managementRequest) ([]byte, error) {
 
 	switch proxyRequest.Operation {
 	case pluginapi.HostManagementLogsOperationServerFile,
-		pluginapi.HostManagementLogsOperationErrorFile:
+		pluginapi.HostManagementLogsOperationRequestLogFile:
 		return managementJSON(response.StatusCode, map[string]string{
 			"name":           proxyRequest.Name,
 			"content_base64": base64.StdEncoding.EncodeToString(response.Body),
@@ -365,8 +365,8 @@ func validUIOperation(operation string) bool {
 		pluginapi.HostManagementLogsOperationLogs,
 		pluginapi.HostManagementLogsOperationServerFiles,
 		pluginapi.HostManagementLogsOperationServerFile,
-		pluginapi.HostManagementLogsOperationErrorFiles,
-		pluginapi.HostManagementLogsOperationErrorFile,
+		pluginapi.HostManagementLogsOperationRequestFiles,
+		pluginapi.HostManagementLogsOperationRequestLogFile,
 		pluginapi.HostManagementLogsOperationRequestFile:
 		return true
 	default:

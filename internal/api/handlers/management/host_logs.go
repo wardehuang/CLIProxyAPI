@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"path/filepath"
 	"sort"
 	"strconv"
 	"strings"
@@ -38,10 +39,10 @@ func (h *Handler) HandleHostManagementLogs(ctx context.Context, request pluginap
 	case pluginapi.HostManagementLogsOperationServerFile:
 		handler = h.downloadServerLogFile
 		params = append(params, gin.Param{Key: "name", Value: request.Name})
-	case pluginapi.HostManagementLogsOperationErrorFiles:
-		handler = h.GetRequestErrorLogs
-	case pluginapi.HostManagementLogsOperationErrorFile:
-		handler = h.DownloadRequestErrorLog
+	case pluginapi.HostManagementLogsOperationRequestFiles:
+		handler = h.listRequestLogFiles
+	case pluginapi.HostManagementLogsOperationRequestLogFile:
+		handler = h.downloadRequestLogFile
 		params = append(params, gin.Param{Key: "name", Value: request.Name})
 	case pluginapi.HostManagementLogsOperationRequestFile:
 		handler = h.GetRequestLogByID
@@ -203,6 +204,141 @@ func (h *Handler) downloadServerLogFile(c *gin.Context) {
 	body, errRead := os.ReadFile(path)
 	if errRead != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to read server log file"})
+		return
+	}
+	c.Data(http.StatusOK, "text/plain; charset=utf-8", body)
+}
+
+type requestLogFile struct {
+	Name     string `json:"name"`
+	Size     int64  `json:"size"`
+	Modified int64  `json:"modified"`
+}
+
+type requestLogFileListItem struct {
+	requestLogFile
+	modTime time.Time
+}
+
+func (h *Handler) listRequestLogFiles(c *gin.Context) {
+	if h == nil || h.cfg == nil {
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "configuration unavailable"})
+		return
+	}
+	logDir := h.logDirectory()
+	if strings.TrimSpace(logDir) == "" {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "log directory not configured"})
+		return
+	}
+	entries, err := os.ReadDir(logDir)
+	if err != nil {
+		if os.IsNotExist(err) {
+			writeRequestLogFiles(c, []requestLogFile{}, c.Query("page"), c.Query("page_size"))
+			return
+		}
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to list request log files"})
+		return
+	}
+	items := make([]requestLogFileListItem, 0, len(entries))
+	for _, entry := range entries {
+		if entry.IsDir() || entry.Type()&os.ModeSymlink != 0 || !isRequestLogFileName(entry.Name()) {
+			continue
+		}
+		info, errInfo := entry.Info()
+		if errInfo != nil {
+			continue
+		}
+		modified := info.ModTime()
+		items = append(items, requestLogFileListItem{
+			requestLogFile: requestLogFile{Name: entry.Name(), Size: info.Size(), Modified: modified.Unix()},
+			modTime:        modified,
+		})
+	}
+	sort.Slice(items, func(i, j int) bool {
+		if items[i].modTime.Equal(items[j].modTime) {
+			return items[i].Name > items[j].Name
+		}
+		return items[i].modTime.After(items[j].modTime)
+	})
+	files := make([]requestLogFile, 0, len(items))
+	for _, item := range items {
+		files = append(files, item.requestLogFile)
+	}
+	writeRequestLogFiles(c, files, c.Query("page"), c.Query("page_size"))
+}
+
+func writeRequestLogFiles(c *gin.Context, files []requestLogFile, rawPage, rawPageSize string) {
+	total := len(files)
+	page := positiveLogQueryInt(rawPage, 1)
+	pageSize := positiveLogQueryInt(rawPageSize, 12)
+	if pageSize > 200 {
+		pageSize = 200
+	}
+	totalPages := 1
+	if total > 0 {
+		totalPages = (total + pageSize - 1) / pageSize
+	}
+	if page > totalPages {
+		page = totalPages
+	}
+	start := (page - 1) * pageSize
+	if start > total {
+		start = total
+	}
+	end := start + pageSize
+	if end > total {
+		end = total
+	}
+	c.JSON(http.StatusOK, gin.H{
+		"files":       files[start:end],
+		"page":        page,
+		"page_size":   pageSize,
+		"total":       total,
+		"total_pages": totalPages,
+	})
+}
+
+func isRequestLogFileName(name string) bool {
+	return name != defaultLogFileName &&
+		!strings.HasPrefix(name, defaultLogFileName+".") &&
+		filepath.Base(name) == name &&
+		!strings.ContainsAny(name, `/\\`) &&
+		filepath.Ext(name) == ".log" &&
+		parseLogMetadata(name).hasTime
+}
+
+func (h *Handler) downloadRequestLogFile(c *gin.Context) {
+	if h == nil || h.cfg == nil {
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "configuration unavailable"})
+		return
+	}
+	name := c.Param("name")
+	if !isRequestLogFileName(name) {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid request log file name"})
+		return
+	}
+	logDir := h.logDirectory()
+	if strings.TrimSpace(logDir) == "" {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "log directory not configured"})
+		return
+	}
+	path := filepath.Join(logDir, name)
+	info, errStat := os.Lstat(path)
+	if errStat != nil {
+		if os.IsNotExist(errStat) {
+			c.JSON(http.StatusNotFound, gin.H{"error": "request log file not found"})
+			return
+		}
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to read request log file"})
+		return
+	}
+	if info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid request log file"})
+		return
+	}
+	body, errRead := os.ReadFile(path)
+	if errRead != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to read request log file"})
 		return
 	}
 	c.Data(http.StatusOK, "text/plain; charset=utf-8", body)

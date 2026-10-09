@@ -52,11 +52,11 @@
     <header class="header">
       <div>
         <h1>详细日志</h1>
-        <p class="subhead">查看服务器运行日志，按需下载单个请求日志文件。</p>
+        <p class="subhead">查看服务器运行日志和全部请求日志，可按需下载单个文件。</p>
       </div>
       <nav class="tabs" aria-label="日志类型">
         <button class="tab active" type="button" data-tab="server">服务器日志</button>
-        <button class="tab" type="button" data-tab="errors">错误请求日志</button>
+        <button class="tab" type="button" data-tab="requests">请求日志</button>
       </nav>
     </header>
 
@@ -100,16 +100,32 @@
       <div id="log-view" class="log-view" aria-live="polite"></div>
     </section>
 
-    <section id="errors-panel" class="panel" hidden>
+    <section id="request-panel" class="panel" hidden>
       <div class="toolbar">
-        <div class="toolbar-left"><span class="hint">错误请求文件按修改时间倒序排列，可单独下载。</span></div>
+        <div class="toolbar-left"><span class="hint">所有请求日志按修改时间倒序排列，可单独下载。</span></div>
         <div class="toolbar-right">
-          <span id="error-meta" class="meta"></span>
-          <button id="refresh-errors" class="button primary" type="button">刷新</button>
+          <span id="request-meta" class="meta"></span>
+          <button id="refresh-requests" class="button primary" type="button">刷新</button>
         </div>
       </div>
-      <div id="request-log-notice" class="notice" hidden>已启用逐请求日志，错误请求日志列表为空属于正常情况。</div>
-      <div id="file-list" class="file-list"></div>
+      <div id="request-log-notice" class="notice" hidden>请求日志未开启；当前仅保存失败请求日志。开启请求日志后才会记录全部请求。</div>
+      <div id="request-file-error" class="error" hidden></div>
+      <div id="request-file-list" class="file-list"></div>
+      <div class="toolbar">
+        <span id="request-file-page-meta" class="meta"></span>
+        <div class="toolbar-right">
+          <label class="check">每页
+            <select id="request-file-page-size" class="page-size">
+              <option value="12">12</option>
+              <option value="24">24</option>
+              <option value="50">50</option>
+              <option value="100">100</option>
+            </select>
+          </label>
+          <button id="request-file-prev" class="button" type="button">上一页</button>
+          <button id="request-file-next" class="button" type="button">下一页</button>
+        </div>
+      </div>
     </section>
   </main>
 
@@ -118,7 +134,7 @@
     const pluginName = 'detailed-logs';
     const endpoint = '/v0/management/detailed-logs/api';
     const inPluginFrame = window.parent !== window;
-    const state = {tab:'server', lines:[], cursor:'', files:[], serverFiles:[], serverFilesPage:1, serverFilesPageSize:12, serverFilesTotal:0, serverFilesTotalPages:1, requestLog:false, busy:false, filesBusy:false, serverFilesBusy:false, refreshTimer:0};
+    const state = {tab:'server', lines:[], cursor:'', requestFiles:[], requestFilesPage:1, requestFilesPageSize:12, requestFilesTotal:0, requestFilesTotalPages:1, serverFiles:[], serverFilesPage:1, serverFilesPageSize:12, serverFilesTotal:0, serverFilesTotalPages:1, requestLog:false, busy:false, requestFilesBusy:false, serverFilesBusy:false, refreshTimer:0};
     let requestSequence = 0;
     const $ = (id) => document.getElementById(id);
     const showError = (message) => {
@@ -128,6 +144,11 @@
     };
     const showServerFileError = (message) => {
       const node = $('server-file-error');
+      node.textContent = message || '';
+      node.hidden = !message;
+    };
+    const showRequestFileError = (message) => {
+      const node = $('request-file-error');
       node.textContent = message || '';
       node.hidden = !message;
     };
@@ -284,7 +305,7 @@
     async function loadStatus() {
       const status = await api({operation:'status'});
       state.requestLog = status.request_log === true;
-      $('request-log-notice').hidden = !state.requestLog;
+      $('request-log-notice').hidden = state.requestLog;
     }
     async function loadLogs(incremental = false) {
       if (state.busy) return;
@@ -310,38 +331,51 @@
         $('refresh').disabled = false;
       }
     }
-    async function loadErrorFiles() {
-      if (state.filesBusy) return;
-      state.filesBusy = true;
-      $('refresh-errors').disabled = true;
-      showError('');
+    async function loadRequestFiles() {
+      if (state.requestFilesBusy) return;
+      state.requestFilesBusy = true;
+      $('refresh-requests').disabled = true;
+      showRequestFileError('');
+      renderRequestFiles();
       try {
         await loadStatus();
-        const result = await api({operation:'error_files'});
-        state.files = Array.isArray(result.files) ? result.files : [];
-        renderFiles();
+        const query = queryValues({page:state.requestFilesPage,page_size:state.requestFilesPageSize});
+        const result = await api({operation:'request_files',query});
+        state.requestFiles = Array.isArray(result.files) ? result.files : [];
+        state.requestFilesPage = result.page;
+        state.requestFilesPageSize = result.page_size;
+        state.requestFilesTotal = result.total;
+        state.requestFilesTotalPages = result.total_pages;
       } catch (error) {
-        state.files = [];
-        renderFiles();
-        showError(error instanceof Error ? error.message : String(error));
+        state.requestFiles = [];
+        state.requestFilesPage = 1;
+        state.requestFilesTotal = 0;
+        state.requestFilesTotalPages = 1;
+        showRequestFileError(error instanceof Error ? error.message : String(error));
       } finally {
-        state.filesBusy = false;
-        $('refresh-errors').disabled = false;
+        state.requestFilesBusy = false;
+        $('refresh-requests').disabled = false;
+        renderRequestFiles();
       }
     }
-    function renderFiles() {
-      const list = $('file-list');
+    function renderRequestFiles() {
+      const list = $('request-file-list');
       list.replaceChildren();
-      $('error-meta').textContent = `${state.files.length} 个文件`;
-      if (!state.files.length) {
+      $('request-meta').textContent = `${state.requestFilesTotal.toLocaleString()} 条请求日志`;
+      $('request-file-page-meta').textContent = `第 ${state.requestFilesPage} / ${state.requestFilesTotalPages} 页 · 共 ${state.requestFilesTotal.toLocaleString()} 条请求日志`;
+      $('request-file-page-size').value = String(state.requestFilesPageSize);
+      $('request-file-page-size').disabled = state.requestFilesBusy;
+      $('request-file-prev').disabled = state.requestFilesBusy || state.requestFilesPage <= 1;
+      $('request-file-next').disabled = state.requestFilesBusy || state.requestFilesPage >= state.requestFilesTotalPages;
+      if (!state.requestFiles.length) {
         const empty = document.createElement('div');
         empty.className = 'empty';
-        empty.textContent = '暂无错误请求日志文件。';
+        empty.textContent = '暂无请求日志文件。';
         list.appendChild(empty);
         return;
       }
       const fragment = document.createDocumentFragment();
-      for (const file of state.files) {
+      for (const file of state.requestFiles) {
         const row = document.createElement('div');
         row.className = 'file-row';
         const info = document.createElement('div');
@@ -359,7 +393,7 @@
         download.className = 'button';
         download.type = 'button';
         download.textContent = '下载';
-        download.addEventListener('click', () => downloadErrorFile(file.name,download));
+        download.addEventListener('click', () => downloadRequestLogFile(file.name,download));
         actions.appendChild(download);
         row.append(info,actions);
         fragment.appendChild(row);
@@ -383,14 +417,14 @@
         anchor.remove();
       }, 1000);
     }
-    async function downloadErrorFile(name,button) {
+    async function downloadRequestLogFile(name,button) {
       button.disabled = true;
-      showError('');
+      showRequestFileError('');
       try {
-        const result = await api({operation:'error_file',name});
+        const result = await api({operation:'request_log_file',name});
         saveBase64File(result.name || name,result.content_base64);
       } catch (error) {
-        showError(error instanceof Error ? error.message : String(error));
+        showRequestFileError(error instanceof Error ? error.message : String(error));
       } finally {
         button.disabled = false;
       }
@@ -423,9 +457,9 @@
       state.tab = tab;
       document.querySelectorAll('[data-tab]').forEach((button) => button.classList.toggle('active',button.dataset.tab === tab));
       $('server-panel').hidden = tab !== 'server';
-      $('errors-panel').hidden = tab !== 'errors';
+      $('request-panel').hidden = tab !== 'requests';
       if (tab === 'server') void loadServerFiles();
-      if (tab === 'errors') void loadErrorFiles();
+      if (tab === 'requests') void loadRequestFiles();
     }
     function exportLogs() {
       const content = state.lines.join('\n');
@@ -452,7 +486,20 @@
       void loadServerFiles();
     });
     $('refresh').addEventListener('click',() => loadLogs(false));
-    $('refresh-errors').addEventListener('click',() => loadErrorFiles());
+    $('refresh-requests').addEventListener('click',() => loadRequestFiles());
+    $('request-file-page-size').addEventListener('change',(event) => {
+      state.requestFilesPageSize = Number(event.target.value);
+      state.requestFilesPage = 1;
+      void loadRequestFiles();
+    });
+    $('request-file-prev').addEventListener('click',() => {
+      state.requestFilesPage -= 1;
+      void loadRequestFiles();
+    });
+    $('request-file-next').addEventListener('click',() => {
+      state.requestFilesPage += 1;
+      void loadRequestFiles();
+    });
     $('download-all').addEventListener('click',exportLogs);
     $('search').addEventListener('input',renderLogs);
     $('auto-refresh').addEventListener('change',(event) => {

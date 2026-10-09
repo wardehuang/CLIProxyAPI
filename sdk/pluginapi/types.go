@@ -1591,13 +1591,13 @@ type ManagementResponse struct {
 }
 
 const (
-	HostManagementLogsOperationStatus      = "status"
-	HostManagementLogsOperationLogs        = "logs"
-	HostManagementLogsOperationServerFiles = "server_files"
-	HostManagementLogsOperationServerFile  = "server_file"
-	HostManagementLogsOperationErrorFiles  = "error_files"
-	HostManagementLogsOperationErrorFile   = "error_file"
-	HostManagementLogsOperationRequestFile = "request_file"
+	HostManagementLogsOperationStatus         = "status"
+	HostManagementLogsOperationLogs           = "logs"
+	HostManagementLogsOperationServerFiles    = "server_files"
+	HostManagementLogsOperationServerFile     = "server_file"
+	HostManagementLogsOperationRequestFiles   = "request_files"
+	HostManagementLogsOperationRequestLogFile = "request_log_file"
+	HostManagementLogsOperationRequestFile    = "request_file"
 )
 
 // HostManagementLogsRequest describes a read-only request to the host's management log handlers.

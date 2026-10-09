@@ -203,8 +203,8 @@ func (h *Host) callHostManagementLogs(ctx context.Context, request []byte) ([]by
 		pluginapi.HostManagementLogsOperationLogs,
 		pluginapi.HostManagementLogsOperationServerFiles,
 		pluginapi.HostManagementLogsOperationServerFile,
-		pluginapi.HostManagementLogsOperationErrorFiles,
-		pluginapi.HostManagementLogsOperationErrorFile,
+		pluginapi.HostManagementLogsOperationRequestFiles,
+		pluginapi.HostManagementLogsOperationRequestLogFile,
 		pluginapi.HostManagementLogsOperationRequestFile:
 	default:
 		return nil, fmt.Errorf("unsupported host management logs operation %q", req.Operation)
