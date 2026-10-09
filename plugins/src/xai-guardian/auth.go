@@ -158,6 +158,28 @@ func getXAIAuthFile(entry pluginapi.HostAuthFileEntry) (xaiAuthFile, error) {
 	}, nil
 }
 
+func updateXAIAuthPriority(authIndex string, priority int) error {
+	authIndex = strings.TrimSpace(authIndex)
+	if authIndex == "" {
+		return fmt.Errorf("auth_index is required")
+	}
+	raw, err := callHost(pluginabi.MethodHostAuthPriorityUpdate, pluginapi.HostAuthPriorityUpdateRequest{
+		AuthIndex: authIndex,
+		Priority:  priority,
+	})
+	if err != nil {
+		return err
+	}
+	var response pluginapi.HostAuthPriorityUpdateResponse
+	if err := json.Unmarshal(raw, &response); err != nil {
+		return fmt.Errorf("decode auth priority update response: %w", err)
+	}
+	if response.AuthIndex != authIndex || response.Priority != priority {
+		return fmt.Errorf("auth priority update read-back mismatch")
+	}
+	return nil
+}
+
 func syncAuthBindings(store *guardianStore, entries []pluginapi.HostAuthFileEntry, inspectionRunID, inspectionAt int64) error {
 	files, err := loadXAIAuthFiles(entries)
 	if err != nil {

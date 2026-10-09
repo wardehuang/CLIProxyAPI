@@ -156,7 +156,7 @@
     .data-panel { min-width: 0; overflow: hidden; border: 1px solid var(--border-color); border-radius: 18px; background: var(--bg-primary); }
     .data-header { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 12px; padding: 12px; border-bottom: 1px solid var(--border-color); background: color-mix(in srgb, var(--bg-primary) 82%, var(--bg-tertiary)); }
     .search-input { min-width: 260px; min-height: 40px; flex: 1 1 320px; padding: 0 14px; border: 1px solid var(--border-color); border-radius: 12px; outline: none; background: var(--bg-primary); color: var(--text-primary); }
-    .search-input:focus, .settings-input:focus, .node-input:focus { border-color: var(--primary-color); box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--primary-color) 24%, transparent); }
+    .search-input:focus, .settings-input:focus { border-color: var(--primary-color); box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--primary-color) 24%, transparent); }
     .data-actions, .toggle-group, .filter-pills, .toolbar-actions, .pager-controls { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
     .data-actions { justify-content: flex-end; }
     .refresh-button, .pill-button, .secondary-button, .primary-button, .danger-button { min-height: 34px; padding: 0 13px; border: 1px solid var(--border-color); border-radius: 999px; background: var(--bg-tertiary); color: var(--text-secondary); font-size: 12px; font-weight: 800; cursor: pointer; white-space: nowrap; }
@@ -284,11 +284,10 @@
     .guard-tab:hover, .guard-tab.active { border-color: color-mix(in srgb, var(--primary-color) 32%, var(--border-color)); color: var(--primary-color); background: color-mix(in srgb, var(--primary-color) 13%, var(--bg-primary)); }
     .guard-subview { display: none; min-width: 0; }
     .guard-subview.active { display: grid; gap: 14px; }
-    .server-summary-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px; }
-    .server-input-panel, .settings-panel, .run-panel, .logs-panel { display: grid; gap: 12px; padding: 18px; border: 1px solid var(--border-color); border-radius: 18px; background: var(--bg-primary); }
+    .server-summary-grid { display: grid; grid-template-columns: repeat(6, minmax(0, 1fr)); gap: 12px; }
+    .settings-panel, .run-panel, .logs-panel { display: grid; gap: 12px; padding: 18px; border: 1px solid var(--border-color); border-radius: 18px; background: var(--bg-primary); }
     .settings-section { display: grid; gap: 12px; padding: 16px; border: 1px solid var(--border-color); border-radius: 16px; background: color-mix(in srgb, var(--bg-primary) 82%, var(--bg-tertiary)); }
     .settings-section .panel-title { font-size: 16px; }
-    .node-input { width: 100%; min-height: 112px; resize: vertical; padding: 12px 14px; border: 1px solid var(--border-color); border-radius: 12px; outline: none; background: var(--bg-tertiary); color: var(--text-primary); line-height: 1.6; }
     .help-text { color: var(--text-tertiary); font-size: 12px; }
     .message { min-height: 20px; color: var(--success-color); font-size: 12px; }
     .message.error { color: var(--danger-color); }
@@ -297,6 +296,25 @@
     .toast.error { border-color: color-mix(in srgb, var(--danger-color) 42%, var(--border-primary)); background: color-mix(in srgb, var(--bg-primary) 94%, var(--danger-color)); color: var(--danger-color); }
     @keyframes toast-in { from { opacity: 0; transform: translateY(-8px); } to { opacity: 1; transform: translateY(0); } }
     .run-summary { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 10px; }
+
+    .inspection-table { min-width: 980px; }
+    .inspection-table th:nth-child(1), .inspection-table td:nth-child(1) { width: 280px; text-align: left; }
+    .inspection-table th:nth-child(2), .inspection-table td:nth-child(2) { width: 130px; }
+    .inspection-table th:nth-child(3), .inspection-table td:nth-child(3) { width: 130px; }
+    .inspection-table th:nth-child(4), .inspection-table td:nth-child(4) { width: 100px; }
+    .inspection-table th:nth-child(5), .inspection-table td:nth-child(5) { width: 300px; text-align: left; }
+    .inspection-table th:nth-child(6), .inspection-table td:nth-child(6) { width: 180px; text-align: left; }
+    .inspection-table th:nth-child(7), .inspection-table td:nth-child(7) { width: 90px; }
+    .inspection-table th:nth-child(8), .inspection-table td:nth-child(8) { width: 150px; }
+    .inspection-history-table { min-width: 820px; }
+    .inspection-history-table th:nth-child(1), .inspection-history-table td:nth-child(1) { width: 100px; }
+    .inspection-history-table th:nth-child(2), .inspection-history-table td:nth-child(2) { width: 140px; }
+    .inspection-history-table th:nth-child(3), .inspection-history-table td:nth-child(3) { width: 140px; }
+    .inspection-history-table th:nth-child(4), .inspection-history-table td:nth-child(4) { width: 120px; }
+    .inspection-history-table th:nth-child(5), .inspection-history-table td:nth-child(5) { width: 200px; }
+    .inspection-history-table th:nth-child(6), .inspection-history-table td:nth-child(6) { width: 200px; }
+    .inspection-history-table tr.selected td { border-color: color-mix(in srgb, var(--primary-color) 48%, var(--border-color)); background: color-mix(in srgb, var(--primary-color) 9%, var(--bg-primary)); }
+    .inspection-history-button { min-width: 54px; }
 
     .run-stat { padding: 12px; border: 1px solid var(--border-color); border-radius: 13px; background: var(--bg-tertiary); }
     .run-stat small { display: block; color: var(--text-tertiary); font-size: 11px; }
@@ -431,24 +449,44 @@
 
     <section class="view" data-view="inspection" role="tabpanel">
       <section class="panel server-panel">
-        <div class="server-summary-grid" id="node-summary"></div>
-        <div class="server-input-panel">
-          <div class="panel-header">
-            <div><h2 class="panel-title">服务端巡检</h2><p class="panel-subtitle">录入代理节点并执行出口 IP、国家和连通性检查。</p></div>
-            <div class="panel-extra"><button class="primary-button" id="run-inspection" type="button">立即巡检</button></div>
-          </div>
-          <textarea class="node-input" id="node-input" placeholder="每行一个代理，例如 http://203.0.113.10:8080；也支持 host:port,出口IP,port,protocol"></textarea>
-          <div class="help-text">不接受带用户名或密码的代理地址。代理凭据不写入插件 SQLite；URL、日志和错误信息会脱敏。</div>
-          <div id="node-message" class="message"></div>
+        <div class="panel-header">
+          <div><h2 class="panel-title">xAI Auth 账号巡检</h2><p class="panel-subtitle">按 CPA-Manager-Plus 账号巡检语义检查 Auth 文件及计费状态。</p></div>
+          <div class="panel-extra"><button class="primary-button" id="run-inspection" type="button">立即巡检</button></div>
+        </div>
+        <div class="help-text">仅检查 xAI Auth 账号；billing 请求遵守 CPA 规范，不设响应阶段 timeout。巡检只调整 priority，不修改 schedule_group。</div>
+        <div id="inspection-error" class="message error hidden"></div>
+        <div class="server-summary-grid" id="inspection-summary"></div>
+        <div class="data-panel">
+          <div class="data-header"><div><strong>当前巡检</strong><div class="subline">运行状态与处理进度。</div></div><div class="data-actions"><button class="refresh-button" id="refresh-inspection" type="button">刷新</button></div></div>
+          <div class="table-wrap" id="inspection-run"></div>
         </div>
         <div class="data-panel">
-          <div class="data-header"><div><strong>节点状态</strong><div class="subline">当前插件 SQLite 中保存的服务端巡检节点</div></div></div>
-          <div id="nodes-error" class="message error hidden"></div>
-          <div class="table-wrap" id="nodes-table"></div>
+          <div class="data-header"><div><strong>巡检历史</strong><div class="subline">选择一次运行，查看对应账号结果。</div></div></div>
+          <div class="table-wrap" id="inspection-history"></div>
         </div>
-        <div class="run-panel">
-          <div class="panel-header"><div><h2 class="panel-title">最近巡检</h2><p class="panel-subtitle">只统计本次实际完成检查的节点。</p></div><span class="muted" id="run-updated">尚未运行</span></div>
-          <div id="inspection-run"></div>
+        <div class="data-panel">
+          <div class="data-header">
+            <input class="search-input" id="inspection-search" type="search" placeholder="搜索账号或 Auth Index" aria-label="搜索巡检账号">
+            <div class="data-actions">
+              <div class="filter-pills" aria-label="巡检结果筛选">
+                <button class="pill-button active" type="button" data-inspection-filter="all">全部</button>
+                <button class="pill-button" type="button" data-inspection-filter="healthy">健康</button>
+                <button class="pill-button" type="button" data-inspection-filter="quota">额度耗尽</button>
+                <button class="pill-button" type="button" data-inspection-filter="abnormal">异常</button>
+                <button class="pill-button" type="button" data-inspection-filter="disabled">已停用</button>
+                <button class="pill-button" type="button" data-inspection-filter="skipped">跳过</button>
+              </div>
+            </div>
+          </div>
+          <div class="table-wrap" id="inspection-results"></div>
+          <div class="pagination">
+            <span id="inspection-page-info">第 1 / 1 页，显示 0 - 0 / 0</span>
+            <div class="pager-controls">
+              <label>每页 <select class="page-size" id="inspection-page-size"><option value="20" selected>20 条/页</option><option value="50">50 条/页</option><option value="100">100 条/页</option></select></label>
+              <button class="pager-button" id="inspection-page-prev" type="button">上一页</button>
+              <button class="pager-button" id="inspection-page-next" type="button">下一页</button>
+            </div>
+          </div>
         </div>
       </section>
     </section>
@@ -673,7 +711,7 @@ socks5h://proxy.example:1080"></textarea>
       window.parent.postMessage({type:'cpa-plugin-api-request', requestId, endpoint:apiEndpoint, method:'POST', body:payload}, '*');
     });
     const state = {
-      accounts: [], nodes: [], inspection: {run: null, results: []}, guardNodes: [], batches: [], batchNodes: [], degradation: [], logs: [], logGroups: {batch_probe: [], keepalive_probe: [], revive_probe: []}, settings: null, keepalive: null,
+      accounts: [], inspection: {run: null, items: []}, inspectionRuns: [], selectedInspectionRunID: 0, inspectionFollowLatest: true, inspectionFilter: 'all', inspectionKeyword: '', inspectionPage: 1, inspectionPageSize: 20, inspectionPollTimer: 0, guardNodes: [], batches: [], batchNodes: [], degradation: [], logs: [], logGroups: {batch_probe: [], keepalive_probe: [], revive_probe: []}, settings: null, keepalive: null,
       summary: null,
       mode: 'accounts', guardTab: 'ips', logCategory: 'realtime_guard', logStatus: 'connected', selectedLogGroupIDs: {batch_probe: '', keepalive_probe: '', revive_probe: ''}, logSearch: '', logMax: 0, selectedBatchID: '', filter: 'all', guardStatusFilter: 'healthy', mask: 'full', page: 1, pageSize: 100,
       keyword: '', expandedAccount: '', guardSortKey: 'latency', guardSortDirection: 'asc', authBindingDetail: null, busy: false, pageRefreshTimer: 0, settingsDirty: false, settingsRevision: 0
@@ -762,7 +800,7 @@ socks5h://proxy.example:1080"></textarea>
     function renderMode() {
       const descriptions = {
         accounts: ['账号状态', '仅显示最后一次后台账号检查快照；未运行后台账号检查时不显示当前 CPA 账号清单。'],
-        inspection: ['服务端巡检', '录入服务端代理节点，执行出口 IP、国家和连通性检查。'],
+        inspection: ['服务端巡检', '检查 xAI Auth 账号状态、额度和计费响应，并按 Manager 语义调整 priority。'],
         guard: ['降智守护', '查看降智记录、守护策略和插件日志。']
       };
       document.querySelectorAll('[data-mode]').forEach((button) => {
@@ -829,24 +867,89 @@ socks5h://proxy.example:1080"></textarea>
     }
 
 
-    function renderNodeSummary() {
-      const counts = {total:state.nodes.length, healthy:0, unhealthy:0, inspecting:0, uninspected:0};
-      state.nodes.forEach((node) => { if (counts[node.status] !== undefined) counts[node.status] += 1; else counts.uninspected += 1; });
-      const cards = [['节点总数', counts.total, 'N', 'blue'], ['健康', counts.healthy, '✓', 'green'], ['异常', counts.unhealthy, '!', 'red'], ['检测中/未检测', counts.inspecting + counts.uninspected, '…', 'violet']];
-      $('node-summary').innerHTML = cards.map((card) => `<article class="summary-card tone-${card[3]}"><div class="summary-header"><span class="summary-icon">${card[2]}</span><span class="summary-label">${card[0]}</span></div><strong class="summary-value">${card[1]}</strong></article>`).join('');
-    }
+    const inspectionStatus = (item) => {
+      if (item.isQuota) return 'quota';
+      if (item.disabled) return 'disabled';
+      const failed = (typeof item.statusCode === 'number' && item.statusCode >= 400) || item.actionStatus === 'failed' || item.status === 'failed' || item.state === 'failed' || Boolean(item.errorKind || item.error || item.errorDetail || item.actionError);
+      if (failed || item.status === 'abnormal') return 'abnormal';
+      return item.status === 'healthy' ? 'healthy' : 'skipped';
+    };
+    const inspectionStatusLabel = (status) => ({healthy:'健康', quota:'额度耗尽', abnormal:'异常', disabled:'已停用', skipped:'跳过'}[status] || '未知');
+    const inspectionStatusTone = (status) => ({healthy:'status-good', quota:'status-violet', abnormal:'status-bad', disabled:'status-warn', skipped:'status-warn'}[status] || 'status-warn');
+    const inspectionRunStatusLabel = (status) => ({running:'运行中', completed:'已完成', failed:'失败'}[status] || status || '未知');
+    const inspectionActionLabel = (item) => {
+      const action = item.executedAction || item.action;
+      const actionLabel = ({lower_priority:'降低 priority', restore_priority:'恢复 priority', priority_adjustment:'调整 priority', priority_restore:'恢复 priority', keep:'保持'}[action] || action || '保持');
+      const statusLabel = ({success:'已完成', failed:'失败', skipped:'跳过', none:'未调整'}[item.actionStatus] || '');
+      return statusLabel ? `${actionLabel} · ${statusLabel}` : actionLabel;
+    };
+    const inspectionQuotaText = (item) => {
+      const windows = (item.quotaWindows || []).map((window) => {
+        const percent = numberValue(window.usedPercent);
+        const reset = numberValue(window.resetAtMs);
+        return `${escapeHTML(window.labelKey || window.id || '额度窗口')} ${percent === null ? '—' : `${percent.toFixed(1)}%`}${reset ? ` · 重置 ${escapeHTML(formatDate(reset))}` : ''}`;
+      });
+      const limit = numberValue(item.monthlyLimitCents);
+      const used = numberValue(item.monthlyUsedCents);
+      if (limit !== null || used !== null) windows.unshift(`月度 ${used === null ? '—' : `$${(used / 100).toFixed(2)}`} / ${limit === null ? '—' : `$${(limit / 100).toFixed(2)}`}`);
+      if (!windows.length && numberValue(item.usedPercent) !== null) windows.push(`已用 ${numberValue(item.usedPercent).toFixed(1)}%`);
+      return windows.length ? windows.join('<br>') : '—';
+    };
 
-    function renderNodes() {
-      const rows = state.nodes.map((node) => `<tr><td><span class="number-badge">#${node.id}</span></td><td><div class="node-cell"><strong class="mono">${escapeHTML(node.address || '—')}</strong>${node.lastError ? `<span class="subline">${escapeHTML(node.lastError)}</span>` : ''}</div></td><td><span class="node-status ${nodeTone(node.status)}">${nodeLabel(node.status)}</span></td><td>${node.latencyMs ? escapeHTML(node.latencyMs) + ' ms' : '—'}</td><td class="mono">${escapeHTML(node.exitIp || '—')}</td><td>${escapeHTML(node.country || '—')}</td><td>${formatDate(node.lastChecked)}</td><td><button class="danger-button" type="button" data-delete-node="${node.id}">删除</button></td></tr>`).join('');
-      $('nodes-table').innerHTML = `<table class="data-table node-table"><thead><tr><th>ID</th><th>节点地址</th><th>状态</th><th>延迟</th><th>出口 IP</th><th>国家</th><th>最近检查</th><th>操作</th></tr></thead><tbody>${rows || '<tr><td class="empty-cell" colspan="8">没有服务端巡检节点。</td></tr>'}</tbody></table>`;
-      renderNodeSummary();
+    function renderInspectionHistory() {
+      const rows = state.inspectionRuns.map((run) => `<tr class="${Number(run.id) === Number(state.selectedInspectionRunID) ? 'selected' : ''}"><td><button class="secondary-button inspection-history-button" type="button" data-inspection-run-id="${run.id}">#${run.id}</button></td><td>${run.triggerType === 'manual' ? '手动' : '自动'}</td><td><span class="status-badge ${run.status === 'completed' ? 'status-good' : run.status === 'running' ? 'status-violet' : 'status-bad'}">${escapeHTML(inspectionRunStatusLabel(run.status))}</span></td><td>${run.processedCount} / ${run.totalFiles}</td><td>${formatFullDate(run.startedAtMs)}</td><td>${formatFullDate(run.finishedAtMs)}</td></tr>`).join('');
+      $('inspection-history').innerHTML = `<table class="data-table inspection-history-table"><thead><tr><th>运行</th><th>触发方式</th><th>状态</th><th>已处理 / 总数</th><th>开始时间</th><th>完成时间</th></tr></thead><tbody>${rows || '<tr><td class="empty-cell" colspan="6">暂无账号巡检记录。</td></tr>'}</tbody></table>`;
     }
 
     function renderInspection() {
       const run = state.inspection.run;
-      if (!run) { $('inspection-run').innerHTML = '<div class="help-text">尚未运行服务端巡检。</div>'; $('run-updated').textContent = '尚未运行'; return; }
-      $('run-updated').textContent = `完成于 ${formatDate(run.completedAt || run.startedAt)}`;
-      $('inspection-run').innerHTML = `<div class="run-summary"><div class="run-stat"><small>状态</small><strong>${escapeHTML(run.status)}</strong></div><div class="run-stat"><small>实际检查</small><strong>${run.total}</strong></div><div class="run-stat"><small>健康</small><strong>${run.healthy}</strong></div><div class="run-stat"><small>异常</small><strong>${run.unhealthy}</strong></div></div><div class="help-text">开始：${formatFullDate(run.startedAt)}　完成：${formatFullDate(run.completedAt)}</div>`;
+      const items = state.inspection.items || [];
+      const disabledCount = items.filter((item) => item.disabled).length;
+      const cards = run ? [
+        ['账号总数', run.totalFiles, 'A', 'blue'], ['探测候选', run.probeSetCount, 'P', 'blue'],
+        ['已停用', disabledCount, 'D', 'amber'], ['健康', run.healthyCount, '✓', 'green'],
+        ['额度耗尽', run.quotaExhaustedCount, 'Q', 'amber'], ['异常', run.abnormalCount, '!', 'red']
+      ] : [['账号总数', '—', 'A', 'blue'], ['探测候选', '—', 'P', 'blue'], ['已停用', '—', 'D', 'amber'], ['健康', '—', '✓', 'green'], ['额度耗尽', '—', 'Q', 'amber'], ['异常', '—', '!', 'red']];
+      $('inspection-summary').innerHTML = cards.map((card) => `<article class="summary-card tone-${card[3]}"><div class="summary-header"><span class="summary-icon">${card[2]}</span><span class="summary-label">${card[0]}</span></div><strong class="summary-value">${escapeHTML(card[1])}</strong></article>`).join('');
+      if (!run) {
+        $('inspection-run').innerHTML = '<div class="help-text">尚无账号巡检记录。</div>';
+      } else {
+        const runError = run.error ? `<div class="message error">${escapeHTML(run.error)}</div>` : '';
+        $('inspection-run').innerHTML = `<div class="run-summary"><div class="run-stat"><small>状态</small><strong>${escapeHTML(inspectionRunStatusLabel(run.status))}</strong></div><div class="run-stat"><small>触发方式</small><strong>${run.triggerType === 'manual' ? '手动' : '自动'}</strong></div><div class="run-stat"><small>已处理 / 总数</small><strong>${run.processedCount} / ${run.totalFiles}</strong></div><div class="run-stat"><small>跳过</small><strong>${run.skippedCount}</strong></div></div><div class="help-text">开始：${formatFullDate(run.startedAtMs)}　完成：${formatFullDate(run.finishedAtMs)}</div>${runError}`;
+      }
+      renderInspectionHistory();
+
+      const keyword = state.inspectionKeyword.trim().toLowerCase();
+      const filtered = items.filter((item) => {
+        const status = inspectionStatus(item);
+        const matchesStatus = state.inspectionFilter === 'all' || status === state.inspectionFilter;
+        const searchable = `${item.displayAccount || ''} ${item.fileName || ''} ${item.authIndex || ''} ${item.accountId || ''}`.toLowerCase();
+        return matchesStatus && (!keyword || searchable.includes(keyword));
+      });
+      const totalPages = Math.max(1, Math.ceil(filtered.length / state.inspectionPageSize));
+      state.inspectionPage = Math.min(state.inspectionPage, totalPages);
+      const start = (state.inspectionPage - 1) * state.inspectionPageSize;
+      const rows = filtered.slice(start, start + state.inspectionPageSize).map((item) => {
+        const status = inspectionStatus(item);
+        const account = item.displayAccount || item.fileName || item.accountId || item.authIndex || '未命名账号';
+        const reference = item.authIndex || item.accountId || item.fileName || '—';
+        const actionReason = item.actionError || item.actionReason || item.errorDetail || item.error || '—';
+        const statusCode = numberValue(item.statusCode);
+        return `<tr><td><div class="account-cell"><strong title="${escapeHTML(account)}">${escapeHTML(account)}</strong><span class="subline">${escapeHTML(reference)}${item.accountType ? ` · ${escapeHTML(item.accountType)}` : ''}</span></div></td><td>${escapeHTML(item.planType || '—')}</td><td><span class="status-badge ${inspectionStatusTone(status)}">${inspectionStatusLabel(status)}</span></td><td><span class="number-badge">${numberValue(item.priority) ?? '—'}</span></td><td>${inspectionQuotaText(item)}</td><td><div>${escapeHTML(inspectionActionLabel(item))}</div><span class="subline">${escapeHTML(actionReason)}</span></td><td>${statusCode ?? '—'}</td><td>${formatDate(item.createdAtMs)}</td></tr>`;
+      }).join('');
+      $('inspection-results').innerHTML = `<table class="data-table inspection-table"><thead><tr><th>账号 / Auth</th><th>计划</th><th>状态</th><th>Priority</th><th>额度</th><th>处理动作 / 原因</th><th>HTTP</th><th>检查时间</th></tr></thead><tbody>${rows || '<tr><td class="empty-cell" colspan="8">本次运行没有匹配的账号结果。</td></tr>'}</tbody></table>`;
+      $('inspection-page-info').textContent = `第 ${state.inspectionPage} / ${totalPages} 页，显示 ${filtered.length ? start + 1 : 0} - ${Math.min(start + state.inspectionPageSize, filtered.length)} / ${filtered.length}`;
+      $('inspection-page-prev').disabled = state.inspectionPage <= 1;
+      $('inspection-page-next').disabled = state.inspectionPage >= totalPages;
+      $('inspection-page-size').value = String(state.inspectionPageSize);
+      if (run && run.status === 'running' && !state.inspectionPollTimer) {
+        state.inspectionPollTimer = window.setInterval(() => {
+          if (!state.busy && document.visibilityState === 'visible' && state.mode === 'inspection') refreshInspection();
+        }, 3000);
+      } else if ((!run || run.status !== 'running') && state.inspectionPollTimer) {
+        window.clearInterval(state.inspectionPollTimer);
+        state.inspectionPollTimer = 0;
+      }
     }
 
     function renderGuardNodes() {
@@ -1105,14 +1208,16 @@ socks5h://proxy.example:1080"></textarea>
 
     async function refreshInspection() {
       try {
-        const result = await Promise.all([api('/api/nodes'), api('/api/inspection')]);
-        state.nodes = result[0];
-        state.inspection = result[1];
-        setMessage('nodes-error', '');
-        renderNodes();
+        const history = await api('/api/inspection/runs?limit=20');
+        state.inspectionRuns = history.items;
+        if (state.inspectionFollowLatest) state.selectedInspectionRunID = history.items.length ? history.items[0].id : 0;
+        const path = state.selectedInspectionRunID ? `/api/inspection?runId=${encodeURIComponent(state.selectedInspectionRunID)}` : '/api/inspection';
+        state.inspection = await api(path);
+        if (state.inspection.run) state.selectedInspectionRunID = state.inspection.run.id;
+        setMessage('inspection-error', '');
         renderInspection();
       } catch (error) {
-        setMessage('nodes-error', error.message, true);
+        setMessage('inspection-error', error.message, true);
       }
     }
 
@@ -1208,7 +1313,7 @@ socks5h://proxy.example:1080"></textarea>
       if (!target || state.busy) return;
       if (target.dataset.closeModal) { $(target.dataset.closeModal).hidden = true; if (target.dataset.closeModal === 'refresh-proxy-modal') $('refresh-proxy-input').value = ''; return; }
       if (target.dataset.guardTab) { state.guardTab = target.dataset.guardTab; renderGuardTab(); return; }
-      if (target.dataset.mode) { state.mode = target.dataset.mode; renderMode(); renderGuardTab(); return; }
+      if (target.dataset.mode) { state.mode = target.dataset.mode; renderMode(); renderGuardTab(); if (state.mode === 'inspection') refreshInspection(); return; }
       if (target.dataset.logCategory) { state.logCategory = target.dataset.logCategory; state.logStatus = 'connected'; state.logs = []; renderLogs(); refreshLogs().catch((error) => { setMessage('logs-error', error.message, true); }); return; }
       if (target.dataset.logGroupId) { state.selectedLogGroupIDs[state.logCategory] = target.dataset.logGroupId; state.logs = []; renderLogs(); refreshLogs().catch((error) => { setMessage('logs-error', error.message, true); }); return; }
       if (target.dataset.logStatus) { state.logStatus = target.dataset.logStatus; renderLogs(); refreshLogs().catch((error) => { setMessage('logs-error', error.message, true); }); return; }
@@ -1216,11 +1321,27 @@ socks5h://proxy.example:1080"></textarea>
       if (target.dataset.guardSort) { if (state.guardSortKey === target.dataset.guardSort) state.guardSortDirection = state.guardSortDirection === 'asc' ? 'desc' : 'asc'; else { state.guardSortKey = target.dataset.guardSort; state.guardSortDirection = 'asc'; } renderGuardNodes(); return; }
       if (target.dataset.viewAuthNode) { await openAuthBindings(target.dataset.viewAuthNode); return; }
       if (target.dataset.batchId) { state.selectedBatchID = target.dataset.batchId; state.batchNodes = (await api(`/api/batches/${encodeURIComponent(state.selectedBatchID)}/nodes`)).items; renderBatches(); return; }
+      if (target.dataset.inspectionRunId) { state.inspectionFollowLatest = false; state.selectedInspectionRunID = Number(target.dataset.inspectionRunId); state.inspectionPage = 1; await refreshInspection(); return; }
+      if (target.dataset.inspectionFilter) { state.inspectionFilter = target.dataset.inspectionFilter; state.inspectionPage = 1; document.querySelectorAll('[data-inspection-filter]').forEach((item) => item.classList.toggle('active', item.dataset.inspectionFilter === state.inspectionFilter)); renderInspection(); return; }
       if (target.dataset.filter) { state.filter = target.dataset.filter; state.page = 1; document.querySelectorAll('[data-filter]').forEach((item) => item.classList.toggle('active', item.dataset.filter === state.filter)); renderAccountTable(); return; }
       if (target.dataset.mask) { state.mask = target.dataset.mask; document.querySelectorAll('[data-mask]').forEach((item) => item.classList.toggle('active', item.dataset.mask === state.mask)); renderAccountTable(); renderDegradation(); return; }
-      if (target.dataset.deleteNode) { if (!window.confirm('确认删除这个服务端巡检节点？')) return; setBusy(true, '删除节点中…'); try { await api(`/api/nodes/${target.dataset.deleteNode}/delete`, 'POST', {}); await refreshInspection(); setMessage('node-message', '节点已删除。'); } catch (error) { setMessage('node-message', error.message, true); } finally { setBusy(false); } return; }
       if (target.dataset.clearAuth) { setBusy(true, '清除降智记录中…'); try { await api('/api/degradation/clear', 'POST', {authIndex:target.dataset.clearAuth}); await refreshGuard(); await refreshAccounts(); setMessage('settings-message', '降智记录已清除。'); } catch (error) { setMessage('settings-message', error.message, true); } finally { setBusy(false); } return; }
-      if (target.id === 'run-inspection') { setBusy(true, '服务端巡检中…'); try { const text = $('node-input').value.trim(); if (text) { await api('/api/nodes', 'POST', {text}); $('node-input').value = ''; } await api('/api/inspection', 'POST', {}); await refreshInspection(); setMessage('node-message', '巡检完成。'); } catch (error) { setMessage('node-message', error.message, true); } finally { setBusy(false); } return; }
+      if (target.id === 'run-inspection') {
+        setBusy(true, '启动 xAI Auth 账号巡检…');
+        try {
+          const response = await api('/api/inspection', 'POST', {});
+          state.inspectionFollowLatest = true;
+          state.selectedInspectionRunID = response.run ? response.run.id : 0;
+          state.inspection = response;
+          await refreshInspection();
+          setMessage('inspection-error', response.run && response.run.status === 'failed' ? (response.run.error || '账号巡检启动失败。') : '');
+          if (response.run && response.run.status === 'running') showToast('账号巡检已启动，结果会自动刷新。');
+          else if (response.run && response.run.status !== 'failed') showToast('账号巡检记录已更新。');
+        } catch (error) { setMessage('inspection-error', error.message, true); }
+        finally { setBusy(false); }
+        return;
+      }
+      if (target.id === 'refresh-inspection') { await refreshInspection(); return; }
       if (target.id === 'refresh-guard') { setBusy(true, 'IP列表刷新中…'); try { if (await refreshGuard()) showToast('IP列表已刷新。'); } finally { setBusy(false); } return; }
       if (target.id === 'search-logs') { refreshLogs().catch((error) => { setMessage('logs-error', error.message, true); }); return; }
       if (target.id === 'add-ip') { $('add-ip-message').textContent = ''; $('add-ip-message').classList.add('hidden'); $('add-ip-modal').hidden = false; $('ip-input').focus(); return; }
@@ -1309,6 +1430,10 @@ socks5h://proxy.example:1080"></textarea>
     $('account-page-size').addEventListener('change', (event) => { state.pageSize = Number(event.target.value); state.page = 1; renderAccountTable(); });
     $('account-page-prev').addEventListener('click', () => { if (state.page > 1) { state.page -= 1; renderAccountTable(); } });
     $('account-page-next').addEventListener('click', () => { state.page += 1; renderAccountTable(); });
+    $('inspection-search').addEventListener('input', (event) => { state.inspectionKeyword = event.target.value; state.inspectionPage = 1; renderInspection(); });
+    $('inspection-page-size').addEventListener('change', (event) => { state.inspectionPageSize = Number(event.target.value); state.inspectionPage = 1; renderInspection(); });
+    $('inspection-page-prev').addEventListener('click', () => { if (state.inspectionPage > 1) { state.inspectionPage -= 1; renderInspection(); } });
+    $('inspection-page-next').addEventListener('click', () => { state.inspectionPage += 1; renderInspection(); });
     $('accounts-table').addEventListener('click', (event) => { const row = event.target.closest('tr[data-account]'); if (row && !event.target.closest('button')) { state.expandedAccount = state.expandedAccount === row.dataset.account ? '' : row.dataset.account; renderAccountTable(); } });
     $('log-search').addEventListener('keydown', (event) => { if (event.key === 'Enter') refreshLogs().catch((error) => { setMessage('logs-error', error.message, true); }); });
     renderMode();

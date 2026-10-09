@@ -4,6 +4,7 @@ package main
 #include <stdint.h>
 #include <stdlib.h>
 
+// BEGIN detailed-logs plugin ABI bridge.
 typedef struct {
 	void* ptr;
 	size_t len;
@@ -52,12 +53,13 @@ static void free_host_buffer(void* ptr, size_t len) {
 		stored_host->free_buffer(ptr, len);
 	}
 }
+// END detailed-logs plugin ABI bridge.
 */
 import "C"
 
 import (
-	"context"
 	_ "embed"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -67,14 +69,13 @@ import (
 
 	"github.com/router-for-me/CLIProxyAPI/v8/sdk/pluginabi"
 	"github.com/router-for-me/CLIProxyAPI/v8/sdk/pluginapi"
-	"gopkg.in/yaml.v3"
 )
 
 const (
-	pluginName          = "xai-guardian"
+	pluginName          = "detailed-logs"
 	pluginVersion       = "0.1.0"
-	resourcePath        = "/status"
-	managementAPIPath   = "/xai-guardian/api"
+	resourcePath        = "/logs"
+	managementAPIPath   = "/detailed-logs/api"
 	resourceContentType = "text/html; charset=utf-8"
 	pluginUIHeader      = "X-CPA-Plugin-UI"
 )
@@ -96,24 +97,6 @@ type envelopeError struct {
 	Message string `json:"message"`
 }
 
-type lifecycleRequest struct {
-	ConfigYAML []byte `json:"config_yaml"`
-}
-
-type registration struct {
-	SchemaVersion uint32                   `json:"schema_version"`
-	Metadata      pluginapi.Metadata       `json:"metadata"`
-	Capabilities  registrationCapabilities `json:"capabilities"`
-}
-
-type registrationCapabilities struct {
-	ManagementAPI             bool `json:"management_api"`
-	Scheduler                 bool `json:"scheduler"`
-	SchedulerAcrossPriorities bool `json:"scheduler_across_priorities"`
-	RequestLifecyclePlugin    bool `json:"request_lifecycle_plugin"`
-	XAIStreamGuard            bool `json:"xai_stream_guard"`
-}
-
 type managementRequest struct {
 	Method  string      `json:"Method"`
 	Path    string      `json:"Path"`
@@ -123,15 +106,27 @@ type managementRequest struct {
 }
 
 type uiProxyRequest struct {
-	Method string          `json:"method"`
-	Path   string          `json:"path"`
-	Body   json.RawMessage `json:"body,omitempty"`
+	Operation string     `json:"operation"`
+	Query     url.Values `json:"query,omitempty"`
+	Name      string     `json:"name,omitempty"`
+	ID        string     `json:"id,omitempty"`
 }
 
 type managementResponse struct {
 	StatusCode int         `json:"StatusCode"`
 	Headers    http.Header `json:"Headers"`
 	Body       []byte      `json:"Body"`
+}
+
+type registration struct {
+	SchemaVersion uint32                   `json:"schema_version"`
+	Metadata      pluginapi.Metadata       `json:"metadata"`
+	Capabilities  registrationCapabilities `json:"capabilities"`
+}
+
+type registrationCapabilities struct {
+	ManagementAPI      bool `json:"management_api"`
+	HostManagementLogs bool `json:"host_management_logs"`
 }
 
 func main() {}
@@ -181,9 +176,7 @@ func cliproxyPluginFree(ptr unsafe.Pointer, length C.size_t) {
 }
 
 //export cliproxyPluginShutdown
-func cliproxyPluginShutdown() {
-	guardianRuntime.shutdown()
-}
+func cliproxyPluginShutdown() {}
 
 func callHost(method string, payload any) (json.RawMessage, error) {
 	rawPayload, err := json.Marshal(payload)
@@ -233,98 +226,27 @@ func callHost(method string, payload any) (json.RawMessage, error) {
 func handleMethod(method string, request []byte) ([]byte, error) {
 	switch method {
 	case pluginabi.MethodPluginRegister, pluginabi.MethodPluginReconfigure:
-		var lifecycle lifecycleRequest
-		if len(request) > 0 {
-			if err := json.Unmarshal(request, &lifecycle); err != nil {
-				return nil, fmt.Errorf("decode lifecycle request: %w", err)
-			}
-		}
-		config, err := parsePluginConfig(lifecycle.ConfigYAML)
-		if err != nil {
-			return nil, err
-		}
-		if err := guardianRuntime.configure(config); err != nil {
-			return nil, err
-		}
 		return okEnvelope(pluginRegistration())
+	case pluginabi.MethodPluginQuiesce, pluginabi.MethodPluginShutdown:
+		return okEnvelope(struct{}{})
 	case pluginabi.MethodManagementRegister:
 		return okEnvelope(pluginapi.ManagementRegistrationResponse{
-			Routes: []pluginapi.ManagementRoute{
-				{Method: http.MethodPost, Path: managementAPIPath, Description: "xAI Guardian API"},
-			},
-			Resources: []pluginapi.ResourceRoute{{Path: resourcePath, Menu: "xAI降智守护", Description: "xAI Guardian：账号状态、服务端巡检和降智守护"}},
+			Routes: []pluginapi.ManagementRoute{{
+				Method:      http.MethodPost,
+				Path:        managementAPIPath,
+				Description: "Detailed server and request logs",
+			}},
+			Resources: []pluginapi.ResourceRoute{{
+				Path:        resourcePath,
+				Menu:        "详细日志",
+				Description: "查看服务器运行日志和下载单个请求日志文件",
+			}},
 		})
 	case pluginabi.MethodManagementHandle:
 		return handleManagement(request)
-	case pluginabi.MethodXAIStreamPrepare:
-		var prepare pluginapi.XAIStreamPrepareRequest
-		if len(request) > 0 {
-			if err := json.Unmarshal(request, &prepare); err != nil {
-				return nil, fmt.Errorf("decode xAI prepare request: %w", err)
-			}
-		}
-		response, err := prepareXAIStream(context.Background(), prepare)
-		if err != nil {
-			return nil, err
-		}
-		return okEnvelope(response)
-	case pluginabi.MethodXAIStreamComplete:
-		var completion pluginapi.XAIStreamCompletionRequest
-		if len(request) > 0 {
-			if err := json.Unmarshal(request, &completion); err != nil {
-				return nil, fmt.Errorf("decode xAI completion request: %w", err)
-			}
-		}
-		response, err := completeXAIStream(context.Background(), completion)
-		if err != nil {
-			return nil, err
-		}
-		return okEnvelope(response)
-	case pluginabi.MethodSchedulerPick:
-		var pickRequest pluginapi.SchedulerPickRequest
-		if len(request) > 0 {
-			if err := json.Unmarshal(request, &pickRequest); err != nil {
-				return nil, fmt.Errorf("decode scheduler pick request: %w", err)
-			}
-		}
-		response, err := guardianRuntime.schedulerPick(pickRequest)
-		if err != nil {
-			return nil, err
-		}
-		return okEnvelope(response)
-	case pluginabi.MethodRequestComplete:
-		var completion pluginapi.RequestCompletion
-		if len(request) > 0 {
-			if err := json.Unmarshal(request, &completion); err != nil {
-				return nil, fmt.Errorf("decode request completion: %w", err)
-			}
-		}
-		guardianRuntime.scheduleGroups.release(guardianRuntime.currentStore(), completion)
-		return okEnvelope(map[string]any{})
 	default:
-		return errorEnvelope("unknown_method", "unknown method: "+method), nil
+		return nil, fmt.Errorf("unsupported plugin method %s", method)
 	}
-}
-
-func parsePluginConfig(raw []byte) (pluginConfig, error) {
-	config := pluginConfig{DatabasePath: defaultDatabasePath}
-	if len(raw) > 0 {
-		if err := yaml.Unmarshal(raw, &config); err != nil {
-			return pluginConfig{}, fmt.Errorf("decode plugin config: %w", err)
-		}
-		var fields map[string]any
-		if err := yaml.Unmarshal(raw, &fields); err != nil {
-			return pluginConfig{}, fmt.Errorf("decode plugin config fields: %w", err)
-		}
-		_, config.inspectionIntervalSet = fields["inspection_interval_seconds"]
-	}
-	if strings.TrimSpace(config.DatabasePath) == "" {
-		config.DatabasePath = defaultDatabasePath
-	}
-	if config.inspectionIntervalSet && (config.InspectionIntervalSeconds < 0 || config.InspectionIntervalSeconds > maxInspectionIntervalSeconds) {
-		return pluginConfig{}, fmt.Errorf("inspection_interval_seconds must be between 0 and %d", maxInspectionIntervalSeconds)
-	}
-	return config, nil
 }
 
 func pluginRegistration() registration {
@@ -335,12 +257,8 @@ func pluginRegistration() registration {
 			Version:          pluginVersion,
 			Author:           "wardehuang",
 			GitHubRepository: "https://github.com/router-for-me/CLIProxyAPI",
-			ConfigFields: []pluginapi.ConfigField{
-				{Name: "database_path", Type: pluginapi.ConfigFieldTypeString, Description: "Plugin-owned SQLite path. Credentials are never stored here."},
-				{Name: "inspection_interval_seconds", Type: pluginapi.ConfigFieldTypeInteger, Description: "Automatic server inspection interval; 0 disables the worker."},
-			},
 		},
-		Capabilities: registrationCapabilities{ManagementAPI: true, Scheduler: true, SchedulerAcrossPriorities: true, RequestLifecyclePlugin: true, XAIStreamGuard: true},
+		Capabilities: registrationCapabilities{ManagementAPI: true, HostManagementLogs: true},
 	}
 }
 
@@ -355,13 +273,24 @@ func handleManagement(request []byte) ([]byte, error) {
 	resourceBasePath := "/v0/resource/plugins/" + pluginName
 	path = stripManagementBasePath(path, "/v0/management")
 	path = stripManagementBasePath(path, resourceBasePath)
-	switch {
-	case path == "", path == resourcePath, path == "/":
-		return okEnvelope(managementResponse{StatusCode: http.StatusOK, Headers: http.Header{"cache-control": []string{"no-store"}, "content-type": []string{resourceContentType}}, Body: []byte(strings.Replace(pageTemplate, "/*__HALLMARK_TOKENS__*/", tokenCSS, 1))})
-	case path == managementAPIPath:
+	switch path {
+	case "", resourcePath, "/":
+		return okEnvelope(managementResponse{
+			StatusCode: http.StatusOK,
+			Headers: http.Header{
+				"Cache-Control": []string{"no-store"},
+				"Content-Type":  []string{resourceContentType},
+			},
+			Body: []byte(strings.Replace(pageTemplate, "/*__HALLMARK_TOKENS__*/", tokenCSS, 1)),
+		})
+	case managementAPIPath:
 		return handleUIProxy(management)
 	default:
-		return okEnvelope(managementResponse{StatusCode: http.StatusNotFound, Headers: http.Header{"content-type": []string{"text/plain; charset=utf-8"}}, Body: []byte("not found")})
+		return okEnvelope(managementResponse{
+			StatusCode: http.StatusNotFound,
+			Headers:    http.Header{"content-type": []string{"text/plain; charset=utf-8"}},
+			Body:       []byte("not found"),
+		})
 	}
 }
 
@@ -379,51 +308,67 @@ func handleUIProxy(request managementRequest) ([]byte, error) {
 	if !strings.EqualFold(strings.TrimSpace(request.Method), http.MethodPost) || strings.TrimSpace(request.Headers.Get(pluginUIHeader)) != pluginName {
 		return managementJSON(http.StatusForbidden, errorMessage("forbidden", "forbidden"))
 	}
-	var proxyRequest uiProxyRequest
 	if len(request.Body) == 0 {
 		return managementJSON(http.StatusBadRequest, errorMessage("invalid_request", "request body is required"))
 	}
+	var proxyRequest uiProxyRequest
 	if err := json.Unmarshal(request.Body, &proxyRequest); err != nil {
 		return managementJSON(http.StatusBadRequest, errorMessage("invalid_request", "invalid request body"))
 	}
-	parsed, err := url.ParseRequestURI(strings.TrimSpace(proxyRequest.Path))
-	if err != nil || parsed.IsAbs() || parsed.Host != "" || parsed.Fragment != "" || !strings.HasPrefix(parsed.Path, "/") {
-		return managementJSON(http.StatusBadRequest, errorMessage("invalid_path", "invalid API path"))
+	if !validUIOperation(proxyRequest.Operation) {
+		return managementJSON(http.StatusNotFound, errorMessage("not_found", "log operation not found"))
 	}
-	method := strings.ToUpper(strings.TrimSpace(proxyRequest.Method))
-	if method == "" {
-		method = http.MethodGet
-	}
-	if !isAllowedUIPath(method, parsed.Path) {
-		return managementJSON(http.StatusNotFound, errorMessage("not_found", "API path not found"))
-	}
-	body := []byte(proxyRequest.Body)
-	if len(proxyRequest.Body) == 0 || string(proxyRequest.Body) == "null" {
-		body = nil
-	}
-	statusCode, responseBody, err := guardianRuntime.api(method, parsed.Path, parsed.Query(), body)
+
+	raw, err := callHost(pluginabi.MethodHostManagementLogs, pluginapi.HostManagementLogsRequest{
+		Operation: proxyRequest.Operation,
+		Query:     proxyRequest.Query,
+		Name:      proxyRequest.Name,
+		ID:        proxyRequest.ID,
+	})
 	if err != nil {
-		return managementJSON(http.StatusInternalServerError, errorMessage("plugin_error", err.Error()))
+		return managementJSON(http.StatusBadGateway, errorMessage("host_error", "host log service failed"))
 	}
-	return managementJSON(statusCode, json.RawMessage(responseBody))
+	var response pluginapi.HostManagementLogsResponse
+	if err := json.Unmarshal(raw, &response); err != nil {
+		return managementJSON(http.StatusBadGateway, errorMessage("host_error", "invalid host log response"))
+	}
+	if response.StatusCode < http.StatusOK || response.StatusCode >= http.StatusMultipleChoices {
+		if !json.Valid(response.Body) {
+			return managementJSON(http.StatusBadGateway, errorMessage("host_error", "invalid host error response"))
+		}
+		return managementJSON(response.StatusCode, json.RawMessage(response.Body))
+	}
+
+	switch proxyRequest.Operation {
+	case pluginapi.HostManagementLogsOperationServerFile,
+		pluginapi.HostManagementLogsOperationErrorFile:
+		return managementJSON(response.StatusCode, map[string]string{
+			"name":           proxyRequest.Name,
+			"content_base64": base64.StdEncoding.EncodeToString(response.Body),
+		})
+	case pluginapi.HostManagementLogsOperationRequestFile:
+		return managementJSON(response.StatusCode, map[string]string{
+			"name":           "request-" + proxyRequest.ID + ".log",
+			"content_base64": base64.StdEncoding.EncodeToString(response.Body),
+		})
+	default:
+		if !json.Valid(response.Body) {
+			return managementJSON(http.StatusBadGateway, errorMessage("host_error", "invalid host log response"))
+		}
+		return managementJSON(response.StatusCode, json.RawMessage(response.Body))
+	}
 }
 
-func isAllowedUIPath(method, path string) bool {
-	switch method {
-	case http.MethodGet:
-		switch path {
-		case "/api/summary", "/api/schedule-groups/counters", "/api/settings", "/api/accounts", "/api/batch-nodes", "/api/batches", "/api/inspection", "/api/inspection/runs", "/api/keepalive", "/api/degradation", "/api/logs", "/api/logs/groups", "/api/auths/refresh-proxy-urls/status":
-			return true
-		default:
-			return (strings.HasPrefix(path, "/api/batches/") && strings.HasSuffix(path, "/nodes")) || (strings.HasPrefix(path, "/api/nodes/") && strings.HasSuffix(path, "/auth-bindings"))
-		}
-	case http.MethodPut:
-		return path == "/api/settings"
-	case http.MethodPost:
-		if path == "/api/accounts/refresh" || path == "/api/batches" || path == "/api/inspection" || path == "/api/keepalive/run" || path == "/api/degradation/clear" || path == "/api/auths/refresh-proxy-urls" {
-			return true
-		}
-		return false
+func validUIOperation(operation string) bool {
+	switch operation {
+	case pluginapi.HostManagementLogsOperationStatus,
+		pluginapi.HostManagementLogsOperationLogs,
+		pluginapi.HostManagementLogsOperationServerFiles,
+		pluginapi.HostManagementLogsOperationServerFile,
+		pluginapi.HostManagementLogsOperationErrorFiles,
+		pluginapi.HostManagementLogsOperationErrorFile,
+		pluginapi.HostManagementLogsOperationRequestFile:
+		return true
 	default:
 		return false
 	}
@@ -434,7 +379,11 @@ func managementJSON(statusCode int, body any) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	return okEnvelope(managementResponse{StatusCode: statusCode, Headers: http.Header{"content-type": []string{"application/json; charset=utf-8"}}, Body: raw})
+	return okEnvelope(managementResponse{
+		StatusCode: statusCode,
+		Headers:    http.Header{"content-type": []string{"application/json; charset=utf-8"}},
+		Body:       raw,
+	})
 }
 
 func errorMessage(code, message string) map[string]any {

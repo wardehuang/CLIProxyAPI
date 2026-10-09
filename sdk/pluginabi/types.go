@@ -19,8 +19,10 @@ const (
 	// should keep schema_version < 6.
 	// BEGIN xAI Guardian core extension: schema version for xAI stream guard RPCs.
 	// Version 7 adds the xAI stream guard capability and its prepare/complete RPC payloads.
-	SchemaVersion uint32 = 7
+	// Version 8 adds priority-only auth metadata updates.
 	// END xAI Guardian core extension.
+	// Version 9 adds read-only server management log access.
+	SchemaVersion uint32 = 9
 	// SchemaVersionStreamChunkOmitRequestBody is the first schema version that omits
 	// request bodies on payload stream-chunk interceptor calls.
 	SchemaVersionStreamChunkOmitRequestBody uint32 = 3
@@ -112,11 +114,15 @@ const (
 	MethodHostStreamEmit         = "host.stream.emit"
 	MethodHostStreamClose        = "host.stream.close"
 	MethodHostLog                = "host.log"
+	MethodHostManagementLogs     = "host.management.logs"
 	MethodHostAuthList           = "host.auth.list"
 	MethodHostAuthGet            = "host.auth.get"
 	MethodHostAuthGetRuntime     = "host.auth.get_runtime"
 	MethodHostAuthSave           = "host.auth.save"
-	MethodHostAffinityLookup     = "host.affinity.lookup"
+	// BEGIN xAI Guardian core extension: priority-only auth metadata update.
+	MethodHostAuthPriorityUpdate = "host.auth.priority_update"
+	// END xAI Guardian core extension.
+	MethodHostAffinityLookup = "host.affinity.lookup"
 )
 
 type Envelope struct {

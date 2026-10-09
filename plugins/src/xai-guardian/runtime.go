@@ -26,6 +26,7 @@ type runtimeController struct {
 	refreshProxyBatchCancel   context.CancelFunc
 	refreshProxyBatchGroup    sync.WaitGroup
 	inspectionCancel          context.CancelFunc
+	manualInspectionCancel    context.CancelFunc
 	inspectionGroup           sync.WaitGroup
 	probeCancel               context.CancelFunc
 	probeGroup                sync.WaitGroup
@@ -160,9 +161,13 @@ func (controller *runtimeController) currentStore() *guardianStore {
 func (controller *runtimeController) stopWorkersLocked() {
 	if controller.inspectionCancel != nil {
 		controller.inspectionCancel()
-		controller.inspectionGroup.Wait()
 		controller.inspectionCancel = nil
 	}
+	if controller.manualInspectionCancel != nil {
+		controller.manualInspectionCancel()
+		controller.manualInspectionCancel = nil
+	}
+	controller.inspectionGroup.Wait()
 	if controller.probeCancel != nil {
 		controller.probeCancel()
 		controller.probeGroup.Wait()
@@ -298,13 +303,6 @@ func (controller *runtimeController) api(method, path string, query url.Values, 
 	if method == http.MethodPost && path == "/api/accounts/refresh" {
 		return controller.refreshAccountsAPI(store)
 	}
-	if method == http.MethodGet && path == "/api/nodes" {
-		nodes, err := store.listNodes()
-		return jsonAPIResult(publicNodes(nodes), err)
-	}
-	if method == http.MethodPost && path == "/api/nodes" {
-		return controller.addNodes(store, body)
-	}
 	if method == http.MethodGet && path == "/api/batch-nodes" {
 		nodes, err := store.listIPNodes()
 		return jsonAPIResult(publicNodes(nodes), err)
@@ -358,14 +356,16 @@ func (controller *runtimeController) api(method, path string, query url.Values, 
 			"syncFailureCount": syncFailureCount,
 		}, nil)
 	}
+	if method == http.MethodGet && path == "/api/inspection/runs" {
+		limit, _ := strconv.Atoi(query.Get("limit"))
+		runs, err := store.listAccountInspectionRuns(limit)
+		return jsonAPIResult(runs, err)
+	}
 	if method == http.MethodGet && path == "/api/inspection" {
-		return controller.inspectionAPI(store)
+		return controller.inspectionAPI(store, query)
 	}
 	if method == http.MethodPost && path == "/api/inspection" {
-		if err := runInspection(context.Background(), store); err != nil {
-			return http.StatusBadGateway, nil, err
-		}
-		return controller.inspectionAPI(store)
+		return controller.startAccountInspectionAPI(store)
 	}
 	if method == http.MethodGet && path == "/api/keepalive" {
 		return controller.keepaliveAPI(store)
@@ -411,24 +411,6 @@ func (controller *runtimeController) api(method, path string, query url.Values, 
 		}
 		logs, err := store.listLogs(limit, settings.DebugEnabled, category, search, strings.TrimSpace(query.Get("groupId")), strings.TrimSpace(query.Get("status")))
 		return jsonAPIResult(logs, err)
-	}
-	if len(strings.Split(strings.Trim(path, "/"), "/")) == 4 && strings.HasPrefix(path, "/api/nodes/") && strings.HasSuffix(path, "/delete") && method == http.MethodPost {
-		parts := strings.Split(strings.Trim(path, "/"), "/")
-		id, err := strconv.ParseInt(parts[2], 10, 64)
-		if err != nil || id <= 0 {
-			return http.StatusBadRequest, nil, fmt.Errorf("invalid node id")
-		}
-		if err := store.deleteNode(id); err != nil {
-			if errors.Is(err, sql.ErrNoRows) {
-				return http.StatusNotFound, nil, fmt.Errorf("node not found")
-			}
-			return http.StatusInternalServerError, nil, err
-		}
-		if err := refreshHealthyAuthDistribution(store); err != nil {
-			_ = store.appendLog(logLevelError, "auth.distribution_failed", "删除节点后刷新 auth 分配失败", sanitizeLogText(err.Error()))
-			return http.StatusBadGateway, nil, err
-		}
-		return jsonAPIResult(map[string]any{"deleted": true}, nil)
 	}
 	return http.StatusNotFound, nil, fmt.Errorf("API path not found")
 }
@@ -731,39 +713,69 @@ func (controller *runtimeController) refreshAccountsAPI(store *guardianStore) (i
 	return controller.accountsAPI(store)
 }
 
-func (controller *runtimeController) inspectionAPI(store *guardianStore) (int, []byte, error) {
-	run, results, err := store.latestInspection()
+func (controller *runtimeController) startAccountInspectionAPI(store *guardianStore) (int, []byte, error) {
+	controller.mutex.Lock()
+	if controller.store != store {
+		controller.mutex.Unlock()
+		return jsonAPIError(http.StatusServiceUnavailable, "plugin_stopping", "插件正在停止，未启动账号巡检")
+	}
+	if !inspectionMutex.TryLock() {
+		latest, err := store.latestAccountInspection()
+		controller.mutex.Unlock()
+		if err != nil {
+			return http.StatusInternalServerError, nil, err
+		}
+		if latest.Run == nil || latest.Run.Status != "running" {
+			return jsonAPIError(http.StatusConflict, "inspection_starting", "已有账号巡检正在启动，请稍后刷新")
+		}
+		return jsonAPIResult(latest, nil)
+	}
+
+	runID, entries, previousResults, err := prepareAccountInspectionRun(store, "manual")
 	if err != nil {
-		return http.StatusInternalServerError, nil, err
+		inspectionMutex.Unlock()
+		if runID > 0 {
+			response, readErr := store.accountInspection(runID)
+			controller.mutex.Unlock()
+			if readErr != nil {
+				return http.StatusInternalServerError, nil, readErr
+			}
+			return jsonAPIResult(response, nil)
+		}
+		controller.mutex.Unlock()
+		return http.StatusBadGateway, nil, err
 	}
-	if run.ID == 0 {
-		return jsonAPIResult(map[string]any{"run": nil, "results": results}, nil)
-	}
-	return jsonAPIResult(map[string]any{"run": run, "results": results}, nil)
+
+	workerContext, cancel := context.WithCancel(context.Background())
+	controller.manualInspectionCancel = cancel
+	controller.inspectionGroup.Add(1)
+	go func() {
+		defer controller.inspectionGroup.Done()
+		defer inspectionMutex.Unlock()
+		if err := runPreparedAccountInspection(workerContext, store, runID, entries, previousResults); err != nil {
+			_ = store.appendLog(logLevelError, "inspection.manual_failed", "手动 xAI 账号巡检失败", sanitizeLogText(err.Error()))
+		}
+	}()
+	response, err := store.accountInspection(runID)
+	controller.mutex.Unlock()
+	return jsonAPIResult(response, err)
 }
 
-func (controller *runtimeController) addNodes(store *guardianStore, body []byte) (int, []byte, error) {
-	var payload struct {
-		Text string `json:"text"`
-		IPs  string `json:"ips"`
+func (controller *runtimeController) inspectionAPI(store *guardianStore, query url.Values) (int, []byte, error) {
+	runIDValue := strings.TrimSpace(query.Get("runId"))
+	if runIDValue == "" {
+		response, err := store.latestAccountInspection()
+		return jsonAPIResult(response, err)
 	}
-	if err := json.Unmarshal(body, &payload); err != nil {
-		return http.StatusBadRequest, nil, err
+	runID, err := strconv.ParseInt(runIDValue, 10, 64)
+	if err != nil || runID <= 0 {
+		return http.StatusBadRequest, nil, fmt.Errorf("invalid account inspection run ID")
 	}
-	text := strings.TrimSpace(payload.Text)
-	if text == "" {
-		text = strings.TrimSpace(payload.IPs)
+	response, err := store.accountInspection(runID)
+	if errors.Is(err, sql.ErrNoRows) {
+		return http.StatusNotFound, nil, fmt.Errorf("account inspection run not found")
 	}
-	nodes, errors := parseProxyLines(text)
-	if len(nodes) == 0 {
-		return http.StatusBadRequest, nil, fmt.Errorf("no valid proxy nodes: %s", summarizeInputErrors(errors))
-	}
-	added, duplicates, err := store.insertNodes(nodes)
-	if err != nil {
-		return http.StatusInternalServerError, nil, err
-	}
-	_ = store.appendLog(logLevelInfo, "nodes.added", "服务端巡检节点已录入", fmt.Sprintf("新增 %d，重复 %d，格式错误 %d", added, duplicates, len(errors)))
-	return jsonAPIResult(map[string]any{"added": added, "duplicates": duplicates, "errors": errors}, nil)
+	return jsonAPIResult(response, err)
 }
 
 func (controller *runtimeController) addIPBatch(store *guardianStore, body []byte) (int, []byte, error) {

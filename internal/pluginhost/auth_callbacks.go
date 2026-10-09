@@ -133,6 +133,35 @@ func (h *Host) callHostAuthSave(ctx context.Context, request []byte) ([]byte, er
 	})
 }
 
+// BEGIN xAI Guardian core extension: priority-only auth metadata update.
+func (h *Host) callHostAuthPriorityUpdate(ctx context.Context, request []byte) ([]byte, error) {
+	var req pluginapi.HostAuthPriorityUpdateRequest
+	if errUnmarshal := json.Unmarshal(request, &req); errUnmarshal != nil {
+		return nil, fmt.Errorf("decode host auth priority update request: %w", errUnmarshal)
+	}
+	authIndex := strings.TrimSpace(req.AuthIndex)
+	if authIndex == "" {
+		return nil, fmt.Errorf("auth_index is required")
+	}
+	manager := h.currentAuthManager()
+	if manager == nil {
+		return nil, fmt.Errorf("core auth manager unavailable")
+	}
+	updated, errUpdate := manager.UpdateAuthPriority(ctx, authIndex, req.Priority)
+	if errUpdate != nil {
+		return nil, errUpdate
+	}
+	priority, errPriority := strconv.Atoi(updated.Attributes["priority"])
+	if errPriority != nil {
+		return nil, fmt.Errorf("read back auth priority: %w", errPriority)
+	}
+	return marshalRPCResult(pluginapi.HostAuthPriorityUpdateResponse{
+		AuthIndex: authIndex,
+		Priority:  priority,
+	})
+}
+// END xAI Guardian core extension.
+
 func (h *Host) listAuthFiles() ([]pluginapi.HostAuthFileEntry, error) {
 	manager := h.currentAuthManager()
 	if manager != nil {

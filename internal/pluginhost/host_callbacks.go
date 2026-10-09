@@ -171,6 +171,11 @@ func (h *Host) callFromPlugin(ctx context.Context, method string, request []byte
 		return h.callHostStreamClose(request)
 	case pluginabi.MethodHostLog:
 		return h.callHostLog(ctx, request)
+	case pluginabi.MethodHostManagementLogs:
+		if !h.pluginHasManagementLogsAccess(hostCallbackPluginIDFromContext(ctx)) {
+			return nil, fmt.Errorf("plugin is not authorized for host management logs")
+		}
+		return h.callHostManagementLogs(ctx, request)
 	case pluginabi.MethodHostAuthList:
 		return h.callHostAuthList(ctx, request)
 	case pluginabi.MethodHostAuthGet:
@@ -179,11 +184,40 @@ func (h *Host) callFromPlugin(ctx context.Context, method string, request []byte
 		return h.callHostAuthGetRuntime(ctx, request)
 	case pluginabi.MethodHostAuthSave:
 		return h.callHostAuthSave(ctx, request)
+	case pluginabi.MethodHostAuthPriorityUpdate:
+		return h.callHostAuthPriorityUpdate(ctx, request)
 	case pluginabi.MethodHostAffinityLookup:
 		return h.callHostAffinityLookup(ctx, request)
 	default:
 		return nil, fmt.Errorf("unsupported host callback %s", method)
 	}
+}
+
+func (h *Host) callHostManagementLogs(ctx context.Context, request []byte) ([]byte, error) {
+	var req pluginapi.HostManagementLogsRequest
+	if err := json.Unmarshal(request, &req); err != nil {
+		return nil, fmt.Errorf("decode host management logs request: %w", err)
+	}
+	switch req.Operation {
+	case pluginapi.HostManagementLogsOperationStatus,
+		pluginapi.HostManagementLogsOperationLogs,
+		pluginapi.HostManagementLogsOperationServerFiles,
+		pluginapi.HostManagementLogsOperationServerFile,
+		pluginapi.HostManagementLogsOperationErrorFiles,
+		pluginapi.HostManagementLogsOperationErrorFile,
+		pluginapi.HostManagementLogsOperationRequestFile:
+	default:
+		return nil, fmt.Errorf("unsupported host management logs operation %q", req.Operation)
+	}
+	handler := h.currentManagementLogsHandler()
+	if handler == nil {
+		return nil, fmt.Errorf("host management logs handler is unavailable")
+	}
+	response, err := handler.HandleHostManagementLogs(ctx, req)
+	if err != nil {
+		return nil, fmt.Errorf("handle host management logs request: %w", err)
+	}
+	return marshalRPCResult(response)
 }
 
 func (h *Host) callbackCallerPluginID(ctx context.Context, callbackID string) string {

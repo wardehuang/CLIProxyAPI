@@ -28,9 +28,9 @@ func TestEnvelopeRoundTrip(t *testing.T) {
 }
 
 func TestMethodNamesAreStable(t *testing.T) {
-	// BEGIN xAI Guardian core extension: assert the xAI RPC schema version.
-	if SchemaVersion != 7 {
-		t.Fatalf("SchemaVersion = %d, want 7", SchemaVersion)
+	// BEGIN xAI Guardian core extension: assert the current plugin RPC schema version.
+	if SchemaVersion != 9 {
+		t.Fatalf("SchemaVersion = %d, want 9", SchemaVersion)
 	}
 	// END xAI Guardian core extension.
 	if SchemaVersionWebSocketResponseObserver != 4 {
@@ -71,6 +71,9 @@ func TestMethodNamesAreStable(t *testing.T) {
 	}
 	if MethodHostHTTPDo != "host.http.do" {
 		t.Fatalf("MethodHostHTTPDo = %q", MethodHostHTTPDo)
+	}
+	if MethodHostManagementLogs != "host.management.logs" {
+		t.Fatalf("MethodHostManagementLogs = %q", MethodHostManagementLogs)
 	}
 	if MethodHostHTTPDoStream != "host.http.do_stream" {
 		t.Fatalf("MethodHostHTTPDoStream = %q", MethodHostHTTPDoStream)

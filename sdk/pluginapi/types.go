@@ -132,6 +132,8 @@ type Capabilities struct {
 	CommandLinePlugin CommandLinePlugin
 	// ManagementAPI declares plugin-owned diagnostic Management API and resource routes.
 	ManagementAPI ManagementAPI
+	// HostManagementLogs grants access to the host's read-only management log operations.
+	HostManagementLogs bool
 	// QuotaProvider surfaces credential quota and billing information for management clients.
 	QuotaProvider QuotaProvider
 }
@@ -858,6 +860,25 @@ type HostAuthSaveResponse struct {
 	Path string `json:"path"`
 }
 
+// BEGIN xAI Guardian core extension: priority-only auth metadata update.
+// HostAuthPriorityUpdateRequest asks the host to update only a physical auth file's priority.
+type HostAuthPriorityUpdateRequest struct {
+	// AuthIndex identifies the credential index.
+	AuthIndex string `json:"auth_index"`
+	// Priority is the new routing priority.
+	Priority int `json:"priority"`
+}
+
+// HostAuthPriorityUpdateResponse reports the persisted priority value.
+type HostAuthPriorityUpdateResponse struct {
+	// AuthIndex identifies the updated credential.
+	AuthIndex string `json:"auth_index"`
+	// Priority is the priority read back from the credential file.
+	Priority int `json:"priority"`
+}
+
+// END xAI Guardian core extension.
+
 // Host affinity lookup status outcomes.
 const (
 	HostAffinityStatusBound       = "bound"
@@ -1567,6 +1588,36 @@ type ManagementResponse struct {
 	// On schema_version >= 6, JSON bodies are returned without HTML entity escaping.
 	// On schema_version < 6, JSON response string values are HTML-escaped for legacy compatibility.
 	Body []byte
+}
+
+const (
+	HostManagementLogsOperationStatus      = "status"
+	HostManagementLogsOperationLogs        = "logs"
+	HostManagementLogsOperationServerFiles = "server_files"
+	HostManagementLogsOperationServerFile  = "server_file"
+	HostManagementLogsOperationErrorFiles  = "error_files"
+	HostManagementLogsOperationErrorFile   = "error_file"
+	HostManagementLogsOperationRequestFile = "request_file"
+)
+
+// HostManagementLogsRequest describes a read-only request to the host's management log handlers.
+type HostManagementLogsRequest struct {
+	Operation string     `json:"operation"`
+	Query     url.Values `json:"query,omitempty"`
+	Name      string     `json:"name,omitempty"`
+	ID        string     `json:"id,omitempty"`
+}
+
+// HostManagementLogsResponse contains the result from a host management log handler.
+type HostManagementLogsResponse struct {
+	StatusCode int         `json:"status_code"`
+	Headers    http.Header `json:"headers,omitempty"`
+	Body       []byte      `json:"body,omitempty"`
+}
+
+// HostManagementLogsHandler serves the host's read-only management log operations to a plugin.
+type HostManagementLogsHandler interface {
+	HandleHostManagementLogs(context.Context, HostManagementLogsRequest) (HostManagementLogsResponse, error)
 }
 
 // UsageRecord describes request usage and billing metadata.

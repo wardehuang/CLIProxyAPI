@@ -75,6 +75,7 @@ type Host struct {
 	runtimeConfig          *config.Config
 	authManager            *coreauth.Manager
 	modelExecutor          modelExecutor
+	managementLogsHandler  pluginapi.HostManagementLogsHandler
 	modelClientIDs         map[string]struct{}
 	executorModelClientIDs map[string]struct{}
 	modelProviders         map[string]string
@@ -150,6 +151,34 @@ func (h *Host) currentModelExecutor() modelExecutor {
 	executor := h.modelExecutor
 	h.mu.Unlock()
 	return executor
+}
+
+func (h *Host) SetManagementLogsHandler(handler pluginapi.HostManagementLogsHandler) {
+	if h == nil {
+		return
+	}
+	h.mu.Lock()
+	h.managementLogsHandler = handler
+	h.mu.Unlock()
+}
+
+func (h *Host) currentManagementLogsHandler() pluginapi.HostManagementLogsHandler {
+	if h == nil {
+		return nil
+	}
+	h.mu.Lock()
+	handler := h.managementLogsHandler
+	h.mu.Unlock()
+	return handler
+}
+
+func (h *Host) pluginHasManagementLogsAccess(pluginID string) bool {
+	for _, record := range h.activeRecords() {
+		if record.id == pluginID {
+			return record.plugin.Capabilities.HostManagementLogs
+		}
+	}
+	return false
 }
 
 func (h *Host) Snapshot() *Snapshot {

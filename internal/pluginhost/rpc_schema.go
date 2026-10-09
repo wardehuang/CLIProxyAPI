@@ -48,6 +48,7 @@ type rpcCapabilities struct {
 	UsagePlugin               bool `json:"usage_plugin"`
 	CommandLinePlugin         bool `json:"command_line_plugin"`
 	ManagementAPI             bool `json:"management_api"`
+	HostManagementLogs        bool `json:"host_management_logs,omitempty"`
 	QuotaProvider             bool `json:"quota_provider"`
 }
 

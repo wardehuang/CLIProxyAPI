@@ -1,0 +1,469 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>详细日志</title>
+  <style>
+    /*__HALLMARK_TOKENS__*/
+    *,*::before,*::after{box-sizing:border-box}
+    html{min-height:100%;background:var(--bg-secondary)}
+    body{min-height:100vh;margin:0;background:var(--bg-secondary);color:var(--text-primary);font:14px/1.5 Inter,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}
+    button,input{font:inherit}
+    button{cursor:pointer}
+    button:disabled{cursor:not-allowed;opacity:.55}
+    .page{display:grid;gap:16px;min-width:0;max-width:1800px;margin:0 auto;padding:24px 20px 38px}
+    .header{display:flex;align-items:center;justify-content:space-between;gap:14px;flex-wrap:wrap}
+    h1{margin:0;font-size:22px;line-height:1.2}
+    .subhead{margin:5px 0 0;color:var(--text-secondary);font-size:13px}
+    .actions,.tabs,.toolbar,.file-actions{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+    .tabs{padding:4px;border:1px solid var(--border-color);border-radius:13px;background:var(--bg-primary)}
+    .tab,.button{min-height:36px;padding:0 14px;border:1px solid var(--border-color);border-radius:10px;background:var(--bg-tertiary);color:var(--text-secondary);font-weight:650}
+    .tab{border-color:transparent;background:transparent}
+    .tab.active{border-color:color-mix(in srgb,var(--primary-color) 36%,var(--border-color));background:color-mix(in srgb,var(--primary-color) 15%,var(--bg-primary));color:var(--primary-color)}
+    .button.primary{border-color:color-mix(in srgb,var(--primary-color) 44%,var(--border-color));background:color-mix(in srgb,var(--primary-color) 17%,var(--bg-tertiary));color:var(--primary-color)}
+    .button:hover,.tab:hover{filter:brightness(1.12)}
+    .panel{min-width:0;padding:16px;border:1px solid var(--border-color);border-radius:18px;background:var(--bg-primary);box-shadow:0 14px 36px rgb(0 0 0 / 16%)}
+    .toolbar{justify-content:space-between;margin-bottom:12px}
+    .toolbar-left,.toolbar-right{display:flex;align-items:center;gap:9px;flex-wrap:wrap}
+    .search{width:min(420px,62vw);min-height:36px;padding:0 12px;border:1px solid var(--border-color);border-radius:10px;outline:none;background:var(--bg-secondary);color:var(--text-primary)}
+    .search:focus{border-color:var(--primary-color)}
+    .check{display:inline-flex;align-items:center;gap:7px;color:var(--text-secondary);white-space:nowrap}
+    .hint,.meta{color:var(--text-secondary);font-size:12px}
+    .notice{padding:11px 13px;border:1px solid color-mix(in srgb,var(--warning-color) 42%,var(--border-color));border-radius:12px;background:color-mix(in srgb,var(--warning-color) 10%,var(--bg-primary));color:var(--warning-color)}
+    .error{padding:10px 12px;border:1px solid color-mix(in srgb,var(--danger-color) 48%,var(--border-color));border-radius:10px;background:color-mix(in srgb,var(--danger-color) 10%,var(--bg-primary));color:var(--danger-color)}
+    .log-view{height:min(68vh,760px);min-height:300px;overflow:auto;padding:12px;border:1px solid var(--border-color);border-radius:12px;background:#090e19;font:12px/1.55 ui-monospace,SFMono-Regular,Consolas,monospace}
+    .log-row{display:flex;align-items:flex-start;gap:10px;padding:2px 0;border-bottom:1px solid rgb(148 163 184 / 5%)}
+    .log-line{min-width:0;flex:1;white-space:pre-wrap;overflow-wrap:anywhere;color:#d8deeb}
+    .request-download{flex:0 0 auto;min-height:25px;padding:1px 8px;border:1px solid var(--border-color);border-radius:7px;background:var(--bg-tertiary);color:var(--primary-color);font-size:11px}
+    .empty{display:grid;min-height:150px;place-items:center;color:var(--text-secondary);text-align:center}
+    .file-list{display:grid;gap:8px;margin-top:12px}
+    .file-row{display:flex;align-items:center;justify-content:space-between;gap:14px;padding:12px;border:1px solid var(--border-color);border-radius:12px;background:var(--bg-secondary)}
+    .file-info{min-width:0}
+    .file-name{overflow-wrap:anywhere;font-weight:650}
+    .file-meta{margin-top:3px;color:var(--text-secondary);font-size:12px}
+    .page-size{min-height:34px;padding:0 8px;border:1px solid var(--border-color);border-radius:9px;background:var(--bg-secondary);color:var(--text-primary)}
+    [hidden]{display:none!important}
+    @media(max-width:680px){.page{padding:16px 12px 28px}.header{align-items:flex-start}.actions{width:100%}.tabs{width:100%}.tab{flex:1}.toolbar-left,.toolbar-right{width:100%}.search{width:100%}.file-row{align-items:flex-start}.log-view{height:62vh;min-height:260px}}
+  </style>
+</head>
+<body>
+  <main class="page">
+    <header class="header">
+      <div>
+        <h1>详细日志</h1>
+        <p class="subhead">查看服务器运行日志，按需下载单个请求日志文件。</p>
+      </div>
+      <nav class="tabs" aria-label="日志类型">
+        <button class="tab active" type="button" data-tab="server">服务器日志</button>
+        <button class="tab" type="button" data-tab="errors">错误请求日志</button>
+      </nav>
+    </header>
+
+    <div id="page-error" class="error" hidden></div>
+    <section id="server-panel" class="panel">
+      <div class="toolbar">
+        <div class="toolbar-left"><span class="hint">服务器日志文件按修改时间倒序排列，可单独下载。</span></div>
+        <div class="toolbar-right">
+          <span id="server-files-meta" class="meta"></span>
+          <button id="refresh-server-files" class="button primary" type="button">刷新文件列表</button>
+        </div>
+      </div>
+      <div id="server-file-error" class="error" hidden></div>
+      <div id="server-file-list" class="file-list"></div>
+      <div class="toolbar">
+        <span id="server-file-page-meta" class="meta"></span>
+        <div class="toolbar-right">
+          <label class="check">每页
+            <select id="server-file-page-size" class="page-size">
+              <option value="12">12</option>
+              <option value="24">24</option>
+              <option value="50">50</option>
+              <option value="100">100</option>
+            </select>
+          </label>
+          <button id="server-file-prev" class="button" type="button">上一页</button>
+          <button id="server-file-next" class="button" type="button">下一页</button>
+        </div>
+      </div>
+      <div class="toolbar">
+        <div class="toolbar-left">
+          <input id="search" class="search" type="search" placeholder="搜索日志内容">
+          <label class="check"><input id="auto-refresh" type="checkbox"> 自动刷新（8 秒）</label>
+        </div>
+        <div class="toolbar-right">
+          <span id="log-meta" class="meta"></span>
+          <button id="download-all" class="button" type="button">下载当前日志</button>
+          <button id="refresh" class="button primary" type="button">刷新</button>
+        </div>
+      </div>
+      <div id="log-view" class="log-view" aria-live="polite"></div>
+    </section>
+
+    <section id="errors-panel" class="panel" hidden>
+      <div class="toolbar">
+        <div class="toolbar-left"><span class="hint">错误请求文件按修改时间倒序排列，可单独下载。</span></div>
+        <div class="toolbar-right">
+          <span id="error-meta" class="meta"></span>
+          <button id="refresh-errors" class="button primary" type="button">刷新</button>
+        </div>
+      </div>
+      <div id="request-log-notice" class="notice" hidden>已启用逐请求日志，错误请求日志列表为空属于正常情况。</div>
+      <div id="file-list" class="file-list"></div>
+    </section>
+  </main>
+
+  <script>
+  (() => {
+    const pluginName = 'detailed-logs';
+    const endpoint = '/v0/management/detailed-logs/api';
+    const inPluginFrame = window.parent !== window;
+    const state = {tab:'server', lines:[], cursor:'', files:[], serverFiles:[], serverFilesPage:1, serverFilesPageSize:12, serverFilesTotal:0, serverFilesTotalPages:1, requestLog:false, busy:false, filesBusy:false, serverFilesBusy:false, refreshTimer:0};
+    let requestSequence = 0;
+    const $ = (id) => document.getElementById(id);
+    const showError = (message) => {
+      const node = $('page-error');
+      node.textContent = message || '';
+      node.hidden = !message;
+    };
+    const showServerFileError = (message) => {
+      const node = $('server-file-error');
+      node.textContent = message || '';
+      node.hidden = !message;
+    };
+    const parentRequest = (payload) => new Promise((resolve, reject) => {
+      const requestId = `detailed-logs-${++requestSequence}`;
+      const timeoutId = window.setTimeout(() => {
+        window.removeEventListener('message', receiveResponse);
+        reject(new Error('日志请求超时'));
+      }, 60000);
+      const receiveResponse = (event) => {
+        if (event.source !== window.parent) return;
+        const data = event.data;
+        if (!data || data.type !== 'cpa-plugin-api-response' || data.requestId !== requestId) return;
+        window.clearTimeout(timeoutId);
+        window.removeEventListener('message', receiveResponse);
+        if (data.ok) resolve(data.response);
+        else reject(new Error(typeof data.error === 'string' ? data.error : '日志请求失败'));
+      };
+      window.addEventListener('message', receiveResponse);
+      window.parent.postMessage({type:'cpa-plugin-api-request',requestId,endpoint,method:'POST',body:payload}, '*');
+    });
+    async function api(payload) {
+      let response;
+      if (inPluginFrame) {
+        response = await parentRequest(payload);
+      } else {
+        const result = await fetch(endpoint, {
+          method:'POST',
+          headers:{'content-type':'application/json','X-CPA-Plugin-UI':pluginName},
+          body:JSON.stringify(payload)
+        });
+        response = await result.json();
+        if (!result.ok) throw new Error(response?.error?.message || response?.error || `HTTP ${result.status}`);
+      }
+      if (!response || response.ok === false) throw new Error(response?.error?.message || '日志请求失败');
+      return response;
+    }
+    const queryValues = (values) => Object.fromEntries(Object.entries(values).map(([key,value]) => [key,[String(value)]]));
+    const extractRequestID = (line) => line.match(/\[([a-f0-9]{8})\]/i)?.[1] || '';
+    const formatSize = (bytes) => {
+      if (bytes === 0) return '0 B';
+      const units = ['B','KB','MB','GB'];
+      const unitIndex = Math.floor(Math.log(bytes) / Math.log(1024));
+      return `${(bytes / Math.pow(1024,unitIndex)).toFixed(2)} ${units[unitIndex]}`;
+    };
+    const formatTime = (seconds) => {
+      const value = Number(seconds || 0);
+      return value > 0 ? new Date(value * 1000).toLocaleString() : '';
+    };
+    const formatServerTime = (value) => new Date(value).toLocaleString('zh-CN',{year:'numeric',month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit',second:'2-digit'});
+    function renderLogs() {
+      const viewer = $('log-view');
+      const keyword = $('search').value.trim().toLowerCase();
+      const visible = state.lines.filter((line) => !keyword || line.toLowerCase().includes(keyword));
+      viewer.replaceChildren();
+      if (!visible.length) {
+        const empty = document.createElement('div');
+        empty.className = 'empty';
+        empty.textContent = state.lines.length ? '没有匹配的日志。' : '暂无日志。';
+        viewer.appendChild(empty);
+      } else {
+        const fragment = document.createDocumentFragment();
+        for (const line of visible) {
+          const row = document.createElement('div');
+          row.className = 'log-row';
+          const text = document.createElement('span');
+          text.className = 'log-line';
+          text.textContent = line;
+          row.appendChild(text);
+          const requestID = state.requestLog ? extractRequestID(line) : '';
+          if (requestID) {
+            const button = document.createElement('button');
+            button.className = 'request-download';
+            button.type = 'button';
+            button.textContent = '下载请求日志';
+            button.title = `下载请求 ${requestID} 的日志文件`;
+            button.addEventListener('click', () => downloadRequestLog(requestID, button));
+            row.appendChild(button);
+          }
+          fragment.appendChild(row);
+        }
+        viewer.appendChild(fragment);
+      }
+      $('log-meta').textContent = `${visible.length.toLocaleString()} / ${state.lines.length.toLocaleString()} 行`;
+    }
+    function renderServerFiles() {
+      const list = $('server-file-list');
+      list.replaceChildren();
+      $('server-files-meta').textContent = `${state.serverFilesTotal.toLocaleString()} 个文件`;
+      $('server-file-page-meta').textContent = `第 ${state.serverFilesPage} / ${state.serverFilesTotalPages} 页 · 共 ${state.serverFilesTotal.toLocaleString()} 个文件`;
+      $('server-file-page-size').value = String(state.serverFilesPageSize);
+      $('server-file-page-size').disabled = state.serverFilesBusy;
+      $('server-file-prev').disabled = state.serverFilesBusy || state.serverFilesPage <= 1;
+      $('server-file-next').disabled = state.serverFilesBusy || state.serverFilesPage >= state.serverFilesTotalPages;
+      if (!state.serverFiles.length) {
+        const empty = document.createElement('div');
+        empty.className = 'empty';
+        empty.textContent = '暂无服务器日志文件。';
+        list.appendChild(empty);
+        return;
+      }
+      const fragment = document.createDocumentFragment();
+      for (const file of state.serverFiles) {
+        const row = document.createElement('div');
+        row.className = 'file-row';
+        const info = document.createElement('div');
+        info.className = 'file-info';
+        const name = document.createElement('div');
+        name.className = 'file-name';
+        name.textContent = file.name;
+        const meta = document.createElement('div');
+        meta.className = 'file-meta';
+        meta.textContent = `${formatServerTime(file.time)} · ${formatSize(file.size)}`;
+        info.append(name,meta);
+        const actions = document.createElement('div');
+        actions.className = 'file-actions';
+        const download = document.createElement('button');
+        download.className = 'button';
+        download.type = 'button';
+        download.textContent = '下载';
+        download.addEventListener('click', () => downloadServerFile(file.name,download));
+        actions.appendChild(download);
+        row.append(info,actions);
+        fragment.appendChild(row);
+      }
+      list.appendChild(fragment);
+    }
+    async function loadServerFiles() {
+      if (state.serverFilesBusy) return;
+      state.serverFilesBusy = true;
+      $('refresh-server-files').disabled = true;
+      showServerFileError('');
+      renderServerFiles();
+      try {
+        const query = queryValues({page:state.serverFilesPage,page_size:state.serverFilesPageSize});
+        const result = await api({operation:'server_files',query});
+        state.serverFiles = result.files;
+        state.serverFilesPage = result.page;
+        state.serverFilesPageSize = result.page_size;
+        state.serverFilesTotal = result.total;
+        state.serverFilesTotalPages = result.total_pages;
+      } catch (error) {
+        state.serverFiles = [];
+        state.serverFilesPage = 1;
+        state.serverFilesTotal = 0;
+        state.serverFilesTotalPages = 1;
+        showServerFileError(error instanceof Error ? error.message : String(error));
+      } finally {
+        state.serverFilesBusy = false;
+        $('refresh-server-files').disabled = false;
+        renderServerFiles();
+      }
+    }
+    async function loadStatus() {
+      const status = await api({operation:'status'});
+      state.requestLog = status.request_log === true;
+      $('request-log-notice').hidden = !state.requestLog;
+    }
+    async function loadLogs(incremental = false) {
+      if (state.busy) return;
+      state.busy = true;
+      $('refresh').disabled = true;
+      showError('');
+      try {
+        await loadStatus();
+        const query = {limit:2000};
+        if (incremental && state.cursor) query.cursor = state.cursor;
+        else if (!incremental) state.cursor = '';
+        const result = await api({operation:'logs',query:queryValues(query)});
+        const lines = Array.isArray(result.lines) ? result.lines.map((line) => String(line ?? '')) : [];
+        if (incremental && result['cursor-reset'] !== true) state.lines = [...state.lines,...lines].slice(-10000);
+        else state.lines = lines;
+        state.cursor = String(result['next-cursor'] || result.nextCursor || '');
+        renderLogs();
+        $('log-view').scrollTop = $('log-view').scrollHeight;
+      } catch (error) {
+        showError(error instanceof Error ? error.message : String(error));
+      } finally {
+        state.busy = false;
+        $('refresh').disabled = false;
+      }
+    }
+    async function loadErrorFiles() {
+      if (state.filesBusy) return;
+      state.filesBusy = true;
+      $('refresh-errors').disabled = true;
+      showError('');
+      try {
+        await loadStatus();
+        const result = await api({operation:'error_files'});
+        state.files = Array.isArray(result.files) ? result.files : [];
+        renderFiles();
+      } catch (error) {
+        state.files = [];
+        renderFiles();
+        showError(error instanceof Error ? error.message : String(error));
+      } finally {
+        state.filesBusy = false;
+        $('refresh-errors').disabled = false;
+      }
+    }
+    function renderFiles() {
+      const list = $('file-list');
+      list.replaceChildren();
+      $('error-meta').textContent = `${state.files.length} 个文件`;
+      if (!state.files.length) {
+        const empty = document.createElement('div');
+        empty.className = 'empty';
+        empty.textContent = '暂无错误请求日志文件。';
+        list.appendChild(empty);
+        return;
+      }
+      const fragment = document.createDocumentFragment();
+      for (const file of state.files) {
+        const row = document.createElement('div');
+        row.className = 'file-row';
+        const info = document.createElement('div');
+        info.className = 'file-info';
+        const name = document.createElement('div');
+        name.className = 'file-name';
+        name.textContent = String(file.name || '');
+        const meta = document.createElement('div');
+        meta.className = 'file-meta';
+        meta.textContent = [formatSize(file.size),formatTime(file.modified)].filter(Boolean).join(' · ');
+        info.append(name,meta);
+        const actions = document.createElement('div');
+        actions.className = 'file-actions';
+        const download = document.createElement('button');
+        download.className = 'button';
+        download.type = 'button';
+        download.textContent = '下载';
+        download.addEventListener('click', () => downloadErrorFile(file.name,download));
+        actions.appendChild(download);
+        row.append(info,actions);
+        fragment.appendChild(row);
+      }
+      list.appendChild(fragment);
+    }
+    function saveBase64File(filename, encoded) {
+      const binary = atob(encoded);
+      const bytes = new Uint8Array(binary.length);
+      for (let index = 0; index < binary.length; index += 1) bytes[index] = binary.charCodeAt(index);
+      const url = URL.createObjectURL(new Blob([bytes],{type:'text/plain;charset=utf-8'}));
+      const anchor = document.createElement('a');
+      anchor.href = url;
+      anchor.download = filename;
+      anchor.rel = 'noopener';
+      anchor.style.display = 'none';
+      document.body.appendChild(anchor);
+      anchor.click();
+      window.setTimeout(() => {
+        URL.revokeObjectURL(url);
+        anchor.remove();
+      }, 1000);
+    }
+    async function downloadErrorFile(name,button) {
+      button.disabled = true;
+      showError('');
+      try {
+        const result = await api({operation:'error_file',name});
+        saveBase64File(result.name || name,result.content_base64);
+      } catch (error) {
+        showError(error instanceof Error ? error.message : String(error));
+      } finally {
+        button.disabled = false;
+      }
+    }
+    async function downloadServerFile(name,button) {
+      button.disabled = true;
+      showServerFileError('');
+      try {
+        const result = await api({operation:'server_file',name});
+        saveBase64File(result.name || name,result.content_base64);
+      } catch (error) {
+        showServerFileError(error instanceof Error ? error.message : String(error));
+      } finally {
+        button.disabled = false;
+      }
+    }
+    async function downloadRequestLog(id,button) {
+      button.disabled = true;
+      showError('');
+      try {
+        const result = await api({operation:'request_file',id});
+        saveBase64File(result.name || `request-${id}.log`,result.content_base64);
+      } catch (error) {
+        showError(error instanceof Error ? error.message : String(error));
+      } finally {
+        button.disabled = false;
+      }
+    }
+    function setTab(tab) {
+      state.tab = tab;
+      document.querySelectorAll('[data-tab]').forEach((button) => button.classList.toggle('active',button.dataset.tab === tab));
+      $('server-panel').hidden = tab !== 'server';
+      $('errors-panel').hidden = tab !== 'errors';
+      if (tab === 'server') void loadServerFiles();
+      if (tab === 'errors') void loadErrorFiles();
+    }
+    function exportLogs() {
+      const content = state.lines.join('\n');
+      const url = URL.createObjectURL(new Blob([content],{type:'text/plain;charset=utf-8'}));
+      const anchor = document.createElement('a');
+      anchor.href = url;
+      anchor.download = 'server-logs.txt';
+      anchor.click();
+      URL.revokeObjectURL(url);
+    }
+    document.querySelectorAll('[data-tab]').forEach((button) => button.addEventListener('click',() => setTab(button.dataset.tab)));
+    $('refresh-server-files').addEventListener('click',() => loadServerFiles());
+    $('server-file-page-size').addEventListener('change',(event) => {
+      state.serverFilesPageSize = Number(event.target.value);
+      state.serverFilesPage = 1;
+      void loadServerFiles();
+    });
+    $('server-file-prev').addEventListener('click',() => {
+      state.serverFilesPage -= 1;
+      void loadServerFiles();
+    });
+    $('server-file-next').addEventListener('click',() => {
+      state.serverFilesPage += 1;
+      void loadServerFiles();
+    });
+    $('refresh').addEventListener('click',() => loadLogs(false));
+    $('refresh-errors').addEventListener('click',() => loadErrorFiles());
+    $('download-all').addEventListener('click',exportLogs);
+    $('search').addEventListener('input',renderLogs);
+    $('auto-refresh').addEventListener('change',(event) => {
+      window.clearInterval(state.refreshTimer);
+      state.refreshTimer = event.target.checked ? window.setInterval(() => {
+        if (state.tab === 'server') void loadLogs(true);
+      },8000) : 0;
+    });
+    void loadServerFiles();
+    void loadLogs(false);
+  })();
+  </script>
+</body>
+</html>
