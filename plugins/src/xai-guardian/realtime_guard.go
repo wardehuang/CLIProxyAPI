@@ -25,6 +25,7 @@ const (
 type streamEvidence struct {
 	SummaryChars           int
 	SummaryText            string
+	OutputText             string
 	EncryptedBytes         int
 	ReasoningTokens        int
 	OutputTokens           int
@@ -38,6 +39,7 @@ type streamEvidence struct {
 	BurstDump              bool
 	StreamError            string
 	CompletedEvent         bool
+	TerminalEvent          bool
 }
 
 func prepareXAIStream(_ context.Context, request pluginapi.XAIStreamPrepareRequest) (pluginapi.XAIStreamPrepareResponse, error) {
@@ -94,13 +96,8 @@ func completeXAIStream(_ context.Context, completion pluginapi.XAIStreamCompleti
 	if evidence.StreamError != "" {
 		return streamFailureDecision(store, completion)
 	}
-	mutation := completedMutationEvidence{}
-	toolEvidence := evidence.CompletedFunctionCalls > 0 && !evidence.RefusalDetected
-	if !toolEvidence && !isRealThinking(evidence, completion, settings) && evidence.CompletedMessage {
-		mutation = scanCompletedMutationEvidence(completion.OriginalRequest)
-	}
-
-	reason, degraded := classifyStream(evidence, mutation, completion, settings)
+	classification := classifyRealtimeGuardEvidence(evidence, completion, settings)
+	reason, degraded := classification.Reason, classification.Degraded
 	if !degraded {
 		degradationCleared := false
 		if authIndex != "" {
@@ -141,6 +138,34 @@ func completeXAIStream(_ context.Context, completion pluginapi.XAIStreamCompleti
 		Reason:     reason,
 		StatusCode: http.StatusBadGateway,
 	}, nil
+}
+
+type realtimeGuardClassification struct {
+	Reason                    string
+	Degraded                  bool
+	IsRealThinking            bool
+	CompletedToolCallEvidence bool
+	CompletedMutationEvidence bool
+	BurstDump                 bool
+}
+
+func classifyRealtimeGuardEvidence(evidence streamEvidence, completion pluginapi.XAIStreamCompletionRequest, settings pluginSettings) realtimeGuardClassification {
+	toolEvidence := evidence.CompletedFunctionCalls > 0 && !evidence.RefusalDetected
+	burstDump := evidence.BurstDump || isBurstDump(evidence, completion, settings)
+	isRealThinking := burstDump || isRealThinking(evidence, completion, settings)
+	mutation := completedMutationEvidence{}
+	if !toolEvidence && !isRealThinking && evidence.CompletedMessage {
+		mutation = scanCompletedMutationEvidence(completion.OriginalRequest)
+	}
+	reason, degraded := classifyStream(evidence, mutation, completion, settings)
+	return realtimeGuardClassification{
+		Reason:                    reason,
+		Degraded:                  degraded,
+		IsRealThinking:            isRealThinking,
+		CompletedToolCallEvidence: toolEvidence,
+		CompletedMutationEvidence: mutation.Found,
+		BurstDump:                 burstDump,
+	}
 }
 
 type realtimeDegradationTransition struct {
@@ -413,16 +438,17 @@ func streamFailureDecision(store *guardianStore, completion pluginapi.XAIStreamC
 		status = http.StatusBadGateway
 	}
 	reason := classifyStreamFailure(completion)
+	guardReason := realtimeGuardFailureReason(completion)
 	if status == http.StatusTooManyRequests {
 		_ = store.appendLog(logLevelError, "guard.rate_limited", "xAI 上游返回限流，拒绝在守护层换号", reason)
-		return pluginapi.XAIStreamCompletionResponse{Action: pluginapi.XAIStreamActionFail, Reason: "upstream_rate_limited", StatusCode: status}, nil
+		return pluginapi.XAIStreamCompletionResponse{Action: pluginapi.XAIStreamActionFail, Reason: guardReason, StatusCode: status}, nil
 	}
 	_ = store.appendLog(logLevelWarn, "guard.stream_failed", "xAI 流请求失败，交由核心重试链处理", reason)
 	mode := pluginapi.XAIStreamRetryModeReloadSelectedAuth
 	if isGuardTimeout(completion.Error) || status == http.StatusUnauthorized || status == http.StatusForbidden || status >= http.StatusInternalServerError {
 		mode = pluginapi.XAIStreamRetryModeReloadAndExcludeSelectedAuth
 	}
-	return pluginapi.XAIStreamCompletionResponse{Action: pluginapi.XAIStreamActionRetry, RetryMode: mode, Reason: reason, StatusCode: status}, nil
+	return pluginapi.XAIStreamCompletionResponse{Action: pluginapi.XAIStreamActionRetry, RetryMode: mode, Reason: guardReason, StatusCode: status}, nil
 }
 
 func classifyStreamFailure(completion pluginapi.XAIStreamCompletionRequest) string {
@@ -436,6 +462,13 @@ func classifyStreamFailure(completion pluginapi.XAIStreamCompletionRequest) stri
 		return "upstream_http_" + strconv.Itoa(completion.StatusCode)
 	}
 	return "upstream_stream_incomplete"
+}
+
+func realtimeGuardFailureReason(completion pluginapi.XAIStreamCompletionRequest) string {
+	if completion.StatusCode == http.StatusTooManyRequests {
+		return "upstream_rate_limited"
+	}
+	return classifyStreamFailure(completion)
 }
 
 func isGuardTimeout(value string) bool {
@@ -582,8 +615,14 @@ func applyStreamEvent(evidence *streamEvidence, eventName string, value any) {
 	if eventName == "response.incomplete" {
 		evidence.StreamError = "response.incomplete"
 	}
+	if eventName == "response.failed" {
+		evidence.StreamError = "response.failed"
+	}
 	if eventName == "response.completed" {
 		evidence.CompletedEvent = true
+	}
+	if eventName == "response.completed" || eventName == "response.incomplete" {
+		evidence.TerminalEvent = true
 	}
 	if strings.Contains(stringifyLower(value), "burst_dump") {
 		evidence.BurstDump = true
@@ -605,6 +644,14 @@ func applyStreamEvent(evidence *streamEvidence, eventName string, value any) {
 			item = object
 		}
 		recordOutputItem(evidence, item)
+	}
+	if eventName == "response.output_text.delta" {
+		evidence.OutputText += stringValue(object["delta"])
+	}
+	if eventName == "response.output_text.done" {
+		if text := stringValue(object["text"]); text != "" {
+			evidence.OutputText = text
+		}
 	}
 	if strings.Contains(eventName, "reasoning_summary") || strings.Contains(eventName, "summary_text") || strings.Contains(eventName, "reasoning_text") {
 		if strings.Contains(eventName, ".delta") {
@@ -668,6 +715,7 @@ func recordOutputItem(evidence *streamEvidence, item map[string]any) {
 	}
 	if typeName == "message" {
 		if content, ok := item["content"].([]any); ok {
+			var outputText strings.Builder
 			for _, rawContent := range content {
 				contentItem, ok := rawContent.(map[string]any)
 				if !ok {
@@ -676,6 +724,12 @@ func recordOutputItem(evidence *streamEvidence, item map[string]any) {
 				if strings.Contains(strings.ToLower(stringValue(contentItem["type"])), "refusal") && strings.TrimSpace(stringValue(contentItem["refusal"])) != "" {
 					evidence.RefusalDetected = true
 				}
+				if status == "completed" && stringValue(contentItem["type"]) == "output_text" {
+					outputText.WriteString(stringValue(contentItem["text"]))
+				}
+			}
+			if outputText.Len() > 0 {
+				evidence.OutputText = outputText.String()
 			}
 		}
 	}

@@ -303,6 +303,9 @@ func (controller *runtimeController) api(method, path string, query url.Values, 
 	if method == http.MethodPost && path == "/api/accounts/refresh" {
 		return controller.refreshAccountsAPI(store)
 	}
+	if method == http.MethodPost && path == "/api/accounts/degradation-check" {
+		return accountDegradationProbeAPI(store, body)
+	}
 	if method == http.MethodGet && path == "/api/batch-nodes" {
 		nodes, err := store.listIPNodes()
 		return jsonAPIResult(publicNodes(nodes), err)

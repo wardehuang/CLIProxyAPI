@@ -265,6 +265,7 @@
     .detail-badges { display: flex; flex-wrap: wrap; gap: 8px; }
     .detail-badges .status-badge, .detail-badges .type-badge, .detail-badges .number-badge { margin: 0; }
     .detail-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; }
+    .detail-actions { display: flex; justify-content: flex-end; }
     .detail-section { min-width: 0; padding: 13px; border: 1px solid var(--border-color); border-radius: 13px; background: color-mix(in srgb, var(--bg-primary) 78%, transparent); }
     .detail-section h4 { margin: 0 0 10px; font-size: 13px; }
     .detail-list { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px 14px; margin: 0; }
@@ -356,6 +357,15 @@
     .modal-input { width: 100%; min-height: 180px; resize: vertical; padding: 12px 14px; border: 1px solid var(--border-color); border-radius: 12px; outline: none; background: var(--bg-tertiary); color: var(--text-primary); line-height: 1.6; }
     .modal-input:focus { border-color: var(--primary-color); box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--primary-color) 24%, transparent); }
     .modal-actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 8px; }
+    .degradation-check-modal { max-height: calc(100vh - 40px); overflow: auto; }
+    .degradation-prompt { padding: 11px 13px; border: 1px solid var(--border-color); border-radius: 12px; color: var(--text-secondary); background: var(--bg-tertiary); line-height: 1.6; }
+    .degradation-result { display: grid; gap: 12px; }
+    .degradation-result-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; }
+    .degradation-result-metric { min-width: 0; padding: 10px; border: 1px solid var(--border-color); border-radius: 11px; background: var(--bg-tertiary); }
+    .degradation-result-metric small { display: block; color: var(--text-secondary); font-size: 11px; }
+    .degradation-result-metric strong { display: block; margin-top: 4px; overflow-wrap: anywhere; font-size: 13px; }
+    .degradation-result-evidence { display: flex; flex-wrap: wrap; gap: 8px; }
+    .degradation-answer { max-height: 220px; overflow: auto; margin: 0; padding: 11px 13px; border: 1px solid var(--border-color); border-radius: 12px; color: var(--text-primary); background: var(--bg-tertiary); white-space: pre-wrap; overflow-wrap: anywhere; }
     .binding-modal { width: min(1120px, 100%); max-height: calc(100vh - 40px); overflow: hidden; }
     .binding-modal-body { min-width: 0; overflow: auto; }
     .binding-summary { padding: 12px 14px; border: 1px solid var(--border-color); border-radius: 12px; color: var(--text-secondary); background: var(--bg-tertiary); }
@@ -387,6 +397,7 @@
       .segmented-tab { flex: 1 1 0; padding-inline: 10px; }
       .mode-switch-copy { margin: 10px 2px 2px; }
       .summary-grid, .server-summary-grid, .settings-grid, .probe-settings-grid, .detail-grid, .run-summary { grid-template-columns: 1fr; }
+      .degradation-result-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
       .guard-tabs { width: 100%; }
       .guard-tab { flex: 1 1 0; padding-inline: 10px; }
       .account-panel, .server-panel, .guard-panel { padding: 12px; border-radius: 18px; }
@@ -685,6 +696,28 @@ socks5h://proxy.example:1080"></textarea>
     </section>
   </div>
 
+  <div class="modal-layer" id="account-degradation-probe-modal" hidden>
+    <section class="modal degradation-check-modal" role="dialog" aria-modal="true" aria-labelledby="account-degradation-probe-title" aria-describedby="account-degradation-probe-prompt">
+      <div class="modal-head">
+        <div>
+          <h2 id="account-degradation-probe-title">降智检测</h2>
+          <p id="account-degradation-probe-account"></p>
+        </div>
+        <button class="secondary-button" type="button" data-close-modal="account-degradation-probe-modal" aria-label="关闭">关闭</button>
+      </div>
+      <div class="modal-body">
+        <div class="settings-field"><label for="account-degradation-probe-model">模型</label><input class="settings-input" id="account-degradation-probe-model" type="text" value="grok-4.6" autocomplete="off" spellcheck="false"></div>
+        <div class="degradation-prompt" id="account-degradation-probe-prompt">固定探针题：「用中文回答：17 × 23 等于多少？只输出计算过程和答案。」期望答案：391。答案核对只作提示，不参与实时守护判定。</div>
+        <div id="account-degradation-probe-message" class="message" aria-live="polite"></div>
+        <div id="account-degradation-probe-result" class="degradation-result" aria-live="polite" hidden></div>
+        <div class="modal-actions">
+          <button class="secondary-button" type="button" data-close-modal="account-degradation-probe-modal">取消</button>
+          <button class="primary-button" id="account-degradation-probe-submit" type="button">开始检测</button>
+        </div>
+      </div>
+    </section>
+  </div>
+
   <script>
   (() => {
     const apiEndpoint = '/v0/management/xai-guardian/api';
@@ -715,7 +748,7 @@ socks5h://proxy.example:1080"></textarea>
       accounts: [], inspection: {run: null, items: []}, inspectionRuns: [], selectedInspectionRunID: 0, inspectionFollowLatest: true, inspectionFilter: 'all', inspectionKeyword: '', inspectionPage: 1, inspectionPageSize: 20, inspectionPollTimer: 0, guardNodes: [], batches: [], batchNodes: [], degradation: [], logs: [], logGroups: {batch_probe: [], keepalive_probe: [], revive_probe: []}, settings: null, keepalive: null,
       summary: null,
       mode: 'accounts', guardTab: 'ips', logCategory: 'realtime_guard', logStatus: 'connected', selectedLogGroupIDs: {batch_probe: '', keepalive_probe: '', revive_probe: ''}, logSearch: '', logMax: 0, selectedBatchID: '', filter: 'all', guardStatusFilter: 'healthy', mask: 'full', page: 1, pageSize: 100,
-      keyword: '', expandedAccount: '', guardSortKey: 'latency', guardSortDirection: 'asc', authBindingDetail: null, busy: false, pageRefreshTimer: 0, settingsDirty: false, settingsRevision: 0
+      keyword: '', expandedAccount: '', accountDegradationProbeAuthIndex: '', guardSortKey: 'latency', guardSortDirection: 'asc', authBindingDetail: null, busy: false, pageRefreshTimer: 0, settingsDirty: false, settingsRevision: 0
     };
     const $ = (id) => document.getElementById(id);
     const escapeHTML = (value) => String(value ?? '').replace(/[&<>"']/g, (char) => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[char]));
@@ -864,13 +897,59 @@ socks5h://proxy.example:1080"></textarea>
           <td><span class="number-badge">${numberValue(item.scheduleGroup) ?? '—'}</span></td>
           <td><div class="quota-cell"><span class="quota-empty">— 暂无额度 —</span></div></td>
           <td>${formatDate(item.lastInspection)}</td>
-        </tr>${expanded ? `<tr class="detail-row"><td colspan="8"><section class="detail-panel"><div class="detail-hero"><div><span class="detail-eyebrow">xAI Guardian Account</span><h3>${displayName}</h3></div><div class="detail-badges"><span class="status-badge ${statusTone(key)}">${statusLabel(key, item.status)}</span><span class="type-badge">${escapeHTML(accountType)}</span></div></div><div class="detail-grid"><div class="detail-section"><h4>基础信息</h4><dl class="detail-list"><div><dt>Auth Index</dt><dd class="mono">${escapeHTML(item.authIndex || '—')}</dd></div><div><dt>账号类型</dt><dd>${escapeHTML(accountType)}</dd></div><div><dt>调度组</dt><dd>${numberValue(item.scheduleGroup) ?? '—'}</dd></div></dl></div><div class="detail-section"><h4>账号检查状态</h4><dl class="detail-list"><div><dt>状态</dt><dd>${escapeHTML(item.status || '—')}</dd></div><div><dt>优先级</dt><dd>${numberValue(item.priority) ?? '—'}</dd></div><div><dt>最近检查</dt><dd>${formatFullDate(item.lastInspection)}</dd></div></dl></div></div></section></td></tr>` : ''}`;
+        </tr>${expanded ? `<tr class="detail-row"><td colspan="8"><section class="detail-panel"><div class="detail-hero"><div><span class="detail-eyebrow">xAI Guardian Account</span><h3>${displayName}</h3></div><div class="detail-badges"><span class="status-badge ${statusTone(key)}">${statusLabel(key, item.status)}</span><span class="type-badge">${escapeHTML(accountType)}</span></div></div><div class="detail-grid"><div class="detail-section"><h4>基础信息</h4><dl class="detail-list"><div><dt>Auth Index</dt><dd class="mono">${escapeHTML(item.authIndex || '—')}</dd></div><div><dt>账号类型</dt><dd>${escapeHTML(accountType)}</dd></div><div><dt>调度组</dt><dd>${numberValue(item.scheduleGroup) ?? '—'}</dd></div></dl></div><div class="detail-section"><h4>账号检查状态</h4><dl class="detail-list"><div><dt>状态</dt><dd>${escapeHTML(item.status || '—')}</dd></div><div><dt>优先级</dt><dd>${numberValue(item.priority) ?? '—'}</dd></div><div><dt>最近检查</dt><dd>${formatFullDate(item.lastInspection)}</dd></div></dl></div></div><div class="detail-actions"><button class="primary-button" type="button" data-degradation-check="${escapeHTML(item.authIndex || '')}" data-account-name="${displayName}">降智检测</button></div></section></td></tr>` : ''}`;
       }).join('');
       $('accounts-table').innerHTML = `<table class="data-table account-table"><thead><tr><th>账号</th><th>出口IP</th><th>账号类型</th><th>状态</th><th>优先级</th><th>调度组</th><th>额度窗口</th><th>最后检查</th></tr></thead><tbody>${body || '<tr><td class="empty-cell" colspan="8">最近一次巡检没有探测候选账号。</td></tr>'}</tbody></table>`;
       $('accounts-page-info').textContent = `第 ${state.page} / ${totalPages} 页，显示 ${filtered.length ? start + 1 : 0} - ${Math.min(start + state.pageSize, filtered.length)} / ${filtered.length}`;
       $('account-page-prev').disabled = state.page <= 1;
       $('account-page-next').disabled = state.page >= totalPages;
       renderAccountSummary();
+    }
+
+    function renderAccountDegradationProbeResult(result) {
+      const classificationLabel = result.classification === 'degraded' ? '降智' : result.classification === 'normal' ? '正常' : '无法判定';
+      const classificationTone = result.classification === 'degraded' ? 'status-bad' : result.classification === 'normal' ? 'status-good' : 'status-warn';
+      const hasAnswer = result.answer.trim() !== '';
+      const answerTone = hasAnswer ? (result.answerMatchesExpected ? 'status-good' : 'status-warn') : 'status-warn';
+      const answerMatchLabel = hasAnswer ? (result.answerMatchesExpected ? `命中 ${result.expectedAnswer}` : `未命中 ${result.expectedAnswer}`) : '无可核对答案';
+      const evidence = result.classification === 'unknown' ? '' : `<div class="degradation-result-evidence"><span class="status-badge ${result.isRealThinking ? 'status-good' : 'status-warn'}">思考证据：${result.isRealThinking ? '有' : '无'}</span><span class="status-badge ${result.completedToolCallEvidence ? 'status-good' : 'status-warn'}">工具调用证据：${result.completedToolCallEvidence ? '有' : '无'}</span><span class="status-badge ${result.completedMutationEvidence ? 'status-good' : 'status-warn'}">修改证据：${result.completedMutationEvidence ? '有' : '无'}</span><span class="status-badge ${result.burstDump ? 'status-good' : 'status-warn'}">burst_dump：${result.burstDump ? '命中' : '未命中'}</span></div>`;
+      return `<div class="degradation-result"><div class="degradation-prompt">探针题：「${escapeHTML(result.prompt)}」期望答案：${escapeHTML(result.expectedAnswer)}</div><div class="detail-badges"><span class="status-badge ${classificationTone}">实时守护判定：${classificationLabel}</span><span class="status-badge ${answerTone}">答案核对：${answerMatchLabel}</span></div><div class="muted">实时守护原因：<span class="mono">${escapeHTML(result.reason)}</span></div><div class="degradation-result-grid"><div class="degradation-result-metric"><small>HTTP 状态</small><strong>${result.statusCode || '—'}</strong></div><div class="degradation-result-metric"><small>终态事件</small><strong>${result.terminalEvent ? '收到' : '未收到'}</strong></div><div class="degradation-result-metric"><small>输出 token</small><strong>${result.outputTokens}</strong></div><div class="degradation-result-metric"><small>思考 token</small><strong>${result.reasoningTokens}</strong></div><div class="degradation-result-metric"><small>摘要字符</small><strong>${result.summaryChars}</strong></div><div class="degradation-result-metric"><small>加密字节</small><strong>${result.encryptedBytes}</strong></div></div>${evidence}<div class="detail-section"><h4>模型正文</h4><pre class="degradation-answer">${escapeHTML(result.answer || '（没有可见正文）')}</pre></div><div class="help-text">答案核对只显示是否包含期望数字，不参与实时守护降智判定。</div></div>`;
+    }
+
+    function openAccountDegradationProbe(authIndex, accountName) {
+      state.accountDegradationProbeAuthIndex = authIndex;
+      $('account-degradation-probe-account').textContent = `账号：${accountName || authIndex}`;
+      $('account-degradation-probe-model').value = $('account-degradation-probe-model').defaultValue;
+      $('account-degradation-probe-result').innerHTML = '';
+      $('account-degradation-probe-result').hidden = true;
+      $('account-degradation-probe-model').disabled = false;
+      $('account-degradation-probe-submit').disabled = false;
+      document.querySelectorAll('[data-close-modal="account-degradation-probe-modal"]').forEach((button) => { button.disabled = false; });
+      setMessage('account-degradation-probe-message', '');
+      $('account-degradation-probe-modal').hidden = false;
+      $('account-degradation-probe-model').focus();
+    }
+
+    async function submitAccountDegradationProbe() {
+      const model = $('account-degradation-probe-model').value.trim();
+      if (!model) { setMessage('account-degradation-probe-message', '请输入模型名称。', true); return; }
+      $('account-degradation-probe-model').disabled = true;
+      $('account-degradation-probe-submit').disabled = true;
+      document.querySelectorAll('[data-close-modal="account-degradation-probe-modal"]').forEach((button) => { button.disabled = true; });
+      $('account-degradation-probe-result').hidden = true;
+      setMessage('account-degradation-probe-message', '正在发送探针请求…');
+      try {
+        const result = await api('/api/accounts/degradation-check', 'POST', {authIndex:state.accountDegradationProbeAuthIndex, model});
+        $('account-degradation-probe-result').innerHTML = renderAccountDegradationProbeResult(result);
+        $('account-degradation-probe-result').hidden = false;
+        setMessage('account-degradation-probe-message', '');
+      } catch (error) {
+        setMessage('account-degradation-probe-message', error.message, true);
+      } finally {
+        $('account-degradation-probe-model').disabled = false;
+        $('account-degradation-probe-submit').disabled = false;
+        document.querySelectorAll('[data-close-modal="account-degradation-probe-modal"]').forEach((button) => { button.disabled = false; });
+      }
     }
 
 
@@ -1319,6 +1398,8 @@ socks5h://proxy.example:1080"></textarea>
       const target = event.target.closest('button');
       if (!target || state.busy) return;
       if (target.dataset.closeModal) { $(target.dataset.closeModal).hidden = true; if (target.dataset.closeModal === 'refresh-proxy-modal') $('refresh-proxy-input').value = ''; return; }
+      if (target.hasAttribute('data-degradation-check')) { openAccountDegradationProbe(target.dataset.degradationCheck, target.dataset.accountName); return; }
+      if (target.id === 'account-degradation-probe-submit') { await submitAccountDegradationProbe(); return; }
       if (target.dataset.guardTab) { state.guardTab = target.dataset.guardTab; renderGuardTab(); return; }
       if (target.dataset.mode) { state.mode = target.dataset.mode; renderMode(); renderGuardTab(); if (state.mode === 'inspection') refreshInspection(); return; }
       if (target.dataset.logCategory) { state.logCategory = target.dataset.logCategory; state.logStatus = 'connected'; state.logs = []; renderLogs(); refreshLogs().catch((error) => { setMessage('logs-error', error.message, true); }); return; }
