@@ -202,7 +202,7 @@ func (controller *runtimeController) startInspectionWorkerLocked(intervalSeconds
 				return
 			case <-ticker.C:
 				if err := runInspection(workerContext, store); err != nil {
-					_ = store.appendLog(logLevelError, "inspection.worker_failed", "自动服务端巡检失败", err.Error())
+					_ = store.appendLog(logLevelError, "inspection.worker_failed", "自动服务端巡检失败", sanitizeLogText(err.Error()))
 				}
 			}
 		}

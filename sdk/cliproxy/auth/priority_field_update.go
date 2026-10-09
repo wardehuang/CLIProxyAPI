@@ -51,12 +51,10 @@ func (m *Manager) UpdateAuthPriority(ctx context.Context, authIndex string, prio
 		m.mu.Unlock()
 		return nil, fmt.Errorf("auth priority update: auth path is unavailable")
 	}
-	if current.Metadata == nil {
-		m.mu.Unlock()
-		return nil, fmt.Errorf("auth priority update: auth metadata is unavailable")
-	}
-
 	updated := current.Clone()
+	if updated.Metadata == nil {
+		updated.Metadata = make(map[string]any)
+	}
 	updated.Metadata["priority"] = float64(priority)
 	ApplyAuthPriorityMetadata(updated, updated.Metadata)
 	updated.Generation = current.Generation + 1
@@ -96,4 +94,5 @@ func (m *Manager) UpdateAuthPriority(ctx context.Context, authIndex string, prio
 	persistLock.mu.Unlock()
 	return updated.Clone(), nil
 }
+
 // END xAI Guardian core extension.

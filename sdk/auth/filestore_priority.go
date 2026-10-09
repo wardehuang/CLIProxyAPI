@@ -20,7 +20,7 @@ func (s *FileTokenStore) UpdatePriorityOnly(ctx context.Context, credential *cli
 	if cliproxyAuth.IsPluginVirtualAuth(credential) || cliproxyAuth.IsConfigAPIKeyAuth(credential) || credential.Attributes["runtime_only"] == "true" {
 		return fmt.Errorf("auth filestore: credential is not a physical file auth")
 	}
-	if credential.Attributes[cliproxyAuth.AttributeSourceBackend] != cliproxyAuth.AuthSourceFile {
+	if credential.AuthSourceKind() != cliproxyAuth.AuthSourceFile {
 		return fmt.Errorf("auth filestore: credential is not file-backed")
 	}
 	path, err := s.resolveAuthPath(credential)
@@ -102,4 +102,5 @@ func (s *FileTokenStore) UpdatePriorityOnly(ctx context.Context, credential *cli
 	}
 	return nil
 }
+
 // END xAI Guardian core extension.

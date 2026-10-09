@@ -73,8 +73,7 @@ func listXAIAuthEntries() ([]pluginapi.HostAuthFileEntry, error) {
 }
 
 func isXAIAuthEntry(entry pluginapi.HostAuthFileEntry) bool {
-	provider := strings.ToLower(strings.TrimSpace(entry.Provider + " " + entry.Type + " " + entry.Name))
-	return strings.Contains(provider, "xai") || strings.HasPrefix(strings.ToLower(strings.TrimSpace(entry.Name)), "xai-")
+	return strings.EqualFold(strings.TrimSpace(entry.Provider), "xai")
 }
 
 func authEntryIdentity(entry pluginapi.HostAuthFileEntry) string {
