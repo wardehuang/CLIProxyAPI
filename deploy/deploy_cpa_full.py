@@ -20,6 +20,10 @@ Safety properties:
   locked sequence allocates the next four-digit build number, so every build
   attempt receives a unique version even when an earlier attempt fails.
 * Only Git-tracked files are packaged; untracked non-ignored files are refused.
+  ``dist/`` holds historical source archives rather than build inputs and is
+  excluded from the package; the excluded count is logged.
+  Evidence logs under ``deploy/`` stay untracked through the ``deploy/*.log``
+  ignore rule, so they never enter the package or block the preflight.
 * Local runtime config, environment files, auth files, and deploy logs are never
   copied into the source archive.
 * All source text is normalized to LF and verified before upload and after
@@ -84,7 +88,7 @@ REMOTE_UNIT_PATH = f"/etc/systemd/system/{REMOTE_SERVICE}"
 REMOTE_STAGE_ROOT = "/home/ubuntu/.cpa-deploy"
 REMOTE_GO = "/usr/local/go/bin/go"
 REMOTE_APP_OWNER = "ubuntu:ubuntu"
-REMOTE_READY_ATTEMPTS = 300
+REMOTE_READY_ATTEMPTS = 900
 LEGACY_DOCKER_CONTAINER = "cli-proxy-api-hook-min-v2"
 LEGACY_DOCKER_ARTIFACTS = (
     "docker-compose.18458.yml",
@@ -161,6 +165,7 @@ FORBIDDEN_SOURCE_PATHS = {
     "config.yaml",
 }
 FORBIDDEN_SOURCE_PREFIXES = ("auths/",)
+EXCLUDED_SOURCE_PREFIXES = ("dist/",)
 STABLE_TAG_PATTERN = re.compile(r"^v(\d+\.\d+\.\d+)$")
 VERSION_PATTERN = re.compile(r"^(\d+\.\d+\.\d+)\.(\d{4})$")
 
@@ -199,6 +204,7 @@ class SourcePackage:
     tracked_file_count: int
     archive_member_count: int
     normalized_text_count: int
+    excluded_path_count: int
 
 
 @dataclass(frozen=True)
@@ -632,6 +638,12 @@ def validate_source_path(path: str) -> None:
         raise DeploymentError(f"forbidden runtime directory is tracked: {path}")
 
 
+def is_excluded_source_path(path: str) -> bool:
+    """Return whether a tracked path is outside the deployment source scope."""
+
+    return any(path.startswith(prefix) for prefix in EXCLUDED_SOURCE_PREFIXES)
+
+
 def add_directory_members(archive: tarfile.TarFile, paths: Iterable[str]) -> int:
     """Add deterministic directory entries before file members."""
 
@@ -660,14 +672,21 @@ def build_source_package(temp_dir: Path, head: str, dirty: bool) -> SourcePackag
     entries = parse_tracked_entries()
     if not entries:
         raise DeploymentError("Git index contains no tracked files")
+    for entry in entries:
+        validate_source_path(entry.path)
+    packaged_entries = [
+        entry for entry in entries if not is_excluded_source_path(entry.path)
+    ]
+    excluded_path_count = len(entries) - len(packaged_entries)
+    if not packaged_entries:
+        raise DeploymentError("every tracked path is excluded from the package")
 
     archive_path = temp_dir / "source.tar.gz"
     source_digest = hashlib.sha256()
     normalized_text_count = 0
     existing_entries: list[TrackedEntry] = []
 
-    for entry in entries:
-        validate_source_path(entry.path)
+    for entry in packaged_entries:
         local_path = REPOSITORY_ROOT / Path(entry.path)
         if local_path.exists() or local_path.is_symlink():
             existing_entries.append(entry)
@@ -753,6 +772,7 @@ def build_source_package(temp_dir: Path, head: str, dirty: bool) -> SourcePackag
         tracked_file_count=len(existing_entries),
         archive_member_count=member_count,
         normalized_text_count=normalized_text_count,
+        excluded_path_count=excluded_path_count,
     )
 
 
@@ -836,6 +856,7 @@ BACKUP_READY=0
 UNIT_PRESENT=0
 MAIN_PRESENT=0
 LEGACY_DOCKER_PRESENT=0
+ROLLBACK_DONE=0
 STEP_NUMBER=0
 
 MANAGED_PLUGINS=(
@@ -876,23 +897,39 @@ first_line() {
 }
 
 auth_inventory() {
-  python3 - "$AUTH_DIR" <<'PY'
+  local mode=root
+  local runner=(sudo)
+  if [ "${1:-}" = "--as-service" ]; then
+    mode=service
+    runner=(sudo -u "${APP_OWNER%%:*}")
+  fi
+  "${runner[@]}" python3 - "$AUTH_DIR" "$mode" <<'PY'
 import json
 import sys
 from pathlib import Path
 
 root = Path(sys.argv[1])
+print(f"AUTH_MODE={sys.argv[2]}")
 files = sorted(root.glob("*.json"))
 invalid = 0
+unreadable = 0
+problems = []
 for path in files:
     try:
         with path.open("r", encoding="utf-8") as handle:
             json.load(handle)
-    except Exception:
+    except PermissionError as exc:
+        unreadable += 1
+        problems.append(f"{path.name} unreadable: {exc.strerror}")
+    except Exception as exc:
         invalid += 1
+        problems.append(f"{path.name} invalid: {type(exc).__name__}")
 print(f"AUTH_COUNT={len(files)}")
 print(f"AUTH_INVALID={invalid}")
-raise SystemExit(1 if invalid else 0)
+print(f"AUTH_UNREADABLE={unreadable}")
+for problem in problems[:50]:
+    print(f"AUTH_PROBLEM={problem}")
+raise SystemExit(1 if (invalid or unreadable) else 0)
 PY
 }
 
@@ -964,6 +1001,10 @@ wait_ready() {
 
 rollback_on_error() {
   local rc="$1"
+  if [ "$ROLLBACK_DONE" -eq 1 ]; then
+    exit "$rc"
+  fi
+  ROLLBACK_DONE=1
   trap - ERR
   set +e
   step "ROLLBACK AFTER FAILURE"
@@ -1605,7 +1646,7 @@ case "$MAIN_AFTER_META" in
   *'CGO_ENABLED=1'*) ;;
   *) log "installed main lacks CGO_ENABLED=1"; false ;;
 esac
-auth_inventory | tee "$BASE/auth-after.txt"
+auth_inventory --as-service | tee "$BASE/auth-after.txt"
 if [ "$(systemctl is-enabled "$SERVICE")" != enabled ]; then
   log "systemd unit is not enabled"
   false
@@ -2085,6 +2126,11 @@ def main() -> int:
             LOGGER.info("TRACKED_FILE_COUNT=%d", source.tracked_file_count)
             LOGGER.info("ARCHIVE_MEMBER_COUNT=%d", source.archive_member_count)
             LOGGER.info("NORMALIZED_TEXT_COUNT=%d", source.normalized_text_count)
+            LOGGER.info(
+                "EXCLUDED_SOURCE_COUNT=%d prefixes=%s",
+                source.excluded_path_count,
+                ",".join(EXCLUDED_SOURCE_PREFIXES),
+            )
 
             step("GENERATE AND VALIDATE REMOTE DEPLOYMENT SCRIPT")
             remote_script = temp_dir / "deploy.sh"

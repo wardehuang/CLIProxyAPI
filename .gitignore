@@ -9,6 +9,8 @@ config.yaml
 # Generated content
 bin/*
 /logs
+deploy/*.log
+__pycache__/
 conv/*
 temp/*
 refs/*
