@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
-"""Deploy the CPA main binary and all repository-managed plugins.
+"""Deploy the hook-min-v2 CPA binary, plugins, and systemd unit on Oracle 01.
 
-This script is the single local entry point for the production rollout used by
-this repository. It packages the current tracked working tree, normalizes text
-files to LF, builds the Linux ARM64 CGO artifacts on Oracle 01, creates a full
-rollback archive, installs atomically, verifies the live service, downloads the
+This script is the single local entry point for the hook-min-v2 rollout, which
+serves from a systemd unit instead of the legacy Docker container. It packages
+the current tracked working tree, normalizes text files to LF, builds the Linux
+ARM64 CGO artifacts on Oracle 01, creates a full rollback archive, installs the
+systemd unit and artifacts atomically, verifies the live service, downloads the
 remote evidence logs, and removes transient build files.
 
 Usage from the repository root:
@@ -25,12 +26,24 @@ Safety properties:
   extraction.
 * The live service stays online during compilation. It is stopped only for the
   verified backup and atomic install window.
+* The first systemd rollout tolerates a host without a unit, binary, or plugins:
+  the legacy Docker container is stopped before the install window, removed only
+  after verification, and started again when the run rolls back.
 * Any failure after the service stop restores the main binary, configuration,
-  every plugin, plugin data, and every auth JSON from the verified archive.
+  plugins, plugin data, every auth JSON, the deployment markers, and the systemd
+  unit from the verified archive; a first-install rollback removes the unit this
+  run created.
+* The tracked Docker leftovers (``docker-compose.18458.yml``, ``source/``,
+  ``docker-deploy.log``) are captured in the rollback archive and then deleted
+  from the application directory, so the host keeps one deployment mechanism.
+* ``config.yaml`` is rewritten atomically for the two systemd-only values:
+  ``oauth.auth-dir`` points at the host auth directory and
+  ``plugins.configs.xai-guardian.database_path`` points at the host plugin data
+  file. Every rewrite prints its previous and expected value and is re-verified.
 * After a successful deployment, Go build/module caches are removed. Every older
-  file and directory under ``/opt/cli-proxy-api/backups`` is deleted, leaving
-  only the rollback archive created by this run. Failure paths do not prune
-  backups or Go caches.
+  file and directory under ``/opt/cli-proxy-api-hook-min-v2/backups`` is deleted,
+  leaving only the rollback archive created by this run. Failure paths do not
+  prune backups or Go caches.
 * The local master log, remote deployment log, and service journal are saved
   beside this script under ``deploy/``.
 * The script never commits, pushes, merges, or rewrites Git history.
@@ -62,30 +75,48 @@ DEFAULT_SSH_KEY = Path("E:/Files/SSH Key/oracle-ssh-key-2026-05-16.key")
 DEFAULT_HOST = "163.192.9.157"
 DEFAULT_USER = "ubuntu"
 DEFAULT_SSH_PORT = 27312
-DEFAULT_SERVICE_PORT = 18457
+DEFAULT_SERVICE_PORT = 18458
 
-REMOTE_APP = "/opt/cli-proxy-api"
-REMOTE_AUTH_DIR = "/home/ubuntu/.cli-proxy-api"
-REMOTE_SERVICE = "cli-proxy-api.service"
+REMOTE_APP = "/opt/cli-proxy-api-hook-min-v2"
+REMOTE_AUTH_DIR = f"{REMOTE_APP}/auths"
+REMOTE_SERVICE = "cli-proxy-api-hook-min-v2.service"
+REMOTE_UNIT_PATH = f"/etc/systemd/system/{REMOTE_SERVICE}"
 REMOTE_STAGE_ROOT = "/home/ubuntu/.cpa-deploy"
 REMOTE_GO = "/usr/local/go/bin/go"
+REMOTE_APP_OWNER = "ubuntu:ubuntu"
+REMOTE_READY_ATTEMPTS = 300
+LEGACY_DOCKER_CONTAINER = "cli-proxy-api-hook-min-v2"
+LEGACY_DOCKER_ARTIFACTS = (
+    "docker-compose.18458.yml",
+    "source",
+    "docker-deploy.log",
+)
+DEPLOY_MARKER_NAMES = (
+    ".deploy-revision",
+    ".deploy-version",
+    ".deploy-time",
+)
 
 MANAGED_PLUGINS = (
-    "cpa-antigravity-priority-scheduler",
-    "cpa-codex-openai-context",
-    "cpa-compact-route-rewriter",
-    "cpa-prompt-cache-usage",
-    "cpa-strip-visible-files",
-    "cpa-xai-ip-switcher",
+    "detailed-logs",
+    "xai-guardian",
 )
 
-REQUIRED_ENABLED_PLUGIN_CONFIGS = ()
-
-EXPECTED_PLUGIN_IDS = (
-    "codexcomp",
-    *MANAGED_PLUGINS,
-    "gemini-cli",
+REQUIRED_ENABLED_PLUGIN_CONFIGS = (
+    "detailed-logs",
+    "xai-guardian",
 )
+
+# Host-owned settings that must exist inside each plugin's config subtree. The
+# xai-guardian default database path points at /opt/cli-proxy-api, so the
+# hook-min-v2 root has to declare its own path explicitly.
+REQUIRED_PLUGIN_SETTINGS = {
+    "xai-guardian": {
+        "database_path": f"{REMOTE_APP}/plugin-data/xai-guardian/xai-guardian.sqlite3",
+    },
+}
+
+EXPECTED_PLUGIN_IDS = tuple(MANAGED_PLUGINS)
 
 TEXT_SUFFIXES = {
     ".c",
@@ -129,14 +160,7 @@ FORBIDDEN_SOURCE_PATHS = {
     ".env",
     "config.yaml",
 }
-FORBIDDEN_SOURCE_PREFIXES = (
-    "auths/",
-    "deploy/",
-)
-ALLOWED_SOURCE_PATHS = {
-    "deploy/deploy_cpa_full.py",
-    "deploy/update_xai_auth_headers.py",
-}
+FORBIDDEN_SOURCE_PREFIXES = ("auths/",)
 STABLE_TAG_PATTERN = re.compile(r"^v(\d+\.\d+\.\d+)$")
 VERSION_PATTERN = re.compile(r"^(\d+\.\d+\.\d+)\.(\d{4})$")
 
@@ -604,7 +628,7 @@ def validate_source_path(path: str) -> None:
         return
     if lower in FORBIDDEN_SOURCE_PATHS:
         raise DeploymentError(f"forbidden runtime file is tracked: {path}")
-    if any(lower.startswith(prefix) for prefix in FORBIDDEN_SOURCE_PREFIXES) and lower not in ALLOWED_SOURCE_PATHS:
+    if any(lower.startswith(prefix) for prefix in FORBIDDEN_SOURCE_PREFIXES):
         raise DeploymentError(f"forbidden runtime directory is tracked: {path}")
 
 
@@ -738,6 +762,43 @@ def shell_array(values: Sequence[str]) -> str:
     return "\n".join(f"  {shlex.quote(value)}" for value in values)
 
 
+def plugin_settings_entries() -> list[str]:
+    """Render the host-owned plugin settings as remote config transaction input."""
+
+    entries: list[str] = []
+    for plugin_id in sorted(REQUIRED_PLUGIN_SETTINGS):
+        plugin_settings = REQUIRED_PLUGIN_SETTINGS[plugin_id]
+        for key in sorted(plugin_settings):
+            entries.append(f"{plugin_id}\t{key}\t{plugin_settings[key]}")
+    return entries
+
+
+def systemd_unit_text() -> str:
+    """Return the systemd unit that runs hook-min-v2 from its application root."""
+
+    user, group = REMOTE_APP_OWNER.split(":", 1)
+    return "\n".join(
+        (
+            "[Unit]",
+            "Description=CLIProxyAPI hook-min-v2",
+            "After=network-online.target",
+            "Wants=network-online.target",
+            "",
+            "[Service]",
+            "Type=simple",
+            f"User={user}",
+            f"Group={group}",
+            f"WorkingDirectory={REMOTE_APP}",
+            f"ExecStart={REMOTE_APP}/cli-proxy-api",
+            "Restart=always",
+            "RestartSec=5",
+            "LimitNOFILE=1048576",
+            "",
+            "[Install]",
+            "WantedBy=multi-user.target",
+        )
+    ) + "\n"
+
 REMOTE_SCRIPT_TEMPLATE = r'''#!/usr/bin/env bash
 # Remote half of deploy_cpa_full.py.
 # It is generated for one immutable source package and one deployment ID.
@@ -753,6 +814,11 @@ AUTH_DIR=@@AUTH_DIR@@
 PORT=@@SERVICE_PORT@@
 GO_BIN=@@GO_BIN@@
 BASE=@@BASE@@
+UNIT_PATH=@@UNIT_PATH@@
+APP_OWNER=@@APP_OWNER@@
+READY_ATTEMPTS=@@READY_ATTEMPTS@@
+LEGACY_CONTAINER=@@LEGACY_CONTAINER@@
+UNIT_TEXT=@@UNIT_TEXT@@
 ARCHIVE="$BASE/source.tar.gz"
 SOURCE_ROOT="$BASE/src/CLIProxyAPI"
 BUILD_ROOT="$BASE/build"
@@ -767,6 +833,9 @@ BACKUP="$BACKUP_DIR/$ID.tar.gz"
 DEPLOY_LOG_DIR="$APP/deploy-logs"
 DEPLOY_STARTED=0
 BACKUP_READY=0
+UNIT_PRESENT=0
+MAIN_PRESENT=0
+LEGACY_DOCKER_PRESENT=0
 STEP_NUMBER=0
 
 MANAGED_PLUGINS=(
@@ -777,6 +846,15 @@ REQUIRED_ENABLED_PLUGIN_CONFIGS=(
 )
 EXPECTED_PLUGIN_IDS=(
 @@EXPECTED_PLUGIN_IDS@@
+)
+PLUGIN_SETTINGS=(
+@@PLUGIN_SETTINGS@@
+)
+LEGACY_DOCKER_ARTIFACTS=(
+@@LEGACY_DOCKER_ARTIFACTS@@
+)
+DEPLOY_MARKER_NAMES=(
+@@DEPLOY_MARKER_NAMES@@
 )
 
 mkdir -p "$BASE" "$BUILD_ROOT"
@@ -850,6 +928,16 @@ raise SystemExit(1 if missing else 0)
 PY
 }
 
+plugin_manifest() {
+  local output="$1"
+  : > "$output"
+  if [ -d "$PLUGIN_DIR" ]; then
+    find "$PLUGIN_DIR" -maxdepth 1 -type f -name '*.so' -printf '%f\n' | sort | while read -r plugin_file; do
+      printf '%s  %s\n' "$(sha256sum "$PLUGIN_DIR/$plugin_file" | cut -d' ' -f1)" "$PLUGIN_DIR/$plugin_file"
+    done > "$output"
+  fi
+}
+
 wait_ready() {
   local attempts="$1"
   local active root_http healthz_http management_http management_ok
@@ -881,20 +969,38 @@ rollback_on_error() {
   step "ROLLBACK AFTER FAILURE"
   log "DEPLOY_ERROR_STATUS=$rc"
   if [ "$DEPLOY_STARTED" -eq 1 ]; then
-    sudo systemctl stop "$SERVICE" >/dev/null 2>&1 || true
+    if [ "$UNIT_PRESENT" -eq 1 ]; then
+      sudo systemctl stop "$SERVICE" >/dev/null 2>&1 || true
+    fi
     if [ "$BACKUP_READY" -eq 1 ] && sudo test -s "$BACKUP"; then
-      sudo rm -f "$APP/cli-proxy-api" "$APP/config.yaml"
-      sudo rm -rf "$APP/plugins" "$APP/plugin-data" "$AUTH_DIR"
+      sudo rm -rf "$APP/cli-proxy-api" "$APP/config.yaml" "$APP/plugins" "$APP/plugin-data" "$AUTH_DIR"
+      sudo rm -f "$APP/.deploy-revision" "$APP/.deploy-version" "$APP/.deploy-time"
       sudo tar -xzpf "$BACKUP" -C /
       log "ROLLBACK_FILES=restored"
+      sudo chown -R "$APP_OWNER" "$APP" >/dev/null 2>&1 || true
     else
+      sudo rm -f "$APP/cli-proxy-api"
       log "ROLLBACK_FILES=not-installed"
     fi
-    sudo systemctl start "$SERVICE" >/dev/null 2>&1 || true
-    if wait_ready 90 >/dev/null 2>&1; then
-      log "ROLLBACK_READY=1"
-    else
-      log "ROLLBACK_READY=0"
+    if [ "$UNIT_PRESENT" -eq 0 ]; then
+      sudo rm -f "$UNIT_PATH"
+      sudo systemctl daemon-reload >/dev/null 2>&1 || true
+      log "ROLLBACK_UNIT=removed"
+    fi
+    if [ "$LEGACY_DOCKER_PRESENT" -eq 1 ]; then
+      if sudo docker start "$LEGACY_CONTAINER" >/dev/null 2>&1; then
+        log "ROLLBACK_LEGACY_DOCKER=started"
+      else
+        log "ROLLBACK_LEGACY_DOCKER=start-failed"
+      fi
+    fi
+    if [ "$UNIT_PRESENT" -eq 1 ]; then
+      sudo systemctl start "$SERVICE" >/dev/null 2>&1 || true
+      if wait_ready "$READY_ATTEMPTS" >/dev/null 2>&1; then
+        log "ROLLBACK_READY=1"
+      else
+        log "ROLLBACK_READY=0"
+      fi
     fi
   fi
   log "DEPLOY_RESULT=rolled-back"
@@ -914,14 +1020,29 @@ log "REVISION=$REVISION"
 log "STARTED_AT=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 log "HOST=$(hostname)"
 log "ARCH=$(uname -m)"
-log "SERVICE_BEFORE=$(systemctl is-active "$SERVICE")"
+SERVICE_ACTIVE_BEFORE="$(systemctl is-active "$SERVICE" 2>/dev/null || true)"
+if [ -f "$UNIT_PATH" ]; then
+  UNIT_PRESENT=1
+fi
+if [ -s "$APP/cli-proxy-api" ]; then
+  MAIN_PRESENT=1
+fi
+log "SERVICE_BEFORE=$SERVICE_ACTIVE_BEFORE"
+log "UNIT_PRESENT=$UNIT_PRESENT"
+log "MAIN_PRESENT=$MAIN_PRESENT"
 log "PID_BEFORE=$(systemctl show -p MainPID --value "$SERVICE")"
 log "START_BEFORE=$(systemctl show -p ExecMainStartTimestamp --value "$SERVICE")"
-log "MAIN_BEFORE_VERSION=$("$APP/cli-proxy-api" --help 2>&1 | first_line)"
+if [ "$MAIN_PRESENT" -eq 1 ]; then
+  log "MAIN_BEFORE_VERSION=$("$APP/cli-proxy-api" --help 2>&1 | first_line)"
+fi
 df -h / /home /opt
 
-if [ "$(systemctl is-active "$SERVICE")" != active ]; then
-  log "REFUSE service is not active before deployment"
+if [ "$UNIT_PRESENT" -eq 1 ] && [ "$SERVICE_ACTIVE_BEFORE" != active ]; then
+  log "REFUSE existing unit is not active before deployment"
+  false
+fi
+if [ "$UNIT_PRESENT" -eq 0 ] && [ "$MAIN_PRESENT" -eq 1 ]; then
+  log "REFUSE a main binary exists without a systemd unit"
   false
 fi
 if [ ! -s "$ARCHIVE" ]; then
@@ -937,11 +1058,14 @@ if [ "$ACTUAL_SOURCE_SHA256" != "$SOURCE_SHA256" ]; then
 fi
 
 step "LIVE STATE SNAPSHOT"
-MAIN_BEFORE_SHA256="$(sha256sum "$APP/cli-proxy-api" | cut -d' ' -f1)"
+MAIN_BEFORE_SHA256=""
+if [ "$MAIN_PRESENT" -eq 1 ]; then
+  MAIN_BEFORE_SHA256="$(sha256sum "$APP/cli-proxy-api" | cut -d' ' -f1)"
+fi
 CONFIG_BEFORE_SHA256="$(sha256sum "$APP/config.yaml" | cut -d' ' -f1)"
 auth_inventory | tee "$BASE/auth-before.txt"
 AUTH_COUNT_AT_BUILD_START="$(python3 -c 'from pathlib import Path; import sys; print(sum(1 for _ in Path(sys.argv[1]).glob("*.json")))' "$AUTH_DIR")"
-sha256sum "$PLUGIN_DIR"/*.so | sort -k2 > "$PLUGIN_MANIFEST_BEFORE"
+plugin_manifest "$PLUGIN_MANIFEST_BEFORE"
 PLUGIN_COUNT_BEFORE="$(wc -l < "$PLUGIN_MANIFEST_BEFORE")"
 log "MAIN_BEFORE_SHA256=$MAIN_BEFORE_SHA256"
 log "CONFIG_BEFORE_SHA256=$CONFIG_BEFORE_SHA256"
@@ -987,40 +1111,24 @@ from pathlib import Path
 import sys
 
 root = Path(sys.argv[1])
-heartbeat = (root / "sdk/api/handlers/handlers_stream_completion.go").read_text(encoding="utf-8")
+heartbeat = (root / "sdk/api/handlers/openai/openai_responses_virtual_heartbeat.go").read_text(encoding="utf-8")
+handlers_stream = (root / "sdk/api/handlers/handlers_stream.go").read_text(encoding="utf-8")
 xai_stream = (root / "internal/runtime/executor/xai_executor_stream.go").read_text(encoding="utf-8")
-heartbeat_compact = "\n".join(line.strip() for line in heartbeat.splitlines())
+guardian_module = (root / "plugins/src/xai-guardian/go.mod").read_text(encoding="utf-8")
 checks = {
-    "VIRTUAL_HEARTBEAT_10S": "realtimeGuardVirtualHeartbeatInterval = 10 * time.Second",
-    "VIRTUAL_RESPONSE_CREATED": '[]string{"response.created", "response.in_progress"}',
-    "XAI_INCOMPLETE_STREAM_GUARD": "xAI stream disconnected before response.completed",
+    "VIRTUAL_HEARTBEAT_10S": (heartbeat, "virtualResponsesStreamHeartbeatInterval = 10 * time.Second"),
+    "VIRTUAL_RESPONSE_CREATED": (heartbeat, '[]string{"response.created", "response.in_progress"}'),
+    "HEARTBEAT_STOP_AND_WAIT": (heartbeat, "func (h *virtualResponsesStreamHeartbeat) StopAndWait()"),
+    "XAI_HEARTBEAT_START": (xai_stream, "opts.XAIResponsesStreamHeartbeat.Start("),
+    "XAI_STREAM_COMPLETION_TRACKED": (xai_stream, "guardCompleted"),
+    "HEARTBEAT_REWRITE": (handlers_stream, "payload = opts.XAIResponsesStreamHeartbeat.Rewrite(payload)"),
+    "GUARDIAN_LOCAL_REPLACE": (guardian_module, "replace github.com/router-for-me/CLIProxyAPI/v8 => ../../.."),
 }
-for name, marker in checks.items():
-    present = marker in heartbeat
+for name, (source, marker) in checks.items():
+    present = marker in source
     print(f"SOURCE_INVARIANT[{name}]={int(present)}")
     if not present:
         raise SystemExit(f"required source invariant is missing: {name}")
-flush_case_index = heartbeat_compact.find("case pluginapi.StreamCompletionActionFlush:")
-stop_index = heartbeat_compact.find(
-    "virtualHeartbeat.stopAndWait()",
-    flush_case_index,
-) if flush_case_index >= 0 else -1
-payload_loop_index = heartbeat_compact.find(
-    "for _, payload := range payloads {",
-    stop_index,
-) if stop_index >= 0 else -1
-stop_before_flush = (
-    flush_case_index >= 0
-    and stop_index >= 0
-    and payload_loop_index > stop_index
-)
-print(f"SOURCE_INVARIANT[HEARTBEAT_STOP_BEFORE_FLUSH]={int(stop_before_flush)}")
-if not stop_before_flush:
-    raise SystemExit("required source invariant is missing: HEARTBEAT_STOP_BEFORE_FLUSH")
-done_tracking = 'bytes.Equal(eventData, []byte("[DONE]"))' in xai_stream and "completionState.Completed = true" in xai_stream
-print(f"SOURCE_INVARIANT[XAI_DONE_TRACKING]={int(done_tracking)}")
-if not done_tracking:
-    raise SystemExit("required source invariant is missing: XAI_DONE_TRACKING")
 PY
 
 step "BUILD CGO MAIN BINARY"
@@ -1093,13 +1201,15 @@ done
 log "BUILD_RESULT=success"
 
 step "RECHECK LIVE STATE BEFORE STOP"
-if [ "$(systemctl is-active "$SERVICE")" != active ]; then
+if [ "$UNIT_PRESENT" -eq 1 ] && [ "$(systemctl is-active "$SERVICE")" != active ]; then
   log "REFUSE service changed state during build"
   false
 fi
-if [ "$(sha256sum "$APP/cli-proxy-api" | cut -d' ' -f1)" != "$MAIN_BEFORE_SHA256" ]; then
-  log "REFUSE live main binary changed during build"
-  false
+if [ "$MAIN_PRESENT" -eq 1 ]; then
+  if [ "$(sha256sum "$APP/cli-proxy-api" | cut -d' ' -f1)" != "$MAIN_BEFORE_SHA256" ]; then
+    log "REFUSE live main binary changed during build"
+    false
+  fi
 fi
 if [ "$(sha256sum "$APP/config.yaml" | cut -d' ' -f1)" != "$CONFIG_BEFORE_SHA256" ]; then
   log "REFUSE live config changed during build"
@@ -1112,7 +1222,7 @@ if [ "$AUTH_COUNT_AT_RECHECK" != "$AUTH_COUNT_AT_BUILD_START" ]; then
 else
   log "AUTH_COUNT_CHANGED_DURING_BUILD=0"
 fi
-sha256sum "$PLUGIN_DIR"/*.so | sort -k2 > "$BASE/plugins-before-stop.sha256"
+plugin_manifest "$BASE/plugins-before-stop.sha256"
 if ! cmp -s "$PLUGIN_MANIFEST_BEFORE" "$BASE/plugins-before-stop.sha256"; then
   log "REFUSE live plugin files changed during build"
   false
@@ -1122,19 +1232,43 @@ log "LIVE_RECHECK=unchanged"
 step "STOP SERVICE AND CREATE FULL ROLLBACK BACKUP"
 DEPLOY_SERVICE_START="$(date -u '+%Y-%m-%d %H:%M:%S')"
 DEPLOY_STARTED=1
-sudo systemctl stop "$SERVICE"
+if [ "$UNIT_PRESENT" -eq 1 ]; then
+  sudo systemctl stop "$SERVICE"
+else
+  log "UNIT_STOP_SKIPPED=unit-absent"
+fi
+if sudo docker inspect "$LEGACY_CONTAINER" >/dev/null 2>&1; then
+  sudo docker stop "$LEGACY_CONTAINER" >/dev/null
+  LEGACY_DOCKER_PRESENT=1
+  log "LEGACY_DOCKER_STOPPED=$LEGACY_CONTAINER"
+else
+  log "LEGACY_DOCKER_ABSENT=$LEGACY_CONTAINER"
+fi
 auth_inventory | tee "$BASE/auth-before-install.txt"
 AUTH_COUNT_BEFORE_INSTALL="$(python3 -c 'from pathlib import Path; import sys; print(sum(1 for _ in Path(sys.argv[1]).glob("*.json")))' "$AUTH_DIR")"
 auth_name_manifest "$BASE/auth-before-install.names.sha256"
 log "AUTH_COUNT_BEFORE_INSTALL=$AUTH_COUNT_BEFORE_INSTALL"
 sudo mkdir -p "$BACKUP_DIR"
 cd /
-sudo tar -czpf "$BACKUP" \
-  opt/cli-proxy-api/cli-proxy-api \
-  opt/cli-proxy-api/config.yaml \
-  opt/cli-proxy-api/plugins \
-  opt/cli-proxy-api/plugin-data \
-  home/ubuntu/.cli-proxy-api
+BACKUP_PATHS=()
+for item in cli-proxy-api config.yaml auths plugins plugin-data "${DEPLOY_MARKER_NAMES[@]}"; do
+  if sudo test -e "$APP/$item"; then
+    BACKUP_PATHS+=("${APP#/}/$item")
+  fi
+done
+for item in "${LEGACY_DOCKER_ARTIFACTS[@]}"; do
+  if sudo test -e "$APP/$item"; then
+    BACKUP_PATHS+=("${APP#/}/$item")
+    log "BACKUP_LEGACY_INCLUDED=$item"
+  fi
+done
+if [ "$UNIT_PRESENT" -eq 1 ]; then
+  BACKUP_PATHS+=("${UNIT_PATH#/}")
+fi
+log "BACKUP_PATHS_BEGIN"
+printf '%s\n' "${BACKUP_PATHS[@]}"
+log "BACKUP_PATHS_END"
+sudo tar -czpf "$BACKUP" "${BACKUP_PATHS[@]}"
 sudo test -s "$BACKUP"
 sudo chmod 600 "$BACKUP"
 sudo gzip -t "$BACKUP"
@@ -1143,7 +1277,7 @@ log "BACKUP_SIZE=$(sudo stat -c %s "$BACKUP")"
 log "BACKUP_SHA256=$(sudo sha256sum "$BACKUP" | cut -d' ' -f1)"
 
 step "VALIDATE ROLLBACK BACKUP CONTENT"
-sudo python3 - "$BACKUP" "$AUTH_COUNT_BEFORE_INSTALL" "$PLUGIN_COUNT_BEFORE" "$MAIN_BEFORE_SHA256" "$CONFIG_BEFORE_SHA256" <<'PY'
+sudo python3 - "$BACKUP" "$AUTH_COUNT_BEFORE_INSTALL" "$PLUGIN_COUNT_BEFORE" "$MAIN_BEFORE_SHA256" "$CONFIG_BEFORE_SHA256" "$APP" "$AUTH_DIR" "$MAIN_PRESENT" <<'PY'
 import hashlib
 import json
 import sys
@@ -1154,10 +1288,14 @@ expected_auth_count = int(sys.argv[2])
 expected_plugin_count = int(sys.argv[3])
 expected_main_sha256 = sys.argv[4]
 expected_config_sha256 = sys.argv[5]
-required = {
-    "opt/cli-proxy-api/cli-proxy-api",
-    "opt/cli-proxy-api/config.yaml",
-}
+app_rel = sys.argv[6].lstrip("/")
+auth_rel = sys.argv[7].lstrip("/")
+main_required = sys.argv[8] == "1"
+main_member = f"{app_rel}/cli-proxy-api"
+config_member = f"{app_rel}/config.yaml"
+required = {config_member}
+if main_required:
+    required.add(main_member)
 with tarfile.open(backup, "r:gz") as archive:
     files = [member for member in archive.getmembers() if member.isfile()]
     by_name = {member.name.lstrip("./"): member for member in files}
@@ -1169,7 +1307,7 @@ with tarfile.open(backup, "r:gz") as archive:
     ]
     auth_members = [
         member for member in files
-        if member.name.lstrip("./").startswith("home/ubuntu/.cli-proxy-api/")
+        if member.name.lstrip("./").startswith(auth_rel + "/")
         and member.name.endswith(".json")
     ]
     invalid = 0
@@ -1180,10 +1318,10 @@ with tarfile.open(backup, "r:gz") as archive:
         except Exception:
             invalid += 1
     main_sha256 = ""
-    config_sha256 = ""
-    if not missing:
-        main_sha256 = hashlib.sha256(archive.extractfile(by_name["opt/cli-proxy-api/cli-proxy-api"]).read()).hexdigest()
-        config_sha256 = hashlib.sha256(archive.extractfile(by_name["opt/cli-proxy-api/config.yaml"]).read()).hexdigest()
+    if main_member in by_name:
+        main_sha256 = hashlib.sha256(archive.extractfile(by_name[main_member]).read()).hexdigest()
+    config_sha256 = hashlib.sha256(archive.extractfile(by_name[config_member]).read()).hexdigest()
+    main_match = main_sha256 == expected_main_sha256 if main_required else main_member not in names
     print(f"BACKUP_FILES={len(files)}")
     print(f"BACKUP_PLUGIN_COUNT={len(plugin_members)}")
     print(f"BACKUP_AUTH_COUNT={len(auth_members)}")
@@ -1191,7 +1329,7 @@ with tarfile.open(backup, "r:gz") as archive:
     print(f"BACKUP_MISSING_REQUIRED={len(missing)}")
     print(f"BACKUP_MAIN_SHA256={main_sha256}")
     print(f"BACKUP_CONFIG_SHA256={config_sha256}")
-    print(f"BACKUP_MAIN_MATCH={int(main_sha256 == expected_main_sha256)}")
+    print(f"BACKUP_MAIN_MATCH={int(main_match)}")
     print(f"BACKUP_CONFIG_MATCH={int(config_sha256 == expected_config_sha256)}")
     if missing:
         print("BACKUP_MISSING_BEGIN")
@@ -1202,15 +1340,16 @@ with tarfile.open(backup, "r:gz") as archive:
         or invalid
         or len(auth_members) != expected_auth_count
         or len(plugin_members) != expected_plugin_count
-        or main_sha256 != expected_main_sha256
+        or not main_match
         or config_sha256 != expected_config_sha256
     ):
         raise SystemExit(1)
 PY
 BACKUP_READY=1
 
-step "ENSURE REQUIRED MANAGED PLUGIN CONFIGS"
-CONFIG_UPDATE_OUTPUT="$(sudo python3 - "$APP/config.yaml" "${REQUIRED_ENABLED_PLUGIN_CONFIGS[@]}" <<'PY'
+step "ENSURE SYSTEMD CONFIG, AUTH DIR, AND MANAGED PLUGIN CONFIGS"
+PLUGIN_SETTINGS_SPEC="$(printf '%s\n' "${PLUGIN_SETTINGS[@]}")"
+CONFIG_UPDATE_OUTPUT="$(sudo env PLUGIN_SETTINGS_SPEC="$PLUGIN_SETTINGS_SPEC" python3 - "$APP/config.yaml" "$AUTH_DIR" "${REQUIRED_ENABLED_PLUGIN_CONFIGS[@]}" <<'PY'
 import hashlib
 import os
 from pathlib import Path
@@ -1221,82 +1360,143 @@ import sys
 import yaml
 
 path = Path(sys.argv[1])
-required_plugin_ids = sys.argv[2:]
+required_auth_dir = sys.argv[2]
+required_plugin_ids = sys.argv[3:]
+settings = {}
+for entry in os.environ.get("PLUGIN_SETTINGS_SPEC", "").splitlines():
+    if not entry.strip():
+        continue
+    fields = entry.split("\t")
+    if len(fields) != 3:
+        raise SystemExit(f"config update refused: malformed plugin settings entry {entry!r}")
+    settings.setdefault(fields[0], {})[fields[1]] = fields[2]
+
 original = path.read_bytes()
 text = original.decode("utf-8")
 config = yaml.safe_load(text)
 if not isinstance(config, dict):
-    raise SystemExit("plugin config update refused: root YAML value is not a mapping")
+    raise SystemExit("config update refused: root YAML value is not a mapping")
+oauth = config.get("oauth")
+if not isinstance(oauth, dict):
+    raise SystemExit("config update refused: oauth is not a mapping")
 plugins = config.get("plugins")
 if not isinstance(plugins, dict):
-    raise SystemExit("plugin config update refused: plugins is not a mapping")
+    raise SystemExit("config update refused: plugins is not a mapping")
 configs = plugins.get("configs")
 if not isinstance(configs, dict):
-    raise SystemExit("plugin config update refused: plugins.configs is not a mapping")
+    raise SystemExit("config update refused: plugins.configs is not a mapping")
 
-missing = []
+auth_dir_pattern = re.compile(r"(?m)^([ \t]+)auth-dir[ \t]*:.*$")
+auth_dir_indents = auth_dir_pattern.findall(text)
+if len(auth_dir_indents) != 1:
+    raise SystemExit(f"config update refused: expected exactly one auth-dir entry, found {len(auth_dir_indents)}")
+previous_auth_dir = oauth.get("auth-dir")
+text = auth_dir_pattern.sub(lambda match: f"{match.group(1)}auth-dir: {required_auth_dir}", text, count=1)
+print(f"CONFIG_PREVIOUS_AUTH_DIR={previous_auth_dir}")
+print(f"CONFIG_EXPECTED_AUTH_DIR={required_auth_dir}")
+
+lines = text.splitlines(keepends=True)
+newline = "\r\n" if "\r\n" in text else "\n"
+
+
+def significant_indent(line):
+    body = line.rstrip("\r\n")
+    if not body.strip() or body.lstrip().startswith("#"):
+        return None
+    prefix = body[: len(body) - len(body.lstrip(" "))]
+    if "\t" in prefix:
+        raise SystemExit("config update refused: tabs in YAML indentation")
+    return len(prefix)
+
+
+def mapping_key(line):
+    body = line.rstrip("\r\n")
+    indent = significant_indent(line)
+    if indent is None:
+        return None
+    match = re.fullmatch(r"( *)([^:#][^:]*):(?: *#.*)?", body)
+    if match is None:
+        return None
+    return indent, match.group(2).strip()
+
+
+plugin_lines = [index for index, line in enumerate(lines) if mapping_key(line) == (0, "plugins")]
+if len(plugin_lines) != 1:
+    raise SystemExit("config update refused: expected exactly one top-level plugins mapping")
+plugins_index = plugin_lines[0]
+plugins_end = len(lines)
+for index in range(plugins_index + 1, len(lines)):
+    indent = significant_indent(lines[index])
+    if indent == 0:
+        plugins_end = index
+        break
+configs_lines = []
+for index in range(plugins_index + 1, plugins_end):
+    parsed = mapping_key(lines[index])
+    if parsed is not None and parsed[0] > 0 and parsed[1] == "configs":
+        configs_lines.append((index, parsed[0]))
+if len(configs_lines) != 1:
+    raise SystemExit("config update refused: expected exactly one plugins.configs mapping")
+configs_index, configs_indent = configs_lines[0]
+configs_end = plugins_end
+for index in range(configs_index + 1, plugins_end):
+    indent = significant_indent(lines[index])
+    if indent is not None and indent <= configs_indent:
+        configs_end = index
+        break
+entry_indent = configs_indent + 2
+pending_inserts = []
+missing_plugins = []
 for plugin_id in required_plugin_ids:
-    if plugin_id not in configs:
-        missing.append(plugin_id)
-        continue
-    plugin_config = configs[plugin_id]
-    if not isinstance(plugin_config, dict) or plugin_config.get("enabled") is not True:
-        raise SystemExit(f"plugin config update refused: {plugin_id} exists but is not enabled")
-    print(f"PLUGIN_CONFIG[{plugin_id}]=already-enabled")
-
-if missing:
-    lines = text.splitlines(keepends=True)
-
-    def significant_indent(line):
-        body = line.rstrip("\r\n")
-        if not body.strip() or body.lstrip().startswith("#"):
-            return None
-        prefix = body[: len(body) - len(body.lstrip(" "))]
-        if "\t" in prefix:
-            raise SystemExit("plugin config update refused: tabs in YAML indentation")
-        return len(prefix)
-
-    def mapping_key(line):
-        body = line.rstrip("\r\n")
-        indent = significant_indent(line)
-        if indent is None:
-            return None
-        match = re.fullmatch(r"( *)([^:#][^:]*):(?: *#.*)?", body)
-        if match is None:
-            return None
-        return indent, match.group(2).strip()
-
-    plugin_lines = [index for index, line in enumerate(lines) if mapping_key(line) == (0, "plugins")]
-    if len(plugin_lines) != 1:
-        raise SystemExit("plugin config update refused: expected exactly one top-level plugins mapping")
-    plugins_index = plugin_lines[0]
-    plugins_end = len(lines)
-    for index in range(plugins_index + 1, len(lines)):
-        indent = significant_indent(lines[index])
-        if indent == 0:
-            plugins_end = index
-            break
-    configs_lines = []
-    for index in range(plugins_index + 1, plugins_end):
+    block_start = None
+    for index in range(configs_index + 1, configs_end):
         parsed = mapping_key(lines[index])
-        if parsed is not None and parsed[0] > 0 and parsed[1] == "configs":
-            configs_lines.append((index, parsed[0]))
-    if len(configs_lines) != 1:
-        raise SystemExit("plugin config update refused: expected exactly one plugins.configs mapping")
-    configs_index, configs_indent = configs_lines[0]
-    configs_end = plugins_end
-    for index in range(configs_index + 1, plugins_end):
-        indent = significant_indent(lines[index])
-        if indent is not None and indent <= configs_indent:
-            configs_end = index
+        if parsed is not None and parsed[0] == entry_indent and parsed[1] == plugin_id:
+            block_start = index
             break
-    entry_indent = configs_indent + 2
+    if block_start is None:
+        missing_plugins.append(plugin_id)
+        continue
+    plugin_config = configs.get(plugin_id)
+    if not isinstance(plugin_config, dict) or plugin_config.get("enabled") is not True:
+        raise SystemExit(f"config update refused: {plugin_id} exists but is not enabled")
+    print(f"PLUGIN_CONFIG[{plugin_id}]=already-enabled")
+    block_end = configs_end
+    for index in range(block_start + 1, configs_end):
+        indent = significant_indent(lines[index])
+        if indent is not None and indent <= entry_indent:
+            block_end = index
+            break
+    plugin_settings = settings.get(plugin_id, {})
+    present_values = {}
+    for index in range(block_start + 1, block_end):
+        parsed = mapping_key(lines[index])
+        if parsed is None or parsed[0] != entry_indent + 2:
+            continue
+        if parsed[1] in plugin_settings:
+            body = lines[index].rstrip("\r\n")
+            present_values[parsed[1]] = body.split(":", 1)[1].strip().strip("'\"")
+    additions = []
+    for key in sorted(plugin_settings):
+        value = plugin_settings[key]
+        current = present_values.get(key)
+        if current is None:
+            additions.append(" " * (entry_indent + 2) + f"{key}: {value}" + newline)
+            print(f"PLUGIN_SETTING[{plugin_id}.{key}]=added")
+        elif current != value:
+            raise SystemExit(
+                f"config update refused: {plugin_id}.{key} is {current!r}, expected {value!r}"
+            )
+        else:
+            print(f"PLUGIN_SETTING[{plugin_id}.{key}]=unchanged")
+    if additions:
+        pending_inserts.append((block_start + 1, additions))
+if missing_plugins:
     insert_at = configs_end
     while insert_at > configs_index + 1 and not lines[insert_at - 1].strip():
         insert_at -= 1
-    newline = "\r\n" if "\r\n" in text else "\n"
     additions = []
-    for plugin_id in missing:
+    for plugin_id in missing_plugins:
         additions.extend(
             (
                 " " * entry_indent + plugin_id + ":" + newline,
@@ -1304,31 +1504,40 @@ if missing:
                 " " * (entry_indent + 2) + "priority: 0" + newline,
             )
         )
-    updated = "".join(lines[:insert_at] + additions + lines[insert_at:]).encode("utf-8")
-    verified = yaml.safe_load(updated)
-    verified_configs = verified["plugins"]["configs"]
-    for plugin_id in required_plugin_ids:
-        if verified_configs[plugin_id].get("enabled") is not True:
-            raise SystemExit(f"plugin config update verification failed: {plugin_id}")
-    metadata = path.stat()
-    temporary = path.with_name(path.name + f".new.{os.getpid()}")
-    try:
-        with temporary.open("xb") as handle:
-            handle.write(updated)
-            handle.flush()
-            os.fsync(handle.fileno())
-        os.chmod(temporary, stat.S_IMODE(metadata.st_mode))
-        os.chown(temporary, metadata.st_uid, metadata.st_gid)
-        os.replace(temporary, path)
-        directory_fd = os.open(path.parent, os.O_RDONLY)
-        try:
-            os.fsync(directory_fd)
-        finally:
-            os.close(directory_fd)
-    finally:
-        temporary.unlink(missing_ok=True)
-    for plugin_id in missing:
+        for key in sorted(settings.get(plugin_id, {})):
+            additions.append(" " * (entry_indent + 2) + f"{key}: {settings[plugin_id][key]}" + newline)
         print(f"PLUGIN_CONFIG[{plugin_id}]=added-enabled")
+    pending_inserts.append((insert_at, additions))
+for index, additions in sorted(pending_inserts, key=lambda item: item[0], reverse=True):
+    lines[index:index] = additions
+updated = "".join(lines).encode("utf-8")
+verified = yaml.safe_load(updated)
+if verified["oauth"]["auth-dir"] != required_auth_dir:
+    raise SystemExit("config update verification failed: oauth.auth-dir")
+verified_configs = verified["plugins"]["configs"]
+for plugin_id in required_plugin_ids:
+    if verified_configs[plugin_id].get("enabled") is not True:
+        raise SystemExit(f"config update verification failed: {plugin_id} is not enabled")
+    for key in sorted(settings.get(plugin_id, {})):
+        if verified_configs[plugin_id].get(key) != settings[plugin_id][key]:
+            raise SystemExit(f"config update verification failed: {plugin_id}.{key}")
+metadata = path.stat()
+temporary = path.with_name(path.name + f".new.{os.getpid()}")
+try:
+    with temporary.open("xb") as handle:
+        handle.write(updated)
+        handle.flush()
+        os.fsync(handle.fileno())
+    os.chmod(temporary, stat.S_IMODE(metadata.st_mode))
+    os.chown(temporary, metadata.st_uid, metadata.st_gid)
+    os.replace(temporary, path)
+    directory_fd = os.open(path.parent, os.O_RDONLY)
+    try:
+        os.fsync(directory_fd)
+    finally:
+        os.close(directory_fd)
+finally:
+    temporary.unlink(missing_ok=True)
 
 print("CONFIG_EXPECTED_SHA256=" + hashlib.sha256(path.read_bytes()).hexdigest())
 PY
@@ -1340,7 +1549,7 @@ case "$CONFIG_EXPECTED_LINE" in
   *) log "required plugin config update did not return expected checksum"; false ;;
 esac
 
-step "INSTALL MAIN BINARY AND MANAGED PLUGINS ATOMICALLY"
+step "INSTALL MAIN BINARY, MANAGED PLUGINS, AND THE SYSTEMD UNIT"
 sudo install -m 0755 "$MAIN_BUILD" "$APP/cli-proxy-api.new.$ID"
 sudo mv -f "$APP/cli-proxy-api.new.$ID" "$APP/cli-proxy-api"
 for plugin in "${MANAGED_PLUGINS[@]}"; do
@@ -1350,10 +1559,17 @@ for plugin in "${MANAGED_PLUGINS[@]}"; do
   sudo mv -f "$live_file.new.$ID" "$live_file"
   log "INSTALLED_PLUGIN=$plugin"
 done
+printf '%s' "$UNIT_TEXT" | sudo tee "$UNIT_PATH" >/dev/null
+sudo chmod 0644 "$UNIT_PATH"
+sudo chown -R "$APP_OWNER" "$APP"
+sudo systemctl daemon-reload
+sudo systemctl enable "$SERVICE"
+log "UNIT_INSTALLED=$UNIT_PATH"
+log "UNIT_SHA256=$(sudo sha256sum "$UNIT_PATH" | cut -d' ' -f1)"
 
-step "START SERVICE AND POLL HEALTH FOR UP TO 90 SECONDS"
+step "START SERVICE AND POLL HEALTH FOR UP TO ${READY_ATTEMPTS} SECONDS"
 sudo systemctl start "$SERVICE"
-if ! wait_ready 90; then
+if ! wait_ready "$READY_ATTEMPTS"; then
   log "health check timed out"
   false
 fi
@@ -1390,6 +1606,15 @@ case "$MAIN_AFTER_META" in
   *) log "installed main lacks CGO_ENABLED=1"; false ;;
 esac
 auth_inventory | tee "$BASE/auth-after.txt"
+if [ "$(systemctl is-enabled "$SERVICE")" != enabled ]; then
+  log "systemd unit is not enabled"
+  false
+fi
+if [ "$(stat -c %U:%G "$APP")" != "$APP_OWNER" ]; then
+  log "application owner mismatch: $(stat -c %U:%G "$APP")"
+  false
+fi
+log "UNIT_ENABLED_AFTER_INSTALL=$(systemctl is-enabled "$SERVICE")"
 
 while read -r expected_sha built_path; do
   plugin_name="$(basename "$built_path")"
@@ -1453,7 +1678,7 @@ case "$HEADER_TEXT" in
   *) log "API commit header mismatch"; false ;;
 esac
 
-step "VERIFY SERVICE JOURNAL AND ALL NINE PLUGIN REGISTRATIONS"
+step "VERIFY SERVICE JOURNAL AND EVERY PLUGIN REGISTRATION"
 journalctl -u "$SERVICE" --since "$DEPLOY_SERVICE_START" --no-pager -o short-iso > "$JOURNAL_FILE"
 JOURNAL_TEXT="$(<"$JOURNAL_FILE")"
 case "$JOURNAL_TEXT" in
@@ -1482,12 +1707,34 @@ trap - ERR
 DEPLOY_STARTED=0
 log "DEPLOY_RESULT=success"
 log "SERVICE_AFTER=$(systemctl is-active "$SERVICE")"
+log "UNIT_ENABLED_AFTER=$(systemctl is-enabled "$SERVICE")"
 log "PID_AFTER=$(systemctl show -p MainPID --value "$SERVICE")"
 log "START_TIMESTAMP=$(systemctl show -p ExecMainStartTimestamp --value "$SERVICE")"
 log "FINISHED_AT=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+printf '%s\n' "$REVISION" | sudo tee "$APP/.deploy-revision" >/dev/null
+printf '%s\n' "$VERSION" | sudo tee "$APP/.deploy-version" >/dev/null
+printf '%s\n' "$BUILD_DATE" | sudo tee "$APP/.deploy-time" >/dev/null
 sudo mkdir -p "$DEPLOY_LOG_DIR"
 sudo cp "$LOG" "$DEPLOY_LOG_DIR/$ID.log"
 sudo cp "$JOURNAL_FILE" "$DEPLOY_LOG_DIR/$ID-journal.log"
+
+step "RETIRE LEGACY DOCKER DEPLOYMENT"
+set +e
+if [ "$LEGACY_DOCKER_PRESENT" -eq 1 ]; then
+  if sudo docker rm -f "$LEGACY_CONTAINER" >/dev/null 2>&1; then
+    log "LEGACY_DOCKER_REMOVED=$LEGACY_CONTAINER"
+  else
+    log "LEGACY_DOCKER_REMOVE_FAILED=$LEGACY_CONTAINER"
+  fi
+fi
+for item in "${LEGACY_DOCKER_ARTIFACTS[@]}"; do
+  if sudo test -e "$APP/$item"; then
+    sudo rm -rf "$APP/$item"
+    log "LEGACY_ARTIFACT_REMOVED=$item"
+  fi
+done
+log "LEGACY_CONTAINER_REMAINING=$(sudo docker ps -a --format '{{.Names}}' | grep -c -x "$LEGACY_CONTAINER" || true)"
+set -e
 
 step "CLEAN GO BUILD CACHE AND OLD ROLLBACK ARCHIVES"
 set +e
@@ -1528,11 +1775,19 @@ def render_remote_script(
         "@@SERVICE_PORT@@": shlex.quote(str(config.service_port)),
         "@@GO_BIN@@": shlex.quote(REMOTE_GO),
         "@@BASE@@": shlex.quote(paths.remote_base),
+        "@@UNIT_PATH@@": shlex.quote(REMOTE_UNIT_PATH),
+        "@@APP_OWNER@@": shlex.quote(REMOTE_APP_OWNER),
+        "@@READY_ATTEMPTS@@": shlex.quote(str(REMOTE_READY_ATTEMPTS)),
+        "@@LEGACY_CONTAINER@@": shlex.quote(LEGACY_DOCKER_CONTAINER),
+        "@@UNIT_TEXT@@": shlex.quote(systemd_unit_text()),
         "@@MANAGED_PLUGINS@@": shell_array(MANAGED_PLUGINS),
         "@@REQUIRED_ENABLED_PLUGIN_CONFIGS@@": shell_array(
             REQUIRED_ENABLED_PLUGIN_CONFIGS
         ),
         "@@EXPECTED_PLUGIN_IDS@@": shell_array(EXPECTED_PLUGIN_IDS),
+        "@@PLUGIN_SETTINGS@@": shell_array(plugin_settings_entries()),
+        "@@LEGACY_DOCKER_ARTIFACTS@@": shell_array(LEGACY_DOCKER_ARTIFACTS),
+        "@@DEPLOY_MARKER_NAMES@@": shell_array(DEPLOY_MARKER_NAMES),
     }
     rendered = REMOTE_SCRIPT_TEMPLATE
     for placeholder, value in values.items():
@@ -1877,6 +2132,9 @@ def main() -> int:
         step("FINAL LOCAL RESULT")
         LOGGER.info("DEPLOY_RESULT=success")
         LOGGER.info("VERSION=%s", paths.version)
+        LOGGER.info("REMOTE_SERVICE=%s", REMOTE_SERVICE)
+        LOGGER.info("REMOTE_UNIT_PATH=%s", REMOTE_UNIT_PATH)
+        LOGGER.info("REMOTE_APP=%s", REMOTE_APP)
         LOGGER.info("MASTER_LOG=%s", paths.master_log)
         LOGGER.info("REMOTE_LOG=%s", paths.remote_log)
         LOGGER.info("JOURNAL_LOG=%s", paths.journal_log)
