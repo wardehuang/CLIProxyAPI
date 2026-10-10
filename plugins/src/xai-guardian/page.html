@@ -341,12 +341,13 @@
     .settings-help { color: var(--text-tertiary); font-size: 12px; }
     .page-refresh-field { width: min(100%, 360px); }
     .settings-input { width: 100%; min-height: 38px; padding: 0 10px; border: 1px solid var(--border-color); border-radius: 10px; outline: none; background: var(--bg-tertiary); color: var(--text-primary); }
-    .log-table { min-width: 850px; }
+    .log-table { min-width: 950px; }
     .log-table th:nth-child(1), .log-table td:nth-child(1) { width: 70px; }
-    .log-table th:nth-child(2), .log-table td:nth-child(2) { width: 170px; }
-    .log-table th:nth-child(3), .log-table td:nth-child(3) { width: 80px; text-align: left; }
-    .log-table th:nth-child(4), .log-table td:nth-child(4) { width: 240px; text-align: left; }
-    .log-table th:nth-child(5), .log-table td:nth-child(5), .log-table th:nth-child(6), .log-table td:nth-child(6), .log-table th:nth-child(7), .log-table td:nth-child(7) { text-align: left; }
+    .log-table th:nth-child(2), .log-table td:nth-child(2) { width: 110px; }
+    .log-table th:nth-child(3), .log-table td:nth-child(3) { width: 170px; }
+    .log-table th:nth-child(4), .log-table td:nth-child(4) { width: 80px; text-align: left; }
+    .log-table th:nth-child(5), .log-table td:nth-child(5) { width: 240px; text-align: left; }
+    .log-table th:nth-child(6), .log-table td:nth-child(6), .log-table th:nth-child(7), .log-table td:nth-child(7), .log-table th:nth-child(8), .log-table td:nth-child(8) { text-align: left; }
     .log-navigation { display: grid; gap: 10px; }
     .log-category-tabs, .log-group-tabs, .log-status-tabs { display: flex; flex-wrap: wrap; gap: 6px; }
     .log-tab { min-height: 36px; padding: 0 14px; border: 1px solid var(--border-color); border-radius: 10px; color: var(--text-secondary); background: var(--bg-tertiary); font-size: 12px; font-weight: 700; cursor: pointer; }
@@ -577,7 +578,7 @@
           <div class="logs-panel">
             <div class="panel-header">
               <div><h2 class="panel-title">日志</h2><p class="panel-subtitle">日志按用途、探测轮次和节点状态分组；关闭调试时仅显示守护日志。</p></div>
-              <div class="log-toolbar"><input class="log-search" id="log-search" type="search" placeholder="搜索 ID、级别、事件、节点、消息或详情" aria-label="搜索日志"><button class="secondary-button" id="search-logs" type="button">搜索</button></div>
+              <div class="log-toolbar"><input class="log-search" id="log-search" type="search" placeholder="搜索日志 ID、请求 ID、级别、事件、节点、消息或详情" aria-label="搜索日志"><button class="secondary-button" id="search-logs" type="button">搜索</button><button class="secondary-button" id="refresh-logs" type="button">刷新</button></div>
             </div>
             <div class="log-navigation">
               <nav class="log-category-tabs" aria-label="日志分类页签">
@@ -1493,9 +1494,9 @@ socks5h://proxy.example:1080"></textarea>
       $('log-summary').textContent = state.logs.length ? `显示 ${state.logs.length} 条${prefix}日志，最多保存 ${state.logMax || (state.logCategory === 'realtime_guard' ? 100 : 1000)} 条${searchSuffix}${roundSummary}。` : `暂无${prefix}日志${searchSuffix}${roundSummary}。`;
       const rows = state.logs.map((item) => {
         const node = item.nodeId ? `#${item.nodeId} ${item.nodeName || '节点'}` : '插件';
-        return `<tr><td class="mono">${escapeHTML(item.id)}</td><td>${formatDate(item.createdAt)}</td><td><span class="level-badge level-${escapeHTML(item.level)}">${escapeHTML(logLevelLabels[item.level] || item.level || '未知')}</span></td><td class="mono">${escapeHTML(item.event)}</td><td class="mono">${escapeHTML(node)}</td><td><div class="log-cell"><strong>${escapeHTML(item.message)}</strong></div></td><td><div class="log-cell">${escapeHTML(item.detail || '—')}</div></td></tr>`;
+        return `<tr><td class="mono">${escapeHTML(item.id)}</td><td class="mono">${escapeHTML(item.requestLogId || '—')}</td><td>${formatDate(item.createdAt)}</td><td><span class="level-badge level-${escapeHTML(item.level)}">${escapeHTML(logLevelLabels[item.level] || item.level || '未知')}</span></td><td class="mono">${escapeHTML(item.event)}</td><td class="mono">${escapeHTML(node)}</td><td><div class="log-cell"><strong>${escapeHTML(item.message)}</strong></div></td><td><div class="log-cell">${escapeHTML(item.detail || '—')}</div></td></tr>`;
       }).join('');
-      $('logs-table').innerHTML = `<table class="data-table log-table"><thead><tr><th>ID</th><th>时间</th><th>级别</th><th>事件</th><th>节点</th><th>消息</th><th>详情</th></tr></thead><tbody>${rows || '<tr><td class="empty-cell" colspan="7">没有日志。</td></tr>'}</tbody></table>`;
+      $('logs-table').innerHTML = `<table class="data-table log-table"><thead><tr><th>ID</th><th>请求 ID</th><th>时间</th><th>级别</th><th>事件</th><th>节点</th><th>消息</th><th>详情</th></tr></thead><tbody>${rows || '<tr><td class="empty-cell" colspan="8">没有日志。</td></tr>'}</tbody></table>`;
     }
 
     function renderScheduleGroupCounters(result) {
@@ -1752,6 +1753,7 @@ socks5h://proxy.example:1080"></textarea>
       }
       if (target.id === 'refresh-inspection') { await refreshInspection(); return; }
       if (target.id === 'refresh-guard') { setBusy(true, 'IP列表刷新中…'); try { if (await refreshGuard()) showToast('IP列表已刷新。'); } finally { setBusy(false); } return; }
+      if (target.id === 'refresh-logs') { target.disabled = true; target.textContent = '刷新中…'; try { await refreshLogs(); } catch (error) { setMessage('logs-error', error.message, true); } finally { target.disabled = false; target.textContent = '刷新'; } return; }
       if (target.id === 'search-logs') { refreshLogs().catch((error) => { setMessage('logs-error', error.message, true); }); return; }
       if (target.id === 'add-ip') { $('add-ip-message').textContent = ''; $('add-ip-message').classList.add('hidden'); $('add-ip-modal').hidden = false; $('ip-input').focus(); return; }
       if (target.id === 'submit-add-ip') { const text = $('ip-input').value.trim(); if (!text) { setMessage('add-ip-message', '请输入至少一行 IP。', true); return; } setBusy(true, '增加 IP 中…'); try { const result = await api('/api/batches', 'POST', {text}); const errorCount = Array.isArray(result.errors) ? result.errors.length : 0; $('ip-input').value = ''; $('add-ip-modal').hidden = true; await refreshGuard(); showToast(`已录入 ${result.added} 个 IP，重复 ${result.duplicates} 个${errorCount ? `，${errorCount} 行格式错误` : ''}。`, errorCount > 0); } catch (error) { setMessage('add-ip-message', error.message, true); } finally { setBusy(false); } return; }

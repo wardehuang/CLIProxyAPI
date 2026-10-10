@@ -228,17 +228,18 @@ type degradationState struct {
 }
 
 type pluginLog struct {
-	ID        int64  `json:"id"`
-	CreatedAt int64  `json:"createdAt"`
-	Level     string `json:"level"`
-	Event     string `json:"event"`
-	Message   string `json:"message"`
-	Detail    string `json:"detail"`
-	Category  string `json:"category"`
-	GroupID   string `json:"groupId"`
-	Status    string `json:"status"`
-	NodeID    int64  `json:"nodeId"`
-	NodeName  string `json:"nodeName"`
+	ID           int64  `json:"id"`
+	CreatedAt    int64  `json:"createdAt"`
+	Level        string `json:"level"`
+	Event        string `json:"event"`
+	Message      string `json:"message"`
+	Detail       string `json:"detail"`
+	Category     string `json:"category"`
+	GroupID      string `json:"groupId"`
+	Status       string `json:"status"`
+	RequestLogID string `json:"requestLogId"`
+	NodeID       int64  `json:"nodeId"`
+	NodeName     string `json:"nodeName"`
 }
 
 type pluginLogGroup struct {
@@ -549,7 +550,8 @@ CREATE TABLE IF NOT EXISTS plugin_logs (
     group_id TEXT NOT NULL DEFAULT '',
     log_status TEXT NOT NULL DEFAULT '',
     node_id INTEGER NOT NULL DEFAULT 0,
-    node_name TEXT NOT NULL DEFAULT ''
+    node_name TEXT NOT NULL DEFAULT '',
+    request_log_id TEXT NOT NULL DEFAULT ''
 );
 CREATE INDEX IF NOT EXISTS idx_plugin_logs_created ON plugin_logs(created_at DESC, id DESC);
 INSERT OR IGNORE INTO plugin_settings(setting_key, setting_value) VALUES
@@ -674,6 +676,7 @@ func (store *guardianStore) ensurePluginLogColumns() error {
 		{name: "log_status", sql: `ALTER TABLE plugin_logs ADD COLUMN log_status TEXT NOT NULL DEFAULT ''`},
 		{name: "node_id", sql: `ALTER TABLE plugin_logs ADD COLUMN node_id INTEGER NOT NULL DEFAULT 0`},
 		{name: "node_name", sql: `ALTER TABLE plugin_logs ADD COLUMN node_name TEXT NOT NULL DEFAULT ''`},
+		{name: "request_log_id", sql: `ALTER TABLE plugin_logs ADD COLUMN request_log_id TEXT NOT NULL DEFAULT ''`},
 	} {
 		if columns[column.name] {
 			continue
@@ -1125,6 +1128,11 @@ func (store *guardianStore) appendLog(level, event, message, detail string) erro
 	return store.appendCategorizedLog(category, "", status, level, event, 0, "", message, detail)
 }
 
+func (store *guardianStore) appendLogWithRequestLogID(level, event, message, detail, requestLogID string) error {
+	category, status := classifyLogEvent(event, level)
+	return store.appendCategorizedLogWithRequestLogID(category, "", status, level, event, 0, "", message, detail, requestLogID)
+}
+
 func (store *guardianStore) appendRoundLog(category string, roundID int64, status, level, event, message, detail string) error {
 	return store.appendCategorizedLog(category, strconv.FormatInt(roundID, 10), status, level, event, 0, "", message, detail)
 }
@@ -1134,7 +1142,11 @@ func (store *guardianStore) appendRoundNodeLog(category string, roundID int64, s
 }
 
 func (store *guardianStore) appendCategorizedLog(category, groupID, status, level, event string, nodeID int64, nodeName, message, detail string) error {
-	_, err := store.database.Exec(`INSERT INTO plugin_logs(created_at, level, event, message, detail, category, group_id, log_status, node_id, node_name) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, time.Now().UnixMilli(), level, event, sanitizeLogText(message), sanitizeLogText(detail), category, groupID, status, nodeID, sanitizeLogText(nodeName))
+	return store.appendCategorizedLogWithRequestLogID(category, groupID, status, level, event, nodeID, nodeName, message, detail, "")
+}
+
+func (store *guardianStore) appendCategorizedLogWithRequestLogID(category, groupID, status, level, event string, nodeID int64, nodeName, message, detail, requestLogID string) error {
+	_, err := store.database.Exec(`INSERT INTO plugin_logs(created_at, level, event, message, detail, category, group_id, log_status, node_id, node_name, request_log_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, time.Now().UnixMilli(), level, event, sanitizeLogText(message), sanitizeLogText(detail), category, groupID, status, nodeID, sanitizeLogText(nodeName), shortRequestLogID(requestLogID))
 	if err != nil {
 		return fmt.Errorf("append plugin log: %w", err)
 	}
@@ -1153,6 +1165,14 @@ func (store *guardianStore) appendCategorizedLog(category, groupID, status, leve
 		return fmt.Errorf("prune plugin logs: %w", err)
 	}
 	return nil
+}
+
+func shortRequestLogID(requestLogID string) string {
+	requestLogID = strings.TrimSpace(requestLogID)
+	if len(requestLogID) > 8 {
+		return requestLogID[len(requestLogID)-8:]
+	}
+	return requestLogID
 }
 
 func classifyLogEvent(event, level string) (string, string) {
@@ -1274,13 +1294,13 @@ func (store *guardianStore) listLogs(limit int, debugEnabled bool, category, sea
 	}
 	if search != "" {
 		pattern := "%" + strings.ToLower(search) + "%"
-		conditions = append(conditions, `(CAST(id AS TEXT) LIKE ? OR lower(level) LIKE ? OR lower(event) LIKE ? OR lower(node_name) LIKE ? OR lower(message) LIKE ? OR lower(detail) LIKE ?)`)
-		for index := 0; index < 6; index++ {
+		conditions = append(conditions, `(CAST(id AS TEXT) LIKE ? OR lower(request_log_id) LIKE ? OR lower(level) LIKE ? OR lower(event) LIKE ? OR lower(node_name) LIKE ? OR lower(message) LIKE ? OR lower(detail) LIKE ?)`)
+		for index := 0; index < 7; index++ {
 			args = append(args, pattern)
 		}
 	}
 	args = append(args, limit)
-	query := `SELECT id, created_at, level, event, message, detail, category, group_id, log_status, node_id, node_name FROM plugin_logs WHERE ` + strings.Join(conditions, " AND ") + ` ORDER BY id DESC LIMIT ?`
+	query := `SELECT id, created_at, level, event, message, detail, category, group_id, log_status, request_log_id, node_id, node_name FROM plugin_logs WHERE ` + strings.Join(conditions, " AND ") + ` ORDER BY id DESC LIMIT ?`
 	rows, err := store.database.Query(query, args...)
 	if err != nil {
 		return pluginLogList{}, fmt.Errorf("list plugin logs: %w", err)
@@ -1289,7 +1309,7 @@ func (store *guardianStore) listLogs(limit int, debugEnabled bool, category, sea
 	items := make([]pluginLog, 0)
 	for rows.Next() {
 		var item pluginLog
-		if err := rows.Scan(&item.ID, &item.CreatedAt, &item.Level, &item.Event, &item.Message, &item.Detail, &item.Category, &item.GroupID, &item.Status, &item.NodeID, &item.NodeName); err != nil {
+		if err := rows.Scan(&item.ID, &item.CreatedAt, &item.Level, &item.Event, &item.Message, &item.Detail, &item.Category, &item.GroupID, &item.Status, &item.RequestLogID, &item.NodeID, &item.NodeName); err != nil {
 			return pluginLogList{}, fmt.Errorf("scan plugin log: %w", err)
 		}
 		item.Message = sanitizeLogText(item.Message)
