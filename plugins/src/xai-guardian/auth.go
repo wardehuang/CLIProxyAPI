@@ -215,43 +215,47 @@ func syncAuthBindingsFromFiles(store *guardianStore, files []xaiAuthFile, inspec
 	bindings := make([]authBinding, 0, len(files))
 	now := time.Now()
 	for _, file := range files {
-		lastChecked := int64(0)
-		checkedAt := file.Entry.UpdatedAt
-		if checkedAt.IsZero() {
-			checkedAt = file.Entry.LastRefresh
-		}
-		if !checkedAt.IsZero() {
-			lastChecked = checkedAt.UnixMilli()
-		}
-		status := strings.ToLower(strings.TrimSpace(file.Entry.Status))
-		if status == "active" || status == "enabled" || status == "ready" || status == "healthy" {
-			status = "available"
-		}
-		if status == "" {
-			status = "unknown"
-		}
-		if !file.Entry.NextRetryAfter.IsZero() && file.Entry.NextRetryAfter.After(now) && !file.Disabled && !file.Unavailable {
-			status = "cooling"
-		}
-		if file.Disabled || file.Unavailable {
-			status = "unavailable"
-		}
-		bindings = append(bindings, authBinding{
-			AuthIndex:       file.Index,
-			AuthName:        file.Name,
-			Status:          status,
-			Priority:        file.Priority,
-			Success:         file.Entry.Success,
-			Failed:          file.Entry.Failed,
-			UpdatedAt:       time.Now().UnixMilli(),
-			LastChecked:     lastChecked,
-			InspectionRunID: inspectionRunID,
-			AccountType:     normalizedAccountType(file.Entry.AccountType),
-			ScheduleGroup:   readNestedScheduleGroup(file.Raw),
-			LastInspection:  inspectionAt,
-		})
+		bindings = append(bindings, authBindingFromFile(file, now, inspectionRunID, inspectionAt))
 	}
 	return store.upsertAuthBindings(bindings)
+}
+
+func authBindingFromFile(file xaiAuthFile, now time.Time, inspectionRunID, inspectionAt int64) authBinding {
+	lastChecked := int64(0)
+	checkedAt := file.Entry.UpdatedAt
+	if checkedAt.IsZero() {
+		checkedAt = file.Entry.LastRefresh
+	}
+	if !checkedAt.IsZero() {
+		lastChecked = checkedAt.UnixMilli()
+	}
+	status := strings.ToLower(strings.TrimSpace(file.Entry.Status))
+	if status == "active" || status == "enabled" || status == "ready" || status == "healthy" {
+		status = "available"
+	}
+	if status == "" {
+		status = "unknown"
+	}
+	if !file.Entry.NextRetryAfter.IsZero() && file.Entry.NextRetryAfter.After(now) && !file.Disabled && !file.Unavailable {
+		status = "cooling"
+	}
+	if file.Disabled || file.Unavailable {
+		status = "unavailable"
+	}
+	return authBinding{
+		AuthIndex:       file.Index,
+		AuthName:        file.Name,
+		Status:          status,
+		Priority:        file.Priority,
+		Success:         file.Entry.Success,
+		Failed:          file.Entry.Failed,
+		UpdatedAt:       time.Now().UnixMilli(),
+		LastChecked:     lastChecked,
+		InspectionRunID: inspectionRunID,
+		AccountType:     normalizedAccountType(file.Entry.AccountType),
+		ScheduleGroup:   readNestedScheduleGroup(file.Raw),
+		LastInspection:  inspectionAt,
+	}
 }
 
 func normalizedAccountType(value string) string {
@@ -371,6 +375,80 @@ func refreshHealthyAuthDistribution(store *guardianStore) error {
 	return nil
 }
 
+// refreshHealthyAuthSlotDistribution re-points the auth files of one healthy slot after the
+// realtime guard replaced that slot's node. refreshHealthyAuthDistribution reads every auth
+// entry back through the host (one host call per account, thousands of accounts), so it must
+// not run on the response path: it stalled degraded responses for minutes.
+func refreshHealthyAuthSlotDistribution(store *guardianStore, slotID int64) error {
+	store.authDistributionMutex.Lock()
+	defer store.authDistributionMutex.Unlock()
+
+	if slotID <= 0 {
+		return fmt.Errorf("healthy slot id must be positive")
+	}
+	settings, err := store.settings()
+	if err != nil {
+		return fmt.Errorf("read auth distribution settings: %w", err)
+	}
+	if settings.HealthySlotCount < 1 {
+		return fmt.Errorf("healthy slot count must be positive")
+	}
+	slot, found, err := store.primaryHealthySlotNode(slotID)
+	if err != nil {
+		return err
+	}
+	if !found {
+		slot = healthySlotNode{SlotID: slotID}
+	} else if slot.NodeID != 0 && slot.Status != statusHealthy {
+		return fmt.Errorf("healthy auth distribution slot %d node %d is not healthy: %s", slotID, slot.NodeID, slot.Status)
+	}
+	assignment := authAssignment{SlotID: slot.SlotID, NodeID: slot.NodeID, ProxyURL: slot.Address}
+
+	entries, err := listXAIAuthEntries()
+	if err != nil {
+		return err
+	}
+	now := time.Now()
+	applied := make([]authDistributionUpdate, 0, 4)
+	bindings := make([]authBinding, 0, 4)
+	for position, entry := range entries {
+		if int64(position%settings.HealthySlotCount+1) != slotID {
+			continue
+		}
+		file, err := getXAIAuthFile(entry)
+		if err != nil {
+			if rollbackErr := rollbackAuthDistributionFiles(applied); rollbackErr != nil {
+				return fmt.Errorf("load auth %s: %w; rollback failed: %v", entry.AuthIndex, err, rollbackErr)
+			}
+			return fmt.Errorf("load auth %s: %w", entry.AuthIndex, err)
+		}
+		if file.ProxyURL != assignment.ProxyURL {
+			attempts, errSave := saveAndVerifyAuthProxyURL(file, assignment.ProxyURL)
+			if errSave != nil {
+				store.recordAuthProxyWriteFailure(file.Index, errSave, attempts)
+				if rollbackErr := rollbackAuthDistributionFiles(applied); rollbackErr != nil {
+					return fmt.Errorf("save auth distribution %s: %w; rollback failed: %v", file.Index, errSave, rollbackErr)
+				}
+				return fmt.Errorf("save auth distribution %s: %w", file.Index, errSave)
+			}
+			applied = append(applied, authDistributionUpdate{File: file, OriginalProxyURL: file.ProxyURL})
+		}
+		store.recordAuthProxyWriteSuccess(file.Index)
+		binding := authBindingFromFile(file, now, 0, 0)
+		binding.SlotID = assignment.SlotID
+		binding.NodeID = assignment.NodeID
+		binding.ProxyURL = assignment.ProxyURL
+		bindings = append(bindings, binding)
+	}
+	if err := store.upsertAuthBindingsSubset(bindings); err != nil {
+		if rollbackErr := rollbackAuthDistributionFiles(applied); rollbackErr != nil {
+			return fmt.Errorf("sync auth metadata: %w; rollback failed: %v", err, rollbackErr)
+		}
+		return fmt.Errorf("sync auth metadata: %w", err)
+	}
+	return nil
+}
+
 type authDistributionUpdate struct {
 	File             xaiAuthFile
 	OriginalProxyURL string
@@ -414,6 +492,27 @@ ORDER BY healthy_slots.slot_id`)
 		return nil, fmt.Errorf("iterate primary healthy slots: %w", err)
 	}
 	return items, nil
+}
+
+func (store *guardianStore) primaryHealthySlotNode(slotID int64) (healthySlotNode, bool, error) {
+	rows, err := store.database.Query(`SELECT healthy_slots.slot_id, healthy_slots.node_id, COALESCE(nodes.address, ''), COALESCE(nodes.status, '')
+FROM healthy_slots LEFT JOIN nodes ON nodes.id = healthy_slots.node_id AND nodes.scope = 'guard'
+WHERE healthy_slots.slot_kind = 'primary' AND healthy_slots.slot_id = ?`, slotID)
+	if err != nil {
+		return healthySlotNode{}, false, fmt.Errorf("read primary healthy slot %d: %w", slotID, err)
+	}
+	defer rows.Close()
+	if !rows.Next() {
+		if err := rows.Err(); err != nil {
+			return healthySlotNode{}, false, fmt.Errorf("read primary healthy slot %d: %w", slotID, err)
+		}
+		return healthySlotNode{SlotID: slotID}, false, nil
+	}
+	var item healthySlotNode
+	if err := rows.Scan(&item.SlotID, &item.NodeID, &item.Address, &item.Status); err != nil {
+		return healthySlotNode{}, false, fmt.Errorf("scan primary healthy slot %d: %w", slotID, err)
+	}
+	return item, true, nil
 }
 
 func saveAndVerifyAuthProxyURL(file xaiAuthFile, proxyURL string) (int, error) {

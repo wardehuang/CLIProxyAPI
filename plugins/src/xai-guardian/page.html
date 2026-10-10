@@ -580,6 +580,14 @@
             <div class="data-header"><div><strong>降智记录</strong><div class="subline">清除只删除插件本地降智记录，不修改 CPA 认证优先级或认证文件。</div></div></div>
             <div id="guard-error" class="message error hidden"></div>
             <div class="table-wrap" id="guard-table"></div>
+            <div class="pagination">
+              <span id="degradation-page-info">第 1 / 1 页，显示 0 - 0 / 0</span>
+              <div class="pager-controls">
+                <label>每页 <select class="page-size" id="degradation-page-size"><option value="20" selected>20 条/页</option><option value="50">50 条/页</option><option value="100">100 条/页</option></select></label>
+                <button class="pager-button" id="degradation-page-prev" type="button">上一页</button>
+                <button class="pager-button" id="degradation-page-next" type="button">下一页</button>
+              </div>
+            </div>
           </div>
           <div class="logs-panel">
             <div class="panel-header">
@@ -887,7 +895,7 @@ socks5h://proxy.example:1080"></textarea>
       window.parent.postMessage({type:'cpa-plugin-api-request', requestId, endpoint:apiEndpoint, method:'POST', body:payload}, '*');
     });
     const state = {
-      accounts: [], inspection: {run: null, items: [], schedule: null}, inspectionRuns: [], selectedInspectionRunID: 0, inspectionFollowLatest: true, inspectionFilter: 'all', inspectionKeyword: '', inspectionPage: 1, inspectionPageSize: 20, inspectionPollTimer: 0, guardNodes: [], batches: [], batchNodes: [], degradation: [], logs: [], logGroups: {batch_probe: [], keepalive_probe: [], revive_probe: []}, settings: null, keepalive: null,
+      accounts: [], inspection: {run: null, items: [], schedule: null}, inspectionRuns: [], selectedInspectionRunID: 0, inspectionFollowLatest: true, inspectionFilter: 'all', inspectionKeyword: '', inspectionPage: 1, inspectionPageSize: 20, inspectionPollTimer: 0, guardNodes: [], batches: [], batchNodes: [], degradation: {items: [], total: 0, page: 1, pageSize: 20, totalPages: 1}, logs: [], logGroups: {batch_probe: [], keepalive_probe: [], revive_probe: []}, settings: null, keepalive: null,
       summary: null,
       mode: 'accounts', guardTab: 'ips', logCategory: 'realtime_guard', logStatus: 'connected', selectedLogGroupIDs: {batch_probe: '', keepalive_probe: '', revive_probe: ''}, logSearch: '', logMax: 0, selectedBatchID: '', filter: 'all', guardStatusFilter: 'healthy', mask: 'full', page: 1, pageSize: 100,
       keyword: '', expandedAccount: '', accountDegradationProbeAuthIndex: '', guardSortKey: 'latency', guardSortDirection: 'asc', authBindingDetail: null, busy: false, pageRefreshTimer: 0, settingsDirty: false, settingsRevision: 0
@@ -1491,8 +1499,14 @@ socks5h://proxy.example:1080"></textarea>
     }
 
     function renderDegradation() {
-      const rows = state.degradation.map((item) => `<tr><td><div class="account-cell"><strong>${escapeHTML(state.mask === 'masked' ? maskAccount(item.authName) : item.authName)}</strong><span class="subline">${escapeHTML(item.authIndex)}</span></div></td><td class="mono">${escapeHTML(item.authIndex)}</td><td><span class="status-badge status-bad">${item.count}</span></td><td><div class="log-cell"><strong>${escapeHTML(item.lastReason || '—')}</strong><span class="subline">冷却至 ${item.coolingUntil === -1 ? '永久' : formatFullDate(item.coolingUntil)}</span></div></td><td>${formatDate(item.lastSeen)}</td><td><button class="secondary-button" type="button" data-clear-auth="${escapeHTML(item.authIndex)}">清除</button></td></tr>`).join('');
+      const page = state.degradation;
+      const rows = page.items.map((item) => `<tr><td><div class="account-cell"><strong>${escapeHTML(state.mask === 'masked' ? maskAccount(item.authName) : item.authName)}</strong><span class="subline">${escapeHTML(item.authIndex)}</span></div></td><td class="mono">${escapeHTML(item.authIndex)}</td><td><span class="status-badge status-bad">${item.count}</span></td><td><div class="log-cell"><strong>${escapeHTML(item.lastReason || '—')}</strong><span class="subline">冷却至 ${item.coolingUntil === -1 ? '永久' : formatFullDate(item.coolingUntil)}</span></div></td><td>${formatDate(item.lastSeen)}</td><td><button class="secondary-button" type="button" data-clear-auth="${escapeHTML(item.authIndex)}">清除</button></td></tr>`).join('');
       $('guard-table').innerHTML = `<table class="data-table guard-table"><thead><tr><th>账号</th><th>Auth Index</th><th>次数</th><th>最近原因</th><th>最近发生</th><th>操作</th></tr></thead><tbody>${rows || '<tr><td class="empty-cell" colspan="6">没有降智记录。</td></tr>'}</tbody></table>`;
+      const start = page.total ? (page.page - 1) * page.pageSize : 0;
+      $('degradation-page-info').textContent = `第 ${page.page} / ${page.totalPages} 页，显示 ${page.total ? start + 1 : 0} - ${Math.min(start + page.items.length, page.total)} / ${page.total}`;
+      $('degradation-page-prev').disabled = page.page <= 1;
+      $('degradation-page-next').disabled = page.page >= page.totalPages;
+      $('degradation-page-size').value = String(page.pageSize);
     }
 
     const logCategoryLabels = {realtime_guard:'守护日志', general:'通用', batch_probe:'批次探测', keepalive_probe:'保活探测', revive_probe:'复活探测'};
@@ -1637,10 +1651,14 @@ socks5h://proxy.example:1080"></textarea>
     async function refreshGuard() {
       const settingsRevision = state.settingsRevision;
       try {
-        const result = await Promise.all([api('/api/batch-nodes'), api('/api/batches'), api('/api/degradation'), api('/api/settings'), api('/api/keepalive'), api('/api/summary')]);
+        const degradationRequest = api(`/api/degradation?page=${state.degradation.page}&pageSize=${state.degradation.pageSize}`);
+        const result = await Promise.all([api('/api/batch-nodes'), api('/api/batches'), degradationRequest, api('/api/settings'), api('/api/keepalive'), api('/api/summary')]);
         state.guardNodes = result[0];
         state.batches = result[1].items;
         state.degradation = result[2];
+        if (state.degradation.page > state.degradation.totalPages) {
+          state.degradation = await api(`/api/degradation?page=${state.degradation.totalPages}&pageSize=${state.degradation.pageSize}`);
+        }
         if (settingsRevision === state.settingsRevision && !state.settingsDirty) state.settings = result[3];
         state.keepalive = result[4];
         state.summary = result[5];
@@ -1762,6 +1780,15 @@ socks5h://proxy.example:1080"></textarea>
       if (target.id === 'account-degradation-probe-submit') { await submitAccountDegradationProbe(); return; }
       if (target.dataset.guardTab) { state.guardTab = target.dataset.guardTab; renderGuardTab(); return; }
       if (target.dataset.mode) { state.mode = target.dataset.mode; renderMode(); renderGuardTab(); if (state.mode === 'inspection') refreshInspection(); return; }
+      if (target.id === 'degradation-page-prev' || target.id === 'degradation-page-next') {
+        const direction = target.id === 'degradation-page-prev' ? -1 : 1;
+        const nextPage = state.degradation.page + direction;
+        if (nextPage >= 1 && nextPage <= state.degradation.totalPages) {
+          state.degradation = await api(`/api/degradation?page=${nextPage}&pageSize=${state.degradation.pageSize}`);
+          renderDegradation();
+        }
+        return;
+      }
       if (target.dataset.logCategory) { state.logCategory = target.dataset.logCategory; state.logStatus = 'connected'; state.logs = []; renderLogs(); refreshLogs().catch((error) => { setMessage('logs-error', error.message, true); }); return; }
       if (target.dataset.logGroupId) { state.selectedLogGroupIDs[state.logCategory] = target.dataset.logGroupId; state.logs = []; renderLogs(); refreshLogs().catch((error) => { setMessage('logs-error', error.message, true); }); return; }
       if (target.dataset.logStatus) { state.logStatus = target.dataset.logStatus; renderLogs(); refreshLogs().catch((error) => { setMessage('logs-error', error.message, true); }); return; }
@@ -1886,6 +1913,10 @@ socks5h://proxy.example:1080"></textarea>
     $('inspection-page-size').addEventListener('change', (event) => { state.inspectionPageSize = Number(event.target.value); state.inspectionPage = 1; renderInspection(); });
     $('inspection-page-prev').addEventListener('click', () => { if (state.inspectionPage > 1) { state.inspectionPage -= 1; renderInspection(); } });
     $('inspection-page-next').addEventListener('click', () => { state.inspectionPage += 1; renderInspection(); });
+    $('degradation-page-size').addEventListener('change', async (event) => {
+      state.degradation = await api(`/api/degradation?page=1&pageSize=${encodeURIComponent(event.target.value)}`);
+      renderDegradation();
+    });
     $('accounts-table').addEventListener('click', (event) => { const row = event.target.closest('tr[data-account]'); if (row && !event.target.closest('button')) { state.expandedAccount = state.expandedAccount === row.dataset.account ? '' : row.dataset.account; renderAccountTable(); } });
     $('log-search').addEventListener('keydown', (event) => { if (event.key === 'Enter') refreshLogs().catch((error) => { setMessage('logs-error', error.message, true); }); });
     renderMode();

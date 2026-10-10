@@ -575,12 +575,15 @@ func (controller *runtimeController) api(method, path string, query url.Values, 
 		return controller.runKeepaliveNow()
 	}
 	if method == http.MethodGet && path == "/api/degradation" {
-		states, err := store.listDegradations()
-		public := make([]map[string]any, 0, len(states))
-		for _, state := range states {
+		page, _ := strconv.Atoi(query.Get("page"))
+		pageSize, _ := strconv.Atoi(query.Get("pageSize"))
+		states, err := store.listDegradations(page, pageSize)
+		public := make([]map[string]any, 0, len(states.Items))
+		for _, state := range states.Items {
 			public = append(public, publicDegradation(state))
 		}
-		return jsonAPIResult(public, err)
+		states.Items = nil
+		return jsonAPIResult(map[string]any{"items": public, "total": states.Total, "page": states.Page, "pageSize": states.PageSize, "totalPages": states.TotalPages}, err)
 	}
 	if method == http.MethodPost && path == "/api/degradation/clear" {
 		var payload struct {

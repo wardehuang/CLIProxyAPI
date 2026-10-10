@@ -227,6 +227,14 @@ type degradationState struct {
 	CoolingUntil int64  `json:"coolingUntil"`
 }
 
+type degradationPage struct {
+	Items      []degradationState `json:"items"`
+	Total      int                `json:"total"`
+	Page       int                `json:"page"`
+	PageSize   int                `json:"pageSize"`
+	TotalPages int                `json:"totalPages"`
+}
+
 type pluginLog struct {
 	ID           int64  `json:"id"`
 	CreatedAt    int64  `json:"createdAt"`
@@ -1615,6 +1623,20 @@ ORDER BY nodes.id DESC`, batchID)
 }
 
 func (store *guardianStore) upsertAuthBindings(bindings []authBinding) error {
+	return store.upsertAuthBindingsWith(bindings, true)
+}
+
+// upsertAuthBindingsSubset saves part of the binding snapshot without pruning rows that are
+// absent from the list. The realtime guard re-points a single healthy slot at a time, so
+// pruning the table from a partial snapshot would drop every other account's binding.
+func (store *guardianStore) upsertAuthBindingsSubset(bindings []authBinding) error {
+	if len(bindings) == 0 {
+		return nil
+	}
+	return store.upsertAuthBindingsWith(bindings, false)
+}
+
+func (store *guardianStore) upsertAuthBindingsWith(bindings []authBinding, pruneStale bool) error {
 	tx, err := store.database.Begin()
 	if err != nil {
 		return fmt.Errorf("begin auth binding update: %w", err)
@@ -1633,7 +1655,7 @@ ON CONFLICT(auth_index) DO UPDATE SET auth_name=excluded.auth_name, slot_id=CASE
 			return fmt.Errorf("save auth binding %s: %w", binding.AuthIndex, err)
 		}
 	}
-	if len(bindings) > 0 {
+	if pruneStale && len(bindings) > 0 {
 		placeholders := strings.TrimRight(strings.Repeat("?,", len(bindings)), ",")
 		args := make([]any, 0, len(bindings))
 		for _, binding := range bindings {
@@ -1856,21 +1878,34 @@ func (store *guardianStore) clearDegradationIfRecovered(authIndex string, priori
 	return deleted == 1, nil
 }
 
-func (store *guardianStore) listDegradations() ([]degradationState, error) {
-	rows, err := store.database.Query(`SELECT auth_index, auth_name, count, last_reason, last_request_id, last_seen, cooling_until FROM degradation_states ORDER BY count DESC, last_seen DESC`)
+func (store *guardianStore) listDegradations(page, pageSize int) (degradationPage, error) {
+	if page < 1 {
+		page = 1
+	}
+	if pageSize != 20 && pageSize != 50 && pageSize != 100 {
+		pageSize = 20
+	}
+	var total int
+	if err := store.database.QueryRow(`SELECT COUNT(*) FROM degradation_states`).Scan(&total); err != nil {
+		return degradationPage{}, fmt.Errorf("count degradation states: %w", err)
+	}
+	rows, err := store.database.Query(`SELECT auth_index, auth_name, count, last_reason, last_request_id, last_seen, cooling_until FROM degradation_states ORDER BY count DESC, last_seen DESC LIMIT ? OFFSET ?`, pageSize, (page-1)*pageSize)
 	if err != nil {
-		return nil, fmt.Errorf("list degradation states: %w", err)
+		return degradationPage{}, fmt.Errorf("list degradation states: %w", err)
 	}
 	defer rows.Close()
 	items := make([]degradationState, 0)
 	for rows.Next() {
 		var item degradationState
 		if err := rows.Scan(&item.AuthIndex, &item.AuthName, &item.Count, &item.LastReason, &item.LastRequest, &item.LastSeen, &item.CoolingUntil); err != nil {
-			return nil, fmt.Errorf("scan degradation state: %w", err)
+			return degradationPage{}, fmt.Errorf("scan degradation state: %w", err)
 		}
 		items = append(items, item)
 	}
-	return items, rows.Err()
+	if err := rows.Err(); err != nil {
+		return degradationPage{}, fmt.Errorf("read degradation states: %w", err)
+	}
+	return degradationPage{Items: items, Total: total, Page: page, PageSize: pageSize, TotalPages: max(1, (total+pageSize-1)/pageSize)}, nil
 }
 
 func (store *guardianStore) summary() (map[string]any, error) {

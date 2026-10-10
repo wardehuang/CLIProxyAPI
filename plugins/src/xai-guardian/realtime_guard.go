@@ -123,12 +123,17 @@ func completeXAIStream(_ context.Context, completion pluginapi.XAIStreamCompleti
 		return pluginapi.XAIStreamCompletionResponse{Action: pluginapi.XAIStreamActionFail, Reason: "state_write_failed", StatusCode: http.StatusInternalServerError}, err
 	}
 	if strings.TrimSpace(completion.ProxyURL) != "" {
-		if err := replaceRealtimeGuardSlot(store, completion.ProxyURL, reason); err != nil {
-			_ = store.appendLogWithRequestLogID(logLevelWarn, "guard.slot_replacement_failed", "实时守护候选槽位替换失败", sanitizeLogText(err.Error()), completion.TraceID)
+		affectedSlotID, errReplace := replaceRealtimeGuardSlot(store, completion.ProxyURL, reason)
+		if errReplace != nil {
+			_ = store.appendLogWithRequestLogID(logLevelWarn, "guard.slot_replacement_failed", "实时守护候选槽位替换失败", sanitizeLogText(errReplace.Error()), completion.TraceID)
 		}
-	}
-	if err := refreshHealthyAuthDistribution(store); err != nil {
-		_ = store.appendLogWithRequestLogID(logLevelError, "auth.distribution_failed", "实时守护完成后刷新 auth 分配失败", sanitizeLogText(err.Error()), completion.TraceID)
+		// Only the replaced slot's accounts need re-pointing: the full-pool refresh walks every
+		// auth entry through the host and stalled the degraded response for minutes.
+		if affectedSlotID > 0 {
+			if err := refreshHealthyAuthSlotDistribution(store, affectedSlotID); err != nil {
+				_ = store.appendLogWithRequestLogID(logLevelError, "auth.distribution_failed", "实时守护完成后刷新 auth 分配失败", sanitizeLogText(err.Error()), completion.TraceID)
+			}
+		}
 	}
 	detail := fmt.Sprintf("count=%d priority=%d cooling_until=%d count_advanced=%t waiting_for_inspection=%t permanent=%t summary_chars=%d encrypted_bytes=%d output_tokens=%d reasoning_tokens=%d",
 		transition.State.Count, transition.Priority, transition.State.CoolingUntil, transition.CountAdvanced, transition.WaitingForInspection,
@@ -412,10 +417,10 @@ func applyRealtimeHealthy(store *guardianStore, authIndex string) (bool, error) 
 
 var errRealtimeGuardCandidateUnavailable = errors.New("realtime guard candidate is unavailable")
 
-func replaceRealtimeGuardSlot(store *guardianStore, proxyURL, reason string) error {
+func replaceRealtimeGuardSlot(store *guardianStore, proxyURL, reason string) (int64, error) {
 	tx, err := store.database.Begin()
 	if err != nil {
-		return fmt.Errorf("begin realtime guard slot replacement: %w", err)
+		return 0, fmt.Errorf("begin realtime guard slot replacement: %w", err)
 	}
 	defer tx.Rollback()
 	now := time.Now().UnixMilli()
@@ -426,9 +431,9 @@ INNER JOIN nodes ON nodes.id = healthy_slots.node_id
 WHERE healthy_slots.slot_kind = 'primary' AND nodes.scope = 'guard' AND nodes.status = ? AND nodes.address = ?
 ORDER BY healthy_slots.slot_id LIMIT 1`, statusHealthy, proxyURL).Scan(&primarySlotID, &sourceNodeID); err != nil {
 		if err == sql.ErrNoRows {
-			return fmt.Errorf("realtime guard source slot is unavailable")
+			return 0, fmt.Errorf("realtime guard source slot is unavailable")
 		}
-		return fmt.Errorf("read realtime guard source slot: %w", err)
+		return 0, fmt.Errorf("read realtime guard source slot: %w", err)
 	}
 	var candidateSlotID, candidateNodeID int64
 	if err := tx.QueryRow(`SELECT healthy_slots.slot_id, healthy_slots.node_id
@@ -437,81 +442,82 @@ INNER JOIN nodes ON nodes.id = healthy_slots.node_id
 WHERE healthy_slots.slot_kind = 'candidate' AND nodes.scope = 'guard' AND nodes.status = ?
 ORDER BY nodes.last_checked DESC, nodes.id DESC LIMIT 1`, statusHealthyCandidate).Scan(&candidateSlotID, &candidateNodeID); err != nil {
 		if err != sql.ErrNoRows {
-			return fmt.Errorf("read realtime guard candidate slot: %w", err)
+			return 0, fmt.Errorf("read realtime guard candidate slot: %w", err)
 		}
 		released, err := tx.Exec(`UPDATE nodes SET status = ?, last_error = ? WHERE id = ? AND scope = 'guard' AND status = ?`, statusCooldown, sanitizeLogText(reason), sourceNodeID, statusHealthy)
 		if err != nil {
-			return fmt.Errorf("release realtime guard source node: %w", err)
+			return 0, fmt.Errorf("release realtime guard source node: %w", err)
 		}
 		releasedCount, err := released.RowsAffected()
 		if err != nil {
-			return fmt.Errorf("read realtime guard source release result: %w", err)
+			return 0, fmt.Errorf("read realtime guard source release result: %w", err)
 		}
 		if releasedCount != 1 {
-			return fmt.Errorf("realtime guard source node %d was not healthy", sourceNodeID)
+			return 0, fmt.Errorf("realtime guard source node %d was not healthy", sourceNodeID)
 		}
 		if _, err := tx.Exec(`UPDATE auth_bindings SET slot_id = 0, node_id = 0, proxy_url = '', updated_at = ? WHERE node_id = ?`, now, sourceNodeID); err != nil {
-			return fmt.Errorf("clear realtime guard source auth bindings: %w", err)
+			return 0, fmt.Errorf("clear realtime guard source auth bindings: %w", err)
 		}
 		if _, err := tx.Exec(`DELETE FROM healthy_slots WHERE slot_id = ? AND node_id = ?`, primarySlotID, sourceNodeID); err != nil {
-			return fmt.Errorf("clear realtime guard source slot: %w", err)
+			return 0, fmt.Errorf("clear realtime guard source slot: %w", err)
 		}
 		if err := tx.Commit(); err != nil {
-			return fmt.Errorf("commit realtime guard source release: %w", err)
+			return 0, fmt.Errorf("commit realtime guard source release: %w", err)
 		}
-		return errRealtimeGuardCandidateUnavailable
+		// The slot is gone: its accounts must have their proxy cleared too, so report it.
+		return primarySlotID, errRealtimeGuardCandidateUnavailable
 	}
 	released, err := tx.Exec(`UPDATE nodes SET status = ?, last_error = ? WHERE id = ? AND scope = 'guard' AND status = ?`, statusCooldown, sanitizeLogText(reason), sourceNodeID, statusHealthy)
 	if err != nil {
-		return fmt.Errorf("release realtime guard source node: %w", err)
+		return 0, fmt.Errorf("release realtime guard source node: %w", err)
 	}
 	releasedCount, err := released.RowsAffected()
 	if err != nil {
-		return fmt.Errorf("read realtime guard source release result: %w", err)
+		return 0, fmt.Errorf("read realtime guard source release result: %w", err)
 	}
 	if releasedCount != 1 {
-		return fmt.Errorf("realtime guard source node %d was not healthy", sourceNodeID)
+		return 0, fmt.Errorf("realtime guard source node %d was not healthy", sourceNodeID)
 	}
 	if _, err := tx.Exec(`UPDATE auth_bindings SET slot_id = 0, node_id = 0, proxy_url = '', updated_at = ? WHERE node_id = ?`, now, sourceNodeID); err != nil {
-		return fmt.Errorf("clear realtime guard source auth bindings: %w", err)
+		return 0, fmt.Errorf("clear realtime guard source auth bindings: %w", err)
 	}
 	clearedCandidate, err := tx.Exec(`DELETE FROM healthy_slots WHERE slot_id = ? AND node_id = ?`, candidateSlotID, candidateNodeID)
 	if err != nil {
-		return fmt.Errorf("clear realtime guard candidate slot: %w", err)
+		return 0, fmt.Errorf("clear realtime guard candidate slot: %w", err)
 	}
 	clearedCandidateCount, err := clearedCandidate.RowsAffected()
 	if err != nil {
-		return fmt.Errorf("read realtime guard candidate slot result: %w", err)
+		return 0, fmt.Errorf("read realtime guard candidate slot result: %w", err)
 	}
 	if clearedCandidateCount != 1 {
-		return fmt.Errorf("realtime guard candidate slot %d was not available", candidateSlotID)
+		return 0, fmt.Errorf("realtime guard candidate slot %d was not available", candidateSlotID)
 	}
 	promoted, err := tx.Exec(`UPDATE nodes SET status = ?, last_error = '' WHERE id = ? AND scope = 'guard' AND status = ?`, statusHealthy, candidateNodeID, statusHealthyCandidate)
 	if err != nil {
-		return fmt.Errorf("promote realtime guard candidate: %w", err)
+		return 0, fmt.Errorf("promote realtime guard candidate: %w", err)
 	}
 	promotedCount, err := promoted.RowsAffected()
 	if err != nil {
-		return fmt.Errorf("read realtime guard candidate promotion result: %w", err)
+		return 0, fmt.Errorf("read realtime guard candidate promotion result: %w", err)
 	}
 	if promotedCount != 1 {
-		return fmt.Errorf("realtime guard candidate node %d was not healthy_candidate", candidateNodeID)
+		return 0, fmt.Errorf("realtime guard candidate node %d was not healthy_candidate", candidateNodeID)
 	}
 	replaced, err := tx.Exec(`UPDATE healthy_slots SET node_id = ?, refreshed_at = ? WHERE slot_id = ? AND node_id = ? AND slot_kind = 'primary'`, candidateNodeID, now, primarySlotID, sourceNodeID)
 	if err != nil {
-		return fmt.Errorf("replace realtime guard primary slot: %w", err)
+		return 0, fmt.Errorf("replace realtime guard primary slot: %w", err)
 	}
 	replacedCount, err := replaced.RowsAffected()
 	if err != nil {
-		return fmt.Errorf("read realtime guard primary replacement result: %w", err)
+		return 0, fmt.Errorf("read realtime guard primary replacement result: %w", err)
 	}
 	if replacedCount != 1 {
-		return fmt.Errorf("realtime guard primary slot %d was not occupied by source node %d", primarySlotID, sourceNodeID)
+		return 0, fmt.Errorf("realtime guard primary slot %d was not occupied by source node %d", primarySlotID, sourceNodeID)
 	}
 	if err := tx.Commit(); err != nil {
-		return fmt.Errorf("commit realtime guard slot replacement: %w", err)
+		return 0, fmt.Errorf("commit realtime guard slot replacement: %w", err)
 	}
-	return nil
+	return primarySlotID, nil
 }
 
 func isXAIProvider(provider string) bool {

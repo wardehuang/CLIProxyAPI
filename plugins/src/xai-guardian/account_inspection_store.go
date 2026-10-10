@@ -218,7 +218,33 @@ func (store *guardianStore) syncLatestRealtimeAccountInspection(authIndex string
 		return fmt.Errorf("read latest realtime account inspection update count: %w", err)
 	}
 	if rows != 1 {
-		return fmt.Errorf("latest account inspection run %d contains %d rows for auth %q", runID, rows, authIndex)
+		var fileName, displayAccount string
+		if err := tx.QueryRow(`SELECT file_name, display_account FROM account_inspection_results WHERE run_id = ? AND auth_index = ? ORDER BY id DESC LIMIT 1`, runID, authIndex).Scan(&fileName, &displayAccount); err == sql.ErrNoRows {
+			entry, entryErr := findXAIAuthEntry(authIndex)
+			if entryErr != nil {
+				return fmt.Errorf("find realtime auth %q for latest account inspection: %w", authIndex, entryErr)
+			}
+			fileName = firstNonEmpty(entry.Name, entry.AuthIndex)
+			displayAccount = firstNonEmpty(entry.Email, entry.Account, fileName)
+		} else if err != nil {
+			return fmt.Errorf("read realtime auth %q from latest account inspection: %w", authIndex, err)
+		}
+		_, insertErr := tx.Exec(`INSERT INTO account_inspection_results(
+			run_id, account_key, file_name, display_account, auth_index, provider, disabled, probed,
+			status, state, action, action_reason, action_status, executed_action, is_quota,
+			error_kind, error_detail, priority, recover_at_ms, created_at_ms
+		)
+		SELECT id, ?, ?, ?, ?, 'xai', 0, 0, ?, 'failed', 'priority_adjustment', ?, 'success',
+			'priority_adjustment', ?, ?, ?, ?, ?, ?
+		FROM account_inspection_runs WHERE id = ?`,
+			fileName, fileName, displayAccount, authIndex, status, reason, isQuota, errorKind, reason,
+			priority, recoverAtMS, nowMillis(), runID)
+		if insertErr != nil {
+			return fmt.Errorf("insert realtime account inspection status: %w", insertErr)
+		}
+		if _, err := tx.Exec(`DELETE FROM account_inspection_results WHERE run_id = ? AND auth_index = ? AND id NOT IN (SELECT id FROM account_inspection_results WHERE run_id = ? AND auth_index = ? ORDER BY id DESC LIMIT 1)`, runID, authIndex, runID, authIndex); err != nil {
+			return fmt.Errorf("remove duplicate realtime inspection rows for auth %q: %w", authIndex, err)
+		}
 	}
 	if _, err := tx.Exec(`UPDATE account_inspection_runs SET
 		processed = (SELECT COUNT(*) FROM account_inspection_results WHERE run_id = ?),
