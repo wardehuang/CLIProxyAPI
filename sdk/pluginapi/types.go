@@ -1122,9 +1122,10 @@ const (
 type XAIStreamRetryMode string
 
 const (
-	XAIStreamRetryModeReloadSelectedAuth           XAIStreamRetryMode = "reload_selected_auth"
-	XAIStreamRetryModeReloadAndExcludeSelectedAuth XAIStreamRetryMode = "reload_and_exclude_selected_auth"
-	XAIStreamRetryModeExcludeSelectedAuth          XAIStreamRetryMode = "exclude_selected_auth"
+	XAIStreamRetryModeReloadSelectedAuth                        XAIStreamRetryMode = "reload_selected_auth"
+	XAIStreamRetryModeReloadAndExcludeSelectedAuth              XAIStreamRetryMode = "reload_and_exclude_selected_auth"
+	XAIStreamRetryModeExcludeSelectedAuth                       XAIStreamRetryMode = "exclude_selected_auth"
+	XAIStreamRetryModeExcludeSelectedAuthWithSharedAccountLimit XAIStreamRetryMode = "exclude_selected_auth_with_shared_account_limit"
 )
 
 // XAIStreamPrepareRequest describes an xAI stream before the upstream request starts.

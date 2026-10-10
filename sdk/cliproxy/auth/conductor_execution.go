@@ -252,6 +252,13 @@ func (m *Manager) ExecuteStream(ctx context.Context, providers []string, req cli
 	}
 
 	defaultRequestRetry, maxRetryCredentials, maxWait := m.retrySettings()
+	const xAISharedAccountAttemptLimit = 5
+	sharedAccountAttemptLimit := xAISharedAccountAttemptLimit
+	if maxRetryCredentials > 0 && maxRetryCredentials < sharedAccountAttemptLimit {
+		sharedAccountAttemptLimit = maxRetryCredentials
+	}
+	sharedXAIAuthIDs := make(map[string]struct{})
+	lastSelectedAuthID := ""
 
 	var lastErr error
 	var preferredUpstreamErr error
@@ -261,20 +268,50 @@ func (m *Manager) ExecuteStream(ctx context.Context, providers []string, req cli
 	retryRoundPending := false
 	retryRoundWaited := false
 	for {
+		sharedAttemptsBeforeRound := len(sharedXAIAuthIDs)
 		roundAttempted := make(map[string]struct{})
 		roundOpts := withAttemptedAuthTracker(opts, roundAttempted)
-		result, errStream := m.executeStreamMixedOnce(ctx, normalized, req, roundOpts, maxRetryCredentials, &homeRetryLimit, attempt, defaultRequestRetry)
+		result, errStream := m.executeStreamMixedOnceWithXAISharedAccountRetry(ctx, normalized, req, roundOpts, maxRetryCredentials, &homeRetryLimit, attempt, defaultRequestRetry, sharedXAIAuthIDs, sharedAccountAttemptLimit, &lastSelectedAuthID)
 		if errStream == nil {
 			return result, nil
 		}
 		// BEGIN xAI Guardian core extension: feed xAI-only auth exclusions into
 		// the existing retry-round selector.
-		if guardErr, ok := errors.AsType[*cliproxyexecutor.XAIStreamGuardError](errStream); ok && guardErr != nil && guardErr.ExcludesSelectedAuth() {
+		guardErr, hasGuardErr := errors.AsType[*cliproxyexecutor.XAIStreamGuardError](errStream)
+		if hasGuardErr && guardErr != nil && guardErr.ExcludesSelectedAuth() {
 			opts = withXAIExcludedAuthID(opts, guardErr.AuthID)
+			if guardErr.UsesSharedAccountRetryLimit() {
+				sharedXAIAuthIDs[guardErr.AuthID] = struct{}{}
+				opts = withSelectedAuthID(opts, guardErr.AuthID)
+			}
+		}
+		if len(sharedXAIAuthIDs) > 0 && lastSelectedAuthID != "" {
+			opts = withSelectedAuthID(opts, lastSelectedAuthID)
 		}
 		// END xAI Guardian core extension.
 		if hasUpstreamExecutionAttempt(errStream) {
 			preferredUpstreamErr = errStream
+		}
+		if len(sharedXAIAuthIDs) > 0 {
+			if isRequestTerminatedError(errStream) || isRequestStopError(errStream) {
+				return nil, unwrapExecutionBoundaryError(errStream)
+			}
+			for authID := range roundAttempted {
+				opts = withXAIExcludedAuthID(opts, authID)
+			}
+			if lastSelectedAuthID != "" {
+				opts = withSelectedAuthID(opts, lastSelectedAuthID)
+			}
+			if ctx != nil && ctx.Err() != nil {
+				return nil, ctx.Err()
+			}
+			if len(sharedXAIAuthIDs) >= sharedAccountAttemptLimit || len(sharedXAIAuthIDs) == sharedAttemptsBeforeRound {
+				return nil, unwrapExecutionBoundaryError(errStream)
+			}
+			lastErr = errStream
+			retryRoundPending = false
+			retryRoundWaited = false
+			continue
 		}
 		if m.HomeEnabled() && retryRoundPending {
 			if wait, okWait := pendingHomeRetryRoundDelay(errStream, maxWait, &homeRetryLimit, pinnedAuthIDFromMetadata(opts.Metadata) == ""); okWait && m.homeRetryAllowed(attempt-1, homeRetryLimit) {
@@ -913,6 +950,12 @@ func (m *Manager) executeCountMixedOnce(ctx context.Context, providers []string,
 }
 
 func (m *Manager) executeStreamMixedOnce(ctx context.Context, providers []string, req cliproxyexecutor.Request, opts cliproxyexecutor.Options, maxRetryCredentials int, homeRetryLimit *int, retryRound int, defaultRequestRetry int) (*cliproxyexecutor.StreamResult, error) {
+	sharedXAIAuthIDs := make(map[string]struct{})
+	lastSelectedAuthID := ""
+	return m.executeStreamMixedOnceWithXAISharedAccountRetry(ctx, providers, req, opts, maxRetryCredentials, homeRetryLimit, retryRound, defaultRequestRetry, sharedXAIAuthIDs, 0, &lastSelectedAuthID)
+}
+
+func (m *Manager) executeStreamMixedOnceWithXAISharedAccountRetry(ctx context.Context, providers []string, req cliproxyexecutor.Request, opts cliproxyexecutor.Options, maxRetryCredentials int, homeRetryLimit *int, retryRound int, defaultRequestRetry int, sharedXAIAuthIDs map[string]struct{}, sharedAccountAttemptLimit int, lastSelectedAuthID *string) (*cliproxyexecutor.StreamResult, error) {
 	if len(providers) == 0 {
 		return nil, &Error{Code: "provider_not_found", Message: "no provider supplied"}
 	}
@@ -928,6 +971,10 @@ func (m *Manager) executeStreamMixedOnce(ctx context.Context, providers []string
 	homeExcludedAuthIDs := make(map[string]struct{})
 	if hasXAIProvider(providers) {
 		for _, authID := range xAIExcludedAuthIDs(opts.Metadata) {
+			tried[authID] = struct{}{}
+			homeExcludedAuthIDs[authID] = struct{}{}
+		}
+		for authID := range sharedXAIAuthIDs {
 			tried[authID] = struct{}{}
 			homeExcludedAuthIDs[authID] = struct{}{}
 		}
@@ -947,6 +994,12 @@ func (m *Manager) executeStreamMixedOnce(ctx context.Context, providers []string
 	var roundTiming homeRetryRoundTiming
 	for {
 		allowSameAuthRetry := homeMode && homeSameAuthRetryPending && lastHomeAuthID != "" && homeSameAuthRetries[lastHomeAuthID] == 0
+		if len(sharedXAIAuthIDs) > 0 && sharedAccountAttemptLimit > 0 && len(sharedXAIAuthIDs) >= sharedAccountAttemptLimit {
+			if lastErr != nil {
+				return nil, preferredExecutionAttemptError(lastErr, upstreamErr)
+			}
+			return nil, &Error{Code: "auth_not_found", Message: "no auth available"}
+		}
 		if maxRetryCredentials > 0 && len(attempted) >= maxRetryCredentials && !allowSameAuthRetry {
 			if lastErr != nil {
 				preferredErr := preferredExecutionAttemptError(lastErr, upstreamErr)
@@ -1054,6 +1107,7 @@ func (m *Manager) executeStreamMixedOnce(ctx context.Context, providers []string
 			}
 		}
 		publishSelectedAuthMetadata(opts.Metadata, auth)
+		*lastSelectedAuthID = auth.ID
 
 		tried[auth.ID] = struct{}{}
 		execCtx := ctx
@@ -1090,6 +1144,9 @@ func (m *Manager) executeStreamMixedOnce(ctx context.Context, providers []string
 			continue
 		}
 		attempted[auth.ID] = struct{}{}
+		if len(sharedXAIAuthIDs) > 0 && strings.EqualFold(strings.TrimSpace(provider), "xai") {
+			sharedXAIAuthIDs[auth.ID] = struct{}{}
+		}
 		var errPrepare error
 		if selection != nil {
 			auth, errPrepare = m.prepareHomeRequestAuth(execCtx, executor, selection)
@@ -1208,6 +1265,10 @@ func (m *Manager) executeStreamMixedOnce(ctx context.Context, providers []string
 			}
 			if errCtx := execCtx.Err(); errCtx != nil && ctx != nil && ctx.Err() != nil {
 				return nil, errCtx
+			}
+			if guardErr, ok := errors.AsType[*cliproxyexecutor.XAIStreamGuardError](errStream); ok && guardErr != nil && guardErr.UsesSharedAccountRetryLimit() && !homeMode {
+				sharedXAIAuthIDs[guardErr.AuthID] = struct{}{}
+				return nil, errStream
 			}
 			action, okAction := matchRequestScopedErrorAction(auth, errStream, m.runtimeConfigSnapshot())
 			if okAction {

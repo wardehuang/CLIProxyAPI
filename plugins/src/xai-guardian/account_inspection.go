@@ -261,6 +261,21 @@ func inspectXAIAccount(ctx context.Context, store *guardianStore, runID int64, e
 		}
 		return result, false, nil
 	}
+	if priority != nil && *priority == accountInspectionPriorityQuota {
+		adjustment, hasAdjustment, err := store.accountInspectionPriorityAdjustment(entry.AuthIndex)
+		if err != nil {
+			return result, false, err
+		}
+		if hasAdjustment && adjustment.AdjustedPriority == accountInspectionPriorityQuota && adjustment.RecoverAtMS > now.UnixMilli() {
+			result = preserveAccountInspectionResult(result, previous, hasPrevious, fmt.Sprintf("Quota cooldown active; inspection skipped until %s", time.UnixMilli(adjustment.RecoverAtMS).UTC().Format(time.RFC3339)))
+			result.Status = "quota_exhausted"
+			result.IsQuota = true
+			result.ErrorKind = "quota_exhausted"
+			result.RecoverAtMS = adjustment.RecoverAtMS
+			result.ActionStatus = "skipped"
+			return result, false, nil
+		}
+	}
 	if realtimeCooling {
 		result = preserveAccountInspectionResult(result, previous, hasPrevious, fmt.Sprintf("实时降智冷却中，跳过巡检至 %s", time.UnixMilli(coolingUntil).UTC().Format(time.RFC3339)))
 		if priority != nil && *priority == accountInspectionPrioritySSOExpired {
@@ -268,19 +283,6 @@ func inspectXAIAccount(ctx context.Context, store *guardianStore, runID int64, e
 			result.ErrorDetail = previous.ErrorDetail
 			result.ActionReason = "SSO 已失效，priority 为 -7，需重新登录获取新的 SSO，跳过巡检"
 		}
-		return result, false, nil
-	}
-	adjustment, hasAdjustment, err := store.accountInspectionPriorityAdjustment(entry.AuthIndex)
-	if err != nil {
-		return result, false, err
-	}
-	if priority != nil && *priority == accountInspectionPriorityQuota && hasAdjustment && adjustment.AdjustedPriority == accountInspectionPriorityQuota && adjustment.RecoverAtMS > now.UnixMilli() {
-		result = preserveAccountInspectionResult(result, previous, hasPrevious, fmt.Sprintf("额度耗尽冷却中，跳过巡检至 %s", time.UnixMilli(adjustment.RecoverAtMS).UTC().Format(time.RFC3339)))
-		result.Status = "quota_exhausted"
-		result.IsQuota = true
-		result.ErrorKind = "quota_exhausted"
-		result.RecoverAtMS = adjustment.RecoverAtMS
-		result.ActionStatus = "skipped"
 		return result, false, nil
 	}
 

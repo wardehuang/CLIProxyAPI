@@ -118,9 +118,10 @@ const (
 	XAIStreamActionRetry = "retry"
 	XAIStreamActionFail  = "fail"
 
-	XAIStreamRetryModeReloadSelectedAuth           = "reload_selected_auth"
-	XAIStreamRetryModeReloadAndExcludeSelectedAuth = "reload_and_exclude_selected_auth"
-	XAIStreamRetryModeExcludeSelectedAuth          = "exclude_selected_auth"
+	XAIStreamRetryModeReloadSelectedAuth                        = "reload_selected_auth"
+	XAIStreamRetryModeReloadAndExcludeSelectedAuth              = "reload_and_exclude_selected_auth"
+	XAIStreamRetryModeExcludeSelectedAuth                       = "exclude_selected_auth"
+	XAIStreamRetryModeExcludeSelectedAuthWithSharedAccountLimit = "exclude_selected_auth_with_shared_account_limit"
 )
 
 // XAIStreamPrepareRequest describes an xAI attempt before upstream send.
@@ -447,6 +448,10 @@ func (e *XAIStreamGuardError) IsCredentialScoped() bool {
 
 func (e *XAIStreamGuardError) ExcludesSelectedAuth() bool {
 	return e != nil && e.Action == "retry" && e.RetryMode != XAIStreamRetryModeReloadSelectedAuth
+}
+
+func (e *XAIStreamGuardError) UsesSharedAccountRetryLimit() bool {
+	return e != nil && e.Action == "retry" && e.RetryMode == XAIStreamRetryModeExcludeSelectedAuthWithSharedAccountLimit
 }
 
 // END xAI Guardian core extension.

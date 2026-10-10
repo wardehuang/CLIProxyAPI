@@ -53,6 +53,13 @@ func withXAIExcludedAuthID(opts cliproxyexecutor.Options, authID string) cliprox
 	return opts
 }
 
+func withSelectedAuthID(opts cliproxyexecutor.Options, authID string) cliproxyexecutor.Options {
+	metadata := cloneRequestMetadata(opts.Metadata)
+	metadata[cliproxyexecutor.SelectedAuthMetadataKey] = strings.TrimSpace(authID)
+	opts.Metadata = metadata
+	return opts
+}
+
 // END xAI Guardian core extension.
 
 func discardStreamChunks(ch <-chan cliproxyexecutor.StreamChunk) {

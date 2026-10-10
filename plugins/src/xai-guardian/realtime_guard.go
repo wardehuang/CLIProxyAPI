@@ -136,7 +136,7 @@ func completeXAIStream(_ context.Context, completion pluginapi.XAIStreamCompleti
 	_ = store.appendLog(logLevelWarn, "guard.degraded", "xAI 响应命中降智守护", reason+" "+detail)
 	return pluginapi.XAIStreamCompletionResponse{
 		Action:     pluginapi.XAIStreamActionRetry,
-		RetryMode:  pluginapi.XAIStreamRetryModeReloadAndExcludeSelectedAuth,
+		RetryMode:  pluginapi.XAIStreamRetryModeExcludeSelectedAuthWithSharedAccountLimit,
 		Reason:     reason,
 		StatusCode: http.StatusBadGateway,
 	}, nil
@@ -524,7 +524,18 @@ func streamFailureDecision(store *guardianStore, completion pluginapi.XAIStreamC
 	reason := classifyStreamFailure(completion)
 	guardReason := realtimeGuardFailureReason(completion)
 	if status == http.StatusTooManyRequests {
-		_ = store.appendLog(logLevelError, "guard.rate_limited", "xAI 上游返回限流，拒绝在守护层换号", reason)
+		code, message := extractXAIAccountError(completion.Body)
+		if isXAIAccountQuotaExhausted(code, message) {
+			recoveryAt, err := applyRealtimeQuotaCooldown(store, completion)
+			if err != nil {
+				_ = store.appendLog(logLevelError, "guard.quota_cooldown_failed", "xAI quota cooldown update failed; refusing account switch", sanitizeLogText(err.Error()))
+				return pluginapi.XAIStreamCompletionResponse{Action: pluginapi.XAIStreamActionFail, Reason: "quota_cooldown_update_failed", StatusCode: http.StatusInternalServerError, Error: sanitizeLogText(err.Error())}, nil
+			}
+			detail := fmt.Sprintf("auth_index=%q priority=%d recover_at_ms=%d marker=%q", strings.TrimSpace(completion.AuthIndex), accountInspectionPriorityQuota, recoveryAt, firstNonEmpty(code, message))
+			_ = store.appendLog(logLevelWarn, "guard.quota_exhausted", "xAI account quota exhausted; cooldown applied before switching", sanitizeLogText(detail))
+			return pluginapi.XAIStreamCompletionResponse{Action: pluginapi.XAIStreamActionRetry, RetryMode: pluginapi.XAIStreamRetryModeExcludeSelectedAuthWithSharedAccountLimit, Reason: "quota_exhausted", StatusCode: status}, nil
+		}
+		_ = store.appendLog(logLevelError, "guard.rate_limited", "xAI 上游返回非额度耗尽限流，拒绝在守护层换号", reason)
 		return pluginapi.XAIStreamCompletionResponse{Action: pluginapi.XAIStreamActionFail, Reason: guardReason, StatusCode: status}, nil
 	}
 	_ = store.appendLog(logLevelWarn, "guard.stream_failed", "xAI 流请求失败，交由核心重试链处理", reason)
@@ -533,6 +544,28 @@ func streamFailureDecision(store *guardianStore, completion pluginapi.XAIStreamC
 		mode = pluginapi.XAIStreamRetryModeReloadAndExcludeSelectedAuth
 	}
 	return pluginapi.XAIStreamCompletionResponse{Action: pluginapi.XAIStreamActionRetry, RetryMode: mode, Reason: guardReason, StatusCode: status}, nil
+}
+
+func applyRealtimeQuotaCooldown(store *guardianStore, completion pluginapi.XAIStreamCompletionRequest) (int64, error) {
+	authIndex := strings.TrimSpace(completion.AuthIndex)
+	if authIndex == "" {
+		return 0, fmt.Errorf("auth_index is required for quota cooldown")
+	}
+	store.realtimeDegradationLock.Lock()
+	defer store.realtimeDegradationLock.Unlock()
+	currentPriority, err := getXAIAuthPriority(authIndex, 0)
+	if err != nil {
+		return 0, fmt.Errorf("read auth priority for quota cooldown: %w", err)
+	}
+	now := time.Now()
+	response := xaiInspectionResponse{statusCode: completion.StatusCode, header: completion.ResponseHeaders, body: completion.Body}
+	recoveryAt := resolveInspectionQuotaRecovery(extractXAIAccountQuotaRecovery(response), now)
+	result := accountInspectionResult{AuthIndex: authIndex, FileName: firstNonEmpty(completion.AuthFileName, authIndex)}
+	_, _, recoveryAt = lowerAccountInspectionPriority(context.Background(), store, &result, accountInspectionIntPointer(currentPriority), accountInspectionPriorityQuota, recoveryAt)
+	if result.ActionStatus == "failed" {
+		return recoveryAt, fmt.Errorf("set auth priority to %d: %s", accountInspectionPriorityQuota, result.ActionError)
+	}
+	return recoveryAt, nil
 }
 
 func classifyStreamFailure(completion pluginapi.XAIStreamCompletionRequest) string {
