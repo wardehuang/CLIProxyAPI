@@ -113,6 +113,14 @@ type XAIStreamGuard interface {
 	CompleteXAIStream(context.Context, XAIStreamCompletionRequest) (XAIStreamCompletionResponse, error)
 }
 
+// XAIResponsesStreamHeartbeat emits and reconciles virtual Responses events while
+// the xAI stream guard buffers an attempt before releasing it downstream.
+type XAIResponsesStreamHeartbeat interface {
+	Start(string, string, http.Header)
+	StopAndWait()
+	Rewrite([]byte) []byte
+}
+
 const (
 	XAIStreamActionFlush = "flush"
 	XAIStreamActionRetry = "retry"
@@ -317,9 +325,10 @@ type Options struct {
 	// Credential refresh and token exchange must ignore it.
 	ProxyURL string
 	// BEGIN xAI Guardian core extension: request correlation and xAI-only guard.
-	RequestID      string
-	TraceID        string
-	XAIStreamGuard XAIStreamGuard
+	RequestID                   string
+	TraceID                     string
+	XAIStreamGuard              XAIStreamGuard
+	XAIResponsesStreamHeartbeat XAIResponsesStreamHeartbeat
 	// END xAI Guardian core extension.
 }
 

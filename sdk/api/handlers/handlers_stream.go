@@ -15,6 +15,19 @@ import (
 	"golang.org/x/net/context"
 )
 
+type xAIResponsesStreamHeartbeatContextKey struct{}
+
+// WithXAIResponsesStreamHeartbeat attaches the response-side virtual heartbeat
+// sink to one OpenAI Responses execution.
+func WithXAIResponsesStreamHeartbeat(ctx context.Context, heartbeat coreexecutor.XAIResponsesStreamHeartbeat) context.Context {
+	return context.WithValue(ctx, xAIResponsesStreamHeartbeatContextKey{}, heartbeat)
+}
+
+func xAIResponsesStreamHeartbeatFromContext(ctx context.Context) coreexecutor.XAIResponsesStreamHeartbeat {
+	heartbeat, _ := ctx.Value(xAIResponsesStreamHeartbeatContextKey{}).(coreexecutor.XAIResponsesStreamHeartbeat)
+	return heartbeat
+}
+
 // ExecuteStreamWithAuthManager executes a streaming request via the core auth manager.
 // This path is the only supported execution route.
 // The returned http.Header carries upstream response headers captured before streaming begins.
@@ -347,9 +360,10 @@ func (h *BaseAPIHandler) executeStreamWithAuthManagerFormats(ctx context.Context
 		WebSocketResponseObserver:   h.webSocketResponseObserver(lifecycle.requestID(), execOptions.SkipInterceptorPluginID),
 		ProxyURL:                    execOptions.ProxyURL,
 		// BEGIN xAI Guardian core extension: only xAI executor consumes this guard.
-		RequestID:      lifecycle.requestID(),
-		TraceID:        lifecycle.traceID(),
-		XAIStreamGuard: h.xAIStreamGuard(execOptions.SkipInterceptorPluginID),
+		RequestID:                   lifecycle.requestID(),
+		TraceID:                     lifecycle.traceID(),
+		XAIStreamGuard:              h.xAIStreamGuard(execOptions.SkipInterceptorPluginID),
+		XAIResponsesStreamHeartbeat: xAIResponsesStreamHeartbeatFromContext(ctx),
 		// END xAI Guardian core extension.
 	}
 	opts.Metadata = reqMeta
@@ -487,6 +501,12 @@ func (h *BaseAPIHandler) executeStreamWithAuthManagerFormats(ctx context.Context
 				return nil, false, &interfaces.ErrorMessage{StatusCode: http.StatusBadGateway, Error: errValidate}
 			}
 			payload = validatedPayload
+			if len(payload) == 0 {
+				return nil, false, nil
+			}
+		}
+		if opts.XAIResponsesStreamHeartbeat != nil {
+			payload = opts.XAIResponsesStreamHeartbeat.Rewrite(payload)
 			if len(payload) == 0 {
 				return nil, false, nil
 			}

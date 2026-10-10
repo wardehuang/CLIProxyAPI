@@ -703,8 +703,6 @@ func (h *OpenAIResponsesAPIHandler) handleStreamingResponse(c *gin.Context, rawJ
 	// New core execution path
 	modelName := gjson.GetBytes(rawJSON, "model").String()
 	cliCtx, cliCancel := h.GetContextWithCancel(h, c, context.Background())
-	dataChan, upstreamHeaders, errChan := h.ExecuteStreamWithAuthManager(cliCtx, h.HandlerType(), modelName, rawJSON, "")
-
 	setSSEHeaders := func() {
 		c.Header("Content-Type", "text/event-stream")
 		c.Header("Cache-Control", "no-cache")
@@ -717,6 +715,23 @@ func (h *OpenAIResponsesAPIHandler) handleStreamingResponse(c *gin.Context, rawJ
 		failureEvent = "response.failed"
 	}
 	framer := &responsesSSEFramer{failureEvent: failureEvent, isCodexClient: isCodexClient}
+	virtualHeadersWritten := false
+	virtualHeartbeat := newVirtualResponsesStreamHeartbeat(cliCtx, func(chunk []byte, upstreamHeaders http.Header) bool {
+		if c.Request.Context().Err() != nil {
+			return false
+		}
+		setSSEHeaders()
+		if !virtualHeadersWritten {
+			handlers.WriteUpstreamHeaders(c.Writer.Header(), upstreamHeaders)
+			virtualHeadersWritten = true
+		}
+		framer.WriteChunk(c.Writer, chunk)
+		flusher.Flush()
+		return true
+	})
+	cliCtx = handlers.WithXAIResponsesStreamHeartbeat(cliCtx, virtualHeartbeat)
+	dataChan, upstreamHeaders, errChan := h.ExecuteStreamWithAuthManager(cliCtx, h.HandlerType(), modelName, rawJSON, "")
+	virtualHeartbeat.StopAndWait()
 	var initialOutput bytes.Buffer
 
 	// Peek at the first complete SSE data frame.

@@ -92,6 +92,10 @@ func (e *XAIExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Auth
 	}
 	// END xAI Guardian core extension.
 
+	if guardRuntime != nil && opts.XAIResponsesStreamHeartbeat != nil && cliproxyexecutor.ResponseFormatOrSource(opts) == "openai-response" {
+		opts.XAIResponsesStreamHeartbeat.Start(opts.RequestID, prepared.baseModel, httpResp.Header.Clone())
+	}
+
 	out := make(chan cliproxyexecutor.StreamChunk)
 	// BEGIN xAI Guardian core extension: expose one terminal completion record.
 	var completion chan cliproxyexecutor.XAIStreamCompletion
