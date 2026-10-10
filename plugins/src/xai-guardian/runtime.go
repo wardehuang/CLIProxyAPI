@@ -1205,7 +1205,7 @@ func publicIPBatches(batches []ipBatch, retentionDays int) []map[string]any {
 func publicInspectionAccounts(results []accountInspectionResult, exitIPs map[string]string) []map[string]any {
 	items := make([]map[string]any, 0, len(results))
 	for _, result := range results {
-		if !result.Probed {
+		if !result.Probed && result.Status != "quota_exhausted" && result.Status != "abnormal" && result.Status != "disabled" {
 			continue
 		}
 		items = append(items, map[string]any{

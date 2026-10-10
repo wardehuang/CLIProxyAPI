@@ -879,6 +879,29 @@ type HostAuthPriorityUpdateResponse struct {
 
 // END xAI Guardian core extension.
 
+// BEGIN xAI Guardian core extension: narrow auth metadata updates.
+// HostAuthMetadataStringUpdateRequest asks the host to update one supported string metadata field.
+type HostAuthMetadataStringUpdateRequest struct {
+	// AuthIndex identifies the credential.
+	AuthIndex string `json:"auth_index"`
+	// Field is the supported metadata key to update.
+	Field string `json:"field"`
+	// Value is the new value for the metadata key.
+	Value string `json:"value"`
+}
+
+// HostAuthMetadataStringUpdateResponse reports the persisted metadata value.
+type HostAuthMetadataStringUpdateResponse struct {
+	// AuthIndex identifies the credential.
+	AuthIndex string `json:"auth_index"`
+	// Field is the updated metadata key.
+	Field string `json:"field"`
+	// Value is the value read back after persistence.
+	Value string `json:"value"`
+}
+
+// END xAI Guardian core extension.
+
 // Host affinity lookup status outcomes.
 const (
 	HostAffinityStatusBound       = "bound"

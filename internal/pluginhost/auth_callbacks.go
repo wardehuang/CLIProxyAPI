@@ -160,6 +160,42 @@ func (h *Host) callHostAuthPriorityUpdate(ctx context.Context, request []byte) (
 		Priority:  priority,
 	})
 }
+
+// END xAI Guardian core extension.
+
+// BEGIN xAI Guardian core extension: narrow auth metadata updates.
+func (h *Host) callHostAuthMetadataStringUpdate(ctx context.Context, request []byte) ([]byte, error) {
+	var req pluginapi.HostAuthMetadataStringUpdateRequest
+	if errUnmarshal := json.Unmarshal(request, &req); errUnmarshal != nil {
+		return nil, fmt.Errorf("decode host auth metadata string update request: %w", errUnmarshal)
+	}
+	authIndex := strings.TrimSpace(req.AuthIndex)
+	field := strings.TrimSpace(req.Field)
+	if authIndex == "" {
+		return nil, fmt.Errorf("auth_index is required")
+	}
+	if field != "proxy_url" && field != "refresh_proxy_url" {
+		return nil, fmt.Errorf("unsupported auth metadata string field %q", field)
+	}
+	manager := h.currentAuthManager()
+	if manager == nil {
+		return nil, fmt.Errorf("core auth manager unavailable")
+	}
+	updated, errUpdate := manager.UpdateAuthMetadataString(ctx, authIndex, field, req.Value)
+	if errUpdate != nil {
+		return nil, errUpdate
+	}
+	value, ok := updated.Metadata[field].(string)
+	if !ok {
+		return nil, fmt.Errorf("read back auth metadata field %s: expected string", field)
+	}
+	return marshalRPCResult(pluginapi.HostAuthMetadataStringUpdateResponse{
+		AuthIndex: authIndex,
+		Field:     field,
+		Value:     value,
+	})
+}
+
 // END xAI Guardian core extension.
 
 func (h *Host) listAuthFiles() ([]pluginapi.HostAuthFileEntry, error) {

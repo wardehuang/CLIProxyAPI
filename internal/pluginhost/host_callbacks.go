@@ -186,6 +186,8 @@ func (h *Host) callFromPlugin(ctx context.Context, method string, request []byte
 		return h.callHostAuthSave(ctx, request)
 	case pluginabi.MethodHostAuthPriorityUpdate:
 		return h.callHostAuthPriorityUpdate(ctx, request)
+	case pluginabi.MethodHostAuthMetadataStringUpdate:
+		return h.callHostAuthMetadataStringUpdate(ctx, request)
 	case pluginabi.MethodHostAffinityLookup:
 		return h.callHostAffinityLookup(ctx, request)
 	default:

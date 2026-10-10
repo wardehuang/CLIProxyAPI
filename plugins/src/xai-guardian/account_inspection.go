@@ -236,7 +236,9 @@ func inspectXAIAccount(ctx context.Context, store *guardianStore, runID int64, e
 	priority := accountPriorityPointer(entry.Priority)
 	if entry.Priority != accountInspectionPriorityPermanent && (entry.Disabled || (priority != nil && *priority == accountInspectionPriorityDisabled)) {
 		result.Disabled = true
-		return preserveAccountInspectionResult(result, previous, hasPrevious, "账号已停用，未调用测活请求，保持停用状态"), false, nil
+		result = preserveAccountInspectionResult(result, previous, hasPrevious, "账号已停用，未调用计费探测，归类为已停用")
+		result.Status = "disabled"
+		return result, false, nil
 	}
 	now := time.Now()
 	coolingUntil, degradationCount, realtimeCooling, err := store.accountInspectionRealtimeCooldown(entry.AuthIndex, now.UnixMilli())
@@ -252,6 +254,7 @@ func inspectXAIAccount(ctx context.Context, store *guardianStore, runID int64, e
 	}
 	if permanent {
 		result = preserveAccountInspectionResult(result, previous, hasPrevious, "账号 priority 为 -6，永久退出自动巡检；需人工恢复 priority")
+		result.Status = "abnormal"
 		result.Priority = accountInspectionIntPointer(permanentPriority)
 		if priorityUpdated {
 			result.ActionStatus = "success"
@@ -277,11 +280,17 @@ func inspectXAIAccount(ctx context.Context, store *guardianStore, runID int64, e
 		}
 	}
 	if realtimeCooling {
-		result = preserveAccountInspectionResult(result, previous, hasPrevious, fmt.Sprintf("实时降智冷却中，跳过巡检至 %s", time.UnixMilli(coolingUntil).UTC().Format(time.RFC3339)))
+		result = preserveAccountInspectionResult(result, previous, hasPrevious, fmt.Sprintf("实时降智冷却中，未调用计费探测，归类为异常至 %s", time.UnixMilli(coolingUntil).UTC().Format(time.RFC3339)))
+		result.Status = "abnormal"
+		if priority != nil && *priority == accountInspectionPriorityDegraded {
+			result.State = "failed"
+			result.ErrorKind = "account_abnormal"
+			result.ActionReason = "实时守护检测到账号异常，priority 为 -8，冷却中，未调用计费探测"
+		}
 		if priority != nil && *priority == accountInspectionPrioritySSOExpired {
 			result.ErrorKind = "sso_expired"
 			result.ErrorDetail = previous.ErrorDetail
-			result.ActionReason = "SSO 已失效，priority 为 -7，需重新登录获取新的 SSO，跳过巡检"
+			result.ActionReason = "SSO 已失效，priority 为 -7，需重新登录获取新的 SSO，未调用计费探测"
 		}
 		return result, false, nil
 	}
@@ -300,7 +309,9 @@ func inspectXAIAccount(ctx context.Context, store *guardianStore, runID int64, e
 	result.Disabled = file.Disabled || (priority != nil && *priority == accountInspectionPriorityDisabled)
 	result.ScheduleGroup = readNestedScheduleGroup(file.Raw)
 	if result.Disabled {
-		return preserveAccountInspectionResult(result, previous, hasPrevious, "账号已停用，跳过巡检"), false, nil
+		result = preserveAccountInspectionResult(result, previous, hasPrevious, "账号已停用，未调用计费探测，归类为已停用")
+		result.Status = "disabled"
+		return result, false, nil
 	}
 
 	accountType, err := store.accountInspectionProfile(file.Index)

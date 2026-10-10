@@ -330,6 +330,7 @@ func applyRealtimeDegradation(store *guardianStore, authIndex, authName, request
 			}
 		}
 		transition.Priority = accountInspectionPriorityDegraded
+		syncRealtimeInspectionStatus(store, authIndex, accountInspectionPriorityDegraded, state.CoolingUntil, requestID)
 		return transition, nil
 	}
 
@@ -353,6 +354,7 @@ func applyRealtimeDegradation(store *guardianStore, authIndex, authName, request
 		}
 	}
 	transition.Priority = accountInspectionPriorityDegraded
+	syncRealtimeInspectionStatus(store, authIndex, accountInspectionPriorityDegraded, state.CoolingUntil, requestID)
 	return transition, nil
 }
 
@@ -565,7 +567,15 @@ func applyRealtimeQuotaCooldown(store *guardianStore, completion pluginapi.XAISt
 	if result.ActionStatus == "failed" {
 		return recoveryAt, fmt.Errorf("set auth priority to %d: %s", accountInspectionPriorityQuota, result.ActionError)
 	}
+	syncRealtimeInspectionStatus(store, authIndex, accountInspectionPriorityQuota, recoveryAt, completion.TraceID)
 	return recoveryAt, nil
+}
+
+func syncRealtimeInspectionStatus(store *guardianStore, authIndex string, priority int, recoverAtMS int64, requestID string) {
+	if err := store.syncLatestRealtimeAccountInspection(authIndex, priority, recoverAtMS); err != nil {
+		detail := fmt.Sprintf("auth_index=%q priority=%d error=%q", authIndex, priority, sanitizeLogText(err.Error()))
+		_ = store.appendLogWithRequestLogID(logLevelError, "guard.inspection_status_sync_failed", "实时守护状态同步到最新服务端巡检失败", detail, requestID)
+	}
 }
 
 func classifyStreamFailure(completion pluginapi.XAIStreamCompletionRequest) string {

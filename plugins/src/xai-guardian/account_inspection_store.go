@@ -174,6 +174,68 @@ func (store *guardianStore) finishAccountInspectionRun(runID int64, status strin
 	return nil
 }
 
+func (store *guardianStore) syncLatestRealtimeAccountInspection(authIndex string, priority int, recoverAtMS int64) error {
+	status, errorKind, reason, isQuota := "", "", "", 0
+	switch priority {
+	case accountInspectionPriorityQuota:
+		status = "quota_exhausted"
+		errorKind = "quota_exhausted"
+		reason = "实时守护检测到 xAI 额度耗尽，priority 为 -1"
+		isQuota = 1
+	case accountInspectionPriorityDegraded:
+		status = "abnormal"
+		errorKind = "account_abnormal"
+		reason = "实时守护检测到账号异常，priority 为 -8"
+	default:
+		return fmt.Errorf("unsupported realtime inspection priority %d", priority)
+	}
+
+	store.mutex.Lock()
+	defer store.mutex.Unlock()
+	tx, err := store.database.Begin()
+	if err != nil {
+		return fmt.Errorf("begin realtime account inspection update: %w", err)
+	}
+	defer tx.Rollback()
+
+	var runID int64
+	if err := tx.QueryRow(`SELECT id FROM account_inspection_runs ORDER BY id DESC LIMIT 1`).Scan(&runID); err == sql.ErrNoRows {
+		return nil
+	} else if err != nil {
+		return fmt.Errorf("read latest account inspection run for realtime update: %w", err)
+	}
+	updated, err := tx.Exec(`UPDATE account_inspection_results SET
+		status = ?, state = 'failed', action = 'priority_adjustment', action_reason = ?,
+		action_status = 'success', executed_action = 'priority_adjustment', action_error = '',
+		is_quota = ?, error_kind = ?, error_detail = ?, error = '', priority = ?, recover_at_ms = ?
+		WHERE run_id = ? AND auth_index = ?`,
+		status, reason, isQuota, errorKind, reason, priority, recoverAtMS, runID, authIndex)
+	if err != nil {
+		return fmt.Errorf("update latest realtime account inspection status: %w", err)
+	}
+	rows, err := updated.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("read latest realtime account inspection update count: %w", err)
+	}
+	if rows != 1 {
+		return fmt.Errorf("latest account inspection run %d contains %d rows for auth %q", runID, rows, authIndex)
+	}
+	if _, err := tx.Exec(`UPDATE account_inspection_runs SET
+		processed = (SELECT COUNT(*) FROM account_inspection_results WHERE run_id = ?),
+		probed = (SELECT COALESCE(SUM(probed), 0) FROM account_inspection_results WHERE run_id = ?),
+		healthy = (SELECT COUNT(*) FROM account_inspection_results WHERE run_id = ? AND status = 'healthy'),
+		quota_exhausted = (SELECT COUNT(*) FROM account_inspection_results WHERE run_id = ? AND status = 'quota_exhausted'),
+		abnormal = (SELECT COUNT(*) FROM account_inspection_results WHERE run_id = ? AND status = 'abnormal'),
+		skipped = (SELECT COUNT(*) FROM account_inspection_results WHERE run_id = ? AND status = 'skipped')
+		WHERE id = ?`, runID, runID, runID, runID, runID, runID, runID); err != nil {
+		return fmt.Errorf("recount latest account inspection run after realtime update: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit latest realtime account inspection update: %w", err)
+	}
+	return nil
+}
+
 func (store *guardianStore) listAccountInspectionRuns(limit int) (accountInspectionRunList, error) {
 	if limit < 1 || limit > 100 {
 		limit = 20

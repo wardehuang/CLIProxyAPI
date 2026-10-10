@@ -119,8 +119,9 @@ const (
 	MethodHostAuthGet            = "host.auth.get"
 	MethodHostAuthGetRuntime     = "host.auth.get_runtime"
 	MethodHostAuthSave           = "host.auth.save"
-	// BEGIN xAI Guardian core extension: priority-only auth metadata update.
-	MethodHostAuthPriorityUpdate = "host.auth.priority_update"
+	// BEGIN xAI Guardian core extension: narrow auth metadata updates.
+	MethodHostAuthPriorityUpdate       = "host.auth.priority_update"
+	MethodHostAuthMetadataStringUpdate = "host.auth.metadata_string_update"
 	// END xAI Guardian core extension.
 	MethodHostAffinityLookup = "host.affinity.lookup"
 )

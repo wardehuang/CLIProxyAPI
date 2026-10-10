@@ -106,7 +106,7 @@
     .account-panel, .server-panel, .guard-panel { display: grid; gap: 14px; padding: 18px; }
 
     .summary-grid { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 12px; }
-    .account-summary-grid { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+    .account-summary-grid { grid-template-columns: repeat(5, minmax(0, 1fr)); }
     .summary-card {
       --summary-accent: var(--primary-color);
       isolation: isolate;
@@ -331,6 +331,11 @@
     .inspection-toggle-row { min-height: 38px; }
     .settings-field .inspection-toggle-row { font-size: 13px; }
     .inspection-config-note { display: flex; align-items: center; padding: 10px 12px; border: 1px solid var(--border-color); border-radius: 10px; color: var(--text-tertiary); background: var(--bg-tertiary); font-size: 12px; line-height: 1.55; }
+    .inspection-candidate-rules { display: grid; gap: 10px; }
+    .inspection-candidate-group { display: grid; gap: 6px; padding: 10px 12px; border: 1px solid var(--border-color); border-radius: 10px; background: var(--bg-tertiary); }
+    .inspection-candidate-group h4 { margin: 0; font-size: 12px; }
+    .inspection-candidate-group ul { display: grid; gap: 4px; margin: 0; padding-left: 18px; color: var(--text-secondary); font-size: 12px; line-height: 1.55; }
+    .inspection-candidate-group code { padding: 1px 5px; border-radius: 5px; background: color-mix(in srgb, var(--primary-color) 14%, transparent); font: 11px/1.5 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
     .inspection-schedule-summary { grid-template-columns: repeat(2, minmax(0, 1fr)); }
     .inspection-schedule-summary .run-stat strong { overflow-wrap: anywhere; font-size: 15px; }
     .probe-settings-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); }
@@ -415,7 +420,7 @@
 
     @container xai-guardian-page (max-width: 1080px) {
       .summary-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); }
-      .account-summary-grid { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+      .account-summary-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); }
       .server-summary-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
       .settings-grid, .probe-settings-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
       .degradation-result-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); }
@@ -427,7 +432,7 @@
       .segmented-tabs { width: 100%; }
       .segmented-tab { flex: 1 1 0; padding-inline: 10px; }
       .mode-switch-copy { margin: 10px 2px 2px; }
-      .summary-grid, .server-summary-grid, .settings-grid, .probe-settings-grid, .detail-grid, .run-summary { grid-template-columns: 1fr; }
+      .summary-grid, .account-summary-grid, .server-summary-grid, .settings-grid, .probe-settings-grid, .detail-grid, .run-summary { grid-template-columns: 1fr; }
       .inspection-config-schedule-grid, .inspection-config-value-grid, .inspection-config-runtime-grid { grid-template-columns: 1fr; }
       .degradation-result-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
       .degradation-report-fields { grid-template-columns: 1fr; }
@@ -453,7 +458,7 @@
         </div>
         <div class="mode-switch-copy">
           <strong id="mode-title">账号状态</strong>
-          <p id="mode-description">仅显示最后一次后台账号检查快照；未运行后台账号检查时不显示当前 CPA 账号清单。</p>
+          <p id="mode-description">显示最近一次账号巡检的候选账号及其分类结果；未运行时显示空列表。</p>
         </div>
       </div>
     </section>
@@ -473,6 +478,7 @@
               <div class="filter-pills" aria-label="账号状态筛选">
                 <button class="pill-button active" type="button" data-filter="all">全部候选</button>
                 <button class="pill-button" type="button" data-filter="enabled">健康</button>
+                <button class="pill-button" type="button" data-filter="disabled">已停用</button>
                 <button class="pill-button" type="button" data-filter="quota">额度耗尽</button>
                 <button class="pill-button" type="button" data-filter="abnormal">账号异常</button>
               </div>
@@ -755,6 +761,40 @@ socks5h://proxy.example:1080"></textarea>
               <div class="settings-field"><label for="inspection-timeout-setting">每个 Auth 整轮超时（秒）</label><input class="settings-input" id="inspection-timeout-setting" type="number" min="1" max="600" step="1"><span class="settings-help">默认 60；范围 1–600</span></div>
             </div>
           </section>
+          <section class="inspection-config-section" aria-labelledby="inspection-candidate-section-title">
+            <div class="inspection-config-section-head">
+              <h3 id="inspection-candidate-section-title">探测候选规则</h3>
+              <p>本轮巡检覆盖的 xAI Auth 账号按下述规则归类：实际调用计费探测的记为「探测候选」，其余按下述状态归类且不发送上游请求。</p>
+            </div>
+            <div class="inspection-candidate-rules">
+              <div class="inspection-candidate-group">
+                <h4>候选来源</h4>
+                <ul>
+                  <li>仅 Provider 为 <code>xai</code> 的持久化认证文件；排除 RuntimeOnly 运行时条目、auth 路径为空、无 AuthIndex 的条目。</li>
+                  <li>候选按认证文件名（缺失时回退 AuthIndex/ID）升序稳定排序，再按并发数分发。</li>
+                </ul>
+              </div>
+              <div class="inspection-candidate-group">
+                <h4>不调用探测逻辑的归类</h4>
+                <ul>
+                  <li>账号已停用：<code>disabled</code> 为真或 priority 为 <code>-5</code>（priority 恰为 <code>-6</code> 时走永久终态，不按停用处理）→「已停用」。</li>
+                  <li>读取 auth 文件后发现已停用 →「已停用」。</li>
+                  <li>永久终态：priority 为 <code>-6</code>，或连续降智次数 ≥ 3、冷却标记为永久 →「异常」；本轮会写回 priority <code>-6</code>、删除 priority adjustment 并清空连续次数，之后永久退出自动巡检，需人工恢复 priority。</li>
+                  <li>实时降智冷却中：priority 为 <code>-8</code>（并记 <code>account_abnormal</code>）或 <code>-7</code>（SSO 失效），且冷却未到期 →「异常」。</li>
+                  <li>额度耗尽冷却：priority 为 <code>-1</code> 且存在 adjusted priority 为 <code>-1</code>、恢复时间未到的 adjustment →「额度耗尽」。</li>
+                  <li>整轮已取消：手动停止或超时导致上下文取消时，剩余账号记为「跳过」，不发送请求。</li>
+                </ul>
+              </div>
+              <div class="inspection-candidate-group">
+                <h4>进入探测后的判定</h4>
+                <ul>
+                  <li>其余 priority（<code>-2</code> 账号异常、<code>-3</code> 旧版、<code>-4</code> 未授权等）不阻止探测，仍会进入本轮并可在探测成功后恢复 priority。</li>
+                  <li>计费探测按账号类型选接口：<code>unknown</code> 先探 billing 判定类型，<code>super</code> 探 billing 与 credits，<code>free</code> 只探 credits。</li>
+                  <li>缺少 access_token、代理客户端构建失败或 HTTP 失败时仍计为「探测候选」，记录失败原因并按失败类型调整 priority。</li>
+                </ul>
+              </div>
+            </div>
+          </section>
         </div>
         <div class="settings-help">每个 Auth 整轮共用一个 deadline，巡检 HTTP 请求可取消；Host 同步回调不可中断，阻塞时无法保证硬性截断。请求默认头由 auth JSON 的 headers 同名覆盖；值以 $ 开头的请求上下文占位符不支持。</div>
         <div id="inspection-settings-message" class="message" aria-live="polite"></div>
@@ -947,7 +987,7 @@ socks5h://proxy.example:1080"></textarea>
 
     function renderMode() {
       const descriptions = {
-        accounts: ['账号状态', '只显示最近一次账号巡检的探测候选及该次巡检结果；没有候选时显示空列表。'],
+        accounts: ['账号状态', '显示最近一次账号巡检的候选账号及其分类结果（探测候选 / 健康 / 已停用 / 额度耗尽 / 账号异常）；未运行时显示空列表。'],
         inspection: ['服务端巡检', '检查 xAI Auth 账号状态、额度和计费响应，并按插件内降智状态机调整 priority。'],
         guard: ['降智守护', '查看降智记录、守护策略和插件日志。']
       };
@@ -975,9 +1015,9 @@ socks5h://proxy.example:1080"></textarea>
     }
 
     function renderAccountSummary() {
-      const counts = {enabled:0, quota:0, abnormal:0};
+      const counts = {enabled:0, disabled:0, quota:0, abnormal:0};
       state.accounts.forEach((item) => { counts[statusKey(item)] += 1; });
-      const cards = [['探测候选', state.accounts.length, 'P', 'blue'], ['健康', counts.enabled, '✓', 'green'], ['额度耗尽', counts.quota, 'Q', 'violet'], ['账号异常', counts.abnormal, '!', 'red']];
+      const cards = [['探测候选', state.accounts.length, 'P', 'blue'], ['健康', counts.enabled, '✓', 'green'], ['已停用', counts.disabled, 'D', 'amber'], ['额度耗尽', counts.quota, 'Q', 'violet'], ['账号异常', counts.abnormal, '!', 'red']];
       $('account-summary').innerHTML = cards.map((card) => `<article class="summary-card tone-${card[3]}"><div class="summary-header"><span class="summary-icon">${card[2]}</span><span class="summary-label">${card[0]}</span></div><strong class="summary-value">${card[1]}</strong></article>`).join('');
     }
 
@@ -1007,7 +1047,7 @@ socks5h://proxy.example:1080"></textarea>
           <td>${formatDate(item.lastInspection)}</td>
         </tr>${expanded ? `<tr class="detail-row"><td colspan="8"><section class="detail-panel"><div class="detail-hero"><div><span class="detail-eyebrow">xAI Guardian Account</span><h3>${displayName}</h3></div><div class="detail-badges"><span class="status-badge ${statusTone(key)}">${statusLabel(key, item.status)}</span><span class="type-badge">${escapeHTML(accountType)}</span></div></div><div class="detail-grid"><div class="detail-section"><h4>基础信息</h4><dl class="detail-list"><div><dt>Auth Index</dt><dd class="mono">${escapeHTML(item.authIndex || '—')}</dd></div><div><dt>账号类型</dt><dd>${escapeHTML(accountType)}</dd></div><div><dt>调度组</dt><dd>${numberValue(item.scheduleGroup) ?? '—'}</dd></div></dl></div><div class="detail-section"><h4>账号检查状态</h4><dl class="detail-list"><div><dt>状态</dt><dd>${escapeHTML(item.status || '—')}</dd></div><div><dt>优先级</dt><dd>${numberValue(item.priority) ?? '—'}</dd></div><div><dt>最近检查</dt><dd>${formatFullDate(item.lastInspection)}</dd></div></dl></div></div><div class="detail-actions"><button class="secondary-button" type="button" data-degradation-latest="${escapeHTML(item.authIndex || '')}" data-account-name="${displayName}">上次检测</button><button class="primary-button" type="button" data-degradation-check="${escapeHTML(item.authIndex || '')}" data-account-name="${displayName}">降智检测</button></div></section></td></tr>` : ''}`;
       }).join('');
-      $('accounts-table').innerHTML = `<table class="data-table account-table"><thead><tr><th>账号</th><th>出口IP</th><th>账号类型</th><th>状态</th><th>优先级</th><th>调度组</th><th>额度窗口</th><th>最后检查</th></tr></thead><tbody>${body || '<tr><td class="empty-cell" colspan="8">最近一次巡检没有探测候选账号。</td></tr>'}</tbody></table>`;
+      $('accounts-table').innerHTML = `<table class="data-table account-table"><thead><tr><th>账号</th><th>出口IP</th><th>账号类型</th><th>状态</th><th>优先级</th><th>调度组</th><th>额度窗口</th><th>最后检查</th></tr></thead><tbody>${body || '<tr><td class="empty-cell" colspan="8">最近一次巡检没有可显示的账号。</td></tr>'}</tbody></table>`;
       $('accounts-page-info').textContent = `第 ${state.page} / ${totalPages} 页，显示 ${filtered.length ? start + 1 : 0} - ${Math.min(start + state.pageSize, filtered.length)} / ${filtered.length}`;
       $('account-page-prev').disabled = state.page <= 1;
       $('account-page-next').disabled = state.page >= totalPages;
