@@ -30,16 +30,12 @@ Safety properties:
   extraction.
 * The live service stays online during compilation. It is stopped only for the
   verified backup and atomic install window.
-* The first systemd rollout tolerates a host without a unit, binary, or plugins:
-  the legacy Docker container is stopped before the install window, removed only
-  after verification, and started again when the run rolls back.
+* The host must already be a hook-min-v2 systemd deployment: the run refuses to
+  continue unless the unit file exists, the live binary is present, and the
+  service is active before the build starts.
 * Any failure after the service stop restores the main binary, configuration,
   plugins, plugin data, every auth JSON, the deployment markers, and the systemd
-  unit from the verified archive; a first-install rollback removes the unit this
-  run created.
-* The tracked Docker leftovers (``docker-compose.18458.yml``, ``source/``,
-  ``docker-deploy.log``) are captured in the rollback archive and then deleted
-  from the application directory, so the host keeps one deployment mechanism.
+  unit from the verified archive, then restarts and re-checks the service.
 * ``config.yaml`` is rewritten atomically for the two systemd-only values:
   ``oauth.auth-dir`` points at the host auth directory and
   ``plugins.configs.xai-guardian.database_path`` points at the host plugin data
@@ -89,12 +85,6 @@ REMOTE_STAGE_ROOT = "/home/ubuntu/.cpa-deploy"
 REMOTE_GO = "/usr/local/go/bin/go"
 REMOTE_APP_OWNER = "ubuntu:ubuntu"
 REMOTE_READY_ATTEMPTS = 900
-LEGACY_DOCKER_CONTAINER = "cli-proxy-api-hook-min-v2"
-LEGACY_DOCKER_ARTIFACTS = (
-    "docker-compose.18458.yml",
-    "source",
-    "docker-deploy.log",
-)
 DEPLOY_MARKER_NAMES = (
     ".deploy-revision",
     ".deploy-version",
@@ -837,7 +827,6 @@ BASE=@@BASE@@
 UNIT_PATH=@@UNIT_PATH@@
 APP_OWNER=@@APP_OWNER@@
 READY_ATTEMPTS=@@READY_ATTEMPTS@@
-LEGACY_CONTAINER=@@LEGACY_CONTAINER@@
 UNIT_TEXT=@@UNIT_TEXT@@
 ARCHIVE="$BASE/source.tar.gz"
 SOURCE_ROOT="$BASE/src/CLIProxyAPI"
@@ -853,9 +842,6 @@ BACKUP="$BACKUP_DIR/$ID.tar.gz"
 DEPLOY_LOG_DIR="$APP/deploy-logs"
 DEPLOY_STARTED=0
 BACKUP_READY=0
-UNIT_PRESENT=0
-MAIN_PRESENT=0
-LEGACY_DOCKER_PRESENT=0
 ROLLBACK_DONE=0
 STEP_NUMBER=0
 
@@ -870,9 +856,6 @@ EXPECTED_PLUGIN_IDS=(
 )
 PLUGIN_SETTINGS=(
 @@PLUGIN_SETTINGS@@
-)
-LEGACY_DOCKER_ARTIFACTS=(
-@@LEGACY_DOCKER_ARTIFACTS@@
 )
 DEPLOY_MARKER_NAMES=(
 @@DEPLOY_MARKER_NAMES@@
@@ -1010,9 +993,7 @@ rollback_on_error() {
   step "ROLLBACK AFTER FAILURE"
   log "DEPLOY_ERROR_STATUS=$rc"
   if [ "$DEPLOY_STARTED" -eq 1 ]; then
-    if [ "$UNIT_PRESENT" -eq 1 ]; then
-      sudo systemctl stop "$SERVICE" >/dev/null 2>&1 || true
-    fi
+    sudo systemctl stop "$SERVICE" >/dev/null 2>&1 || true
     if [ "$BACKUP_READY" -eq 1 ] && sudo test -s "$BACKUP"; then
       sudo rm -rf "$APP/cli-proxy-api" "$APP/config.yaml" "$APP/plugins" "$APP/plugin-data" "$AUTH_DIR"
       sudo rm -f "$APP/.deploy-revision" "$APP/.deploy-version" "$APP/.deploy-time"
@@ -1020,28 +1001,13 @@ rollback_on_error() {
       log "ROLLBACK_FILES=restored"
       sudo chown -R "$APP_OWNER" "$APP" >/dev/null 2>&1 || true
     else
-      sudo rm -f "$APP/cli-proxy-api"
-      log "ROLLBACK_FILES=not-installed"
+      log "ROLLBACK_FILES=not-needed"
     fi
-    if [ "$UNIT_PRESENT" -eq 0 ]; then
-      sudo rm -f "$UNIT_PATH"
-      sudo systemctl daemon-reload >/dev/null 2>&1 || true
-      log "ROLLBACK_UNIT=removed"
-    fi
-    if [ "$LEGACY_DOCKER_PRESENT" -eq 1 ]; then
-      if sudo docker start "$LEGACY_CONTAINER" >/dev/null 2>&1; then
-        log "ROLLBACK_LEGACY_DOCKER=started"
-      else
-        log "ROLLBACK_LEGACY_DOCKER=start-failed"
-      fi
-    fi
-    if [ "$UNIT_PRESENT" -eq 1 ]; then
-      sudo systemctl start "$SERVICE" >/dev/null 2>&1 || true
-      if wait_ready "$READY_ATTEMPTS" >/dev/null 2>&1; then
-        log "ROLLBACK_READY=1"
-      else
-        log "ROLLBACK_READY=0"
-      fi
+    sudo systemctl start "$SERVICE" >/dev/null 2>&1 || true
+    if wait_ready "$READY_ATTEMPTS" >/dev/null 2>&1; then
+      log "ROLLBACK_READY=1"
+    else
+      log "ROLLBACK_READY=0"
     fi
   fi
   log "DEPLOY_RESULT=rolled-back"
@@ -1062,28 +1028,22 @@ log "STARTED_AT=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 log "HOST=$(hostname)"
 log "ARCH=$(uname -m)"
 SERVICE_ACTIVE_BEFORE="$(systemctl is-active "$SERVICE" 2>/dev/null || true)"
-if [ -f "$UNIT_PATH" ]; then
-  UNIT_PRESENT=1
-fi
-if [ -s "$APP/cli-proxy-api" ]; then
-  MAIN_PRESENT=1
-fi
 log "SERVICE_BEFORE=$SERVICE_ACTIVE_BEFORE"
-log "UNIT_PRESENT=$UNIT_PRESENT"
-log "MAIN_PRESENT=$MAIN_PRESENT"
 log "PID_BEFORE=$(systemctl show -p MainPID --value "$SERVICE")"
 log "START_BEFORE=$(systemctl show -p ExecMainStartTimestamp --value "$SERVICE")"
-if [ "$MAIN_PRESENT" -eq 1 ]; then
-  log "MAIN_BEFORE_VERSION=$("$APP/cli-proxy-api" --help 2>&1 | first_line)"
-fi
+log "MAIN_BEFORE_VERSION=$("$APP/cli-proxy-api" --help 2>&1 | first_line)"
 df -h / /home /opt
 
-if [ "$UNIT_PRESENT" -eq 1 ] && [ "$SERVICE_ACTIVE_BEFORE" != active ]; then
-  log "REFUSE existing unit is not active before deployment"
+if [ ! -f "$UNIT_PATH" ]; then
+  log "REFUSE systemd unit is missing: $UNIT_PATH"
   false
 fi
-if [ "$UNIT_PRESENT" -eq 0 ] && [ "$MAIN_PRESENT" -eq 1 ]; then
-  log "REFUSE a main binary exists without a systemd unit"
+if [ ! -s "$APP/cli-proxy-api" ]; then
+  log "REFUSE live main binary is missing: $APP/cli-proxy-api"
+  false
+fi
+if [ "$SERVICE_ACTIVE_BEFORE" != active ]; then
+  log "REFUSE service is not active before deployment"
   false
 fi
 if [ ! -s "$ARCHIVE" ]; then
@@ -1099,10 +1059,7 @@ if [ "$ACTUAL_SOURCE_SHA256" != "$SOURCE_SHA256" ]; then
 fi
 
 step "LIVE STATE SNAPSHOT"
-MAIN_BEFORE_SHA256=""
-if [ "$MAIN_PRESENT" -eq 1 ]; then
-  MAIN_BEFORE_SHA256="$(sha256sum "$APP/cli-proxy-api" | cut -d' ' -f1)"
-fi
+MAIN_BEFORE_SHA256="$(sha256sum "$APP/cli-proxy-api" | cut -d' ' -f1)"
 CONFIG_BEFORE_SHA256="$(sha256sum "$APP/config.yaml" | cut -d' ' -f1)"
 auth_inventory | tee "$BASE/auth-before.txt"
 AUTH_COUNT_AT_BUILD_START="$(python3 -c 'from pathlib import Path; import sys; print(sum(1 for _ in Path(sys.argv[1]).glob("*.json")))' "$AUTH_DIR")"
@@ -1242,15 +1199,13 @@ done
 log "BUILD_RESULT=success"
 
 step "RECHECK LIVE STATE BEFORE STOP"
-if [ "$UNIT_PRESENT" -eq 1 ] && [ "$(systemctl is-active "$SERVICE")" != active ]; then
+if [ "$(systemctl is-active "$SERVICE")" != active ]; then
   log "REFUSE service changed state during build"
   false
 fi
-if [ "$MAIN_PRESENT" -eq 1 ]; then
-  if [ "$(sha256sum "$APP/cli-proxy-api" | cut -d' ' -f1)" != "$MAIN_BEFORE_SHA256" ]; then
-    log "REFUSE live main binary changed during build"
-    false
-  fi
+if [ "$(sha256sum "$APP/cli-proxy-api" | cut -d' ' -f1)" != "$MAIN_BEFORE_SHA256" ]; then
+  log "REFUSE live main binary changed during build"
+  false
 fi
 if [ "$(sha256sum "$APP/config.yaml" | cut -d' ' -f1)" != "$CONFIG_BEFORE_SHA256" ]; then
   log "REFUSE live config changed during build"
@@ -1273,18 +1228,7 @@ log "LIVE_RECHECK=unchanged"
 step "STOP SERVICE AND CREATE FULL ROLLBACK BACKUP"
 DEPLOY_SERVICE_START="$(date -u '+%Y-%m-%d %H:%M:%S')"
 DEPLOY_STARTED=1
-if [ "$UNIT_PRESENT" -eq 1 ]; then
-  sudo systemctl stop "$SERVICE"
-else
-  log "UNIT_STOP_SKIPPED=unit-absent"
-fi
-if sudo docker inspect "$LEGACY_CONTAINER" >/dev/null 2>&1; then
-  sudo docker stop "$LEGACY_CONTAINER" >/dev/null
-  LEGACY_DOCKER_PRESENT=1
-  log "LEGACY_DOCKER_STOPPED=$LEGACY_CONTAINER"
-else
-  log "LEGACY_DOCKER_ABSENT=$LEGACY_CONTAINER"
-fi
+sudo systemctl stop "$SERVICE"
 auth_inventory | tee "$BASE/auth-before-install.txt"
 AUTH_COUNT_BEFORE_INSTALL="$(python3 -c 'from pathlib import Path; import sys; print(sum(1 for _ in Path(sys.argv[1]).glob("*.json")))' "$AUTH_DIR")"
 auth_name_manifest "$BASE/auth-before-install.names.sha256"
@@ -1293,22 +1237,18 @@ sudo mkdir -p "$BACKUP_DIR"
 cd /
 BACKUP_PATHS=()
 for item in cli-proxy-api config.yaml auths plugins plugin-data "${DEPLOY_MARKER_NAMES[@]}"; do
-  if sudo test -e "$APP/$item"; then
-    BACKUP_PATHS+=("${APP#/}/$item")
-  fi
+  BACKUP_PATHS+=("${APP#/}/$item")
 done
-for item in "${LEGACY_DOCKER_ARTIFACTS[@]}"; do
-  if sudo test -e "$APP/$item"; then
-    BACKUP_PATHS+=("${APP#/}/$item")
-    log "BACKUP_LEGACY_INCLUDED=$item"
-  fi
-done
-if [ "$UNIT_PRESENT" -eq 1 ]; then
-  BACKUP_PATHS+=("${UNIT_PATH#/}")
-fi
+BACKUP_PATHS+=("${UNIT_PATH#/}")
 log "BACKUP_PATHS_BEGIN"
 printf '%s\n' "${BACKUP_PATHS[@]}"
 log "BACKUP_PATHS_END"
+for item in "${BACKUP_PATHS[@]}"; do
+  if ! sudo test -e "/$item"; then
+    log "REFUSE rollout path is missing: /$item"
+    false
+  fi
+done
 sudo tar -czpf "$BACKUP" "${BACKUP_PATHS[@]}"
 sudo test -s "$BACKUP"
 sudo chmod 600 "$BACKUP"
@@ -1318,7 +1258,7 @@ log "BACKUP_SIZE=$(sudo stat -c %s "$BACKUP")"
 log "BACKUP_SHA256=$(sudo sha256sum "$BACKUP" | cut -d' ' -f1)"
 
 step "VALIDATE ROLLBACK BACKUP CONTENT"
-sudo python3 - "$BACKUP" "$AUTH_COUNT_BEFORE_INSTALL" "$PLUGIN_COUNT_BEFORE" "$MAIN_BEFORE_SHA256" "$CONFIG_BEFORE_SHA256" "$APP" "$AUTH_DIR" "$MAIN_PRESENT" <<'PY'
+sudo python3 - "$BACKUP" "$AUTH_COUNT_BEFORE_INSTALL" "$PLUGIN_COUNT_BEFORE" "$MAIN_BEFORE_SHA256" "$CONFIG_BEFORE_SHA256" "$APP" "$AUTH_DIR" <<'PY'
 import hashlib
 import json
 import sys
@@ -1331,12 +1271,9 @@ expected_main_sha256 = sys.argv[4]
 expected_config_sha256 = sys.argv[5]
 app_rel = sys.argv[6].lstrip("/")
 auth_rel = sys.argv[7].lstrip("/")
-main_required = sys.argv[8] == "1"
 main_member = f"{app_rel}/cli-proxy-api"
 config_member = f"{app_rel}/config.yaml"
-required = {config_member}
-if main_required:
-    required.add(main_member)
+required = {main_member, config_member}
 with tarfile.open(backup, "r:gz") as archive:
     files = [member for member in archive.getmembers() if member.isfile()]
     by_name = {member.name.lstrip("./"): member for member in files}
@@ -1358,11 +1295,9 @@ with tarfile.open(backup, "r:gz") as archive:
             json.load(handle)
         except Exception:
             invalid += 1
-    main_sha256 = ""
-    if main_member in by_name:
-        main_sha256 = hashlib.sha256(archive.extractfile(by_name[main_member]).read()).hexdigest()
+    main_sha256 = hashlib.sha256(archive.extractfile(by_name[main_member]).read()).hexdigest()
     config_sha256 = hashlib.sha256(archive.extractfile(by_name[config_member]).read()).hexdigest()
-    main_match = main_sha256 == expected_main_sha256 if main_required else main_member not in names
+    main_match = main_sha256 == expected_main_sha256
     print(f"BACKUP_FILES={len(files)}")
     print(f"BACKUP_PLUGIN_COUNT={len(plugin_members)}")
     print(f"BACKUP_AUTH_COUNT={len(auth_members)}")
@@ -1759,24 +1694,6 @@ sudo mkdir -p "$DEPLOY_LOG_DIR"
 sudo cp "$LOG" "$DEPLOY_LOG_DIR/$ID.log"
 sudo cp "$JOURNAL_FILE" "$DEPLOY_LOG_DIR/$ID-journal.log"
 
-step "RETIRE LEGACY DOCKER DEPLOYMENT"
-set +e
-if [ "$LEGACY_DOCKER_PRESENT" -eq 1 ]; then
-  if sudo docker rm -f "$LEGACY_CONTAINER" >/dev/null 2>&1; then
-    log "LEGACY_DOCKER_REMOVED=$LEGACY_CONTAINER"
-  else
-    log "LEGACY_DOCKER_REMOVE_FAILED=$LEGACY_CONTAINER"
-  fi
-fi
-for item in "${LEGACY_DOCKER_ARTIFACTS[@]}"; do
-  if sudo test -e "$APP/$item"; then
-    sudo rm -rf "$APP/$item"
-    log "LEGACY_ARTIFACT_REMOVED=$item"
-  fi
-done
-log "LEGACY_CONTAINER_REMAINING=$(sudo docker ps -a --format '{{.Names}}' | grep -c -x "$LEGACY_CONTAINER" || true)"
-set -e
-
 step "CLEAN GO BUILD CACHE AND OLD ROLLBACK ARCHIVES"
 set +e
 export PATH="$(dirname "$GO_BIN"):$PATH"
@@ -1819,7 +1736,6 @@ def render_remote_script(
         "@@UNIT_PATH@@": shlex.quote(REMOTE_UNIT_PATH),
         "@@APP_OWNER@@": shlex.quote(REMOTE_APP_OWNER),
         "@@READY_ATTEMPTS@@": shlex.quote(str(REMOTE_READY_ATTEMPTS)),
-        "@@LEGACY_CONTAINER@@": shlex.quote(LEGACY_DOCKER_CONTAINER),
         "@@UNIT_TEXT@@": shlex.quote(systemd_unit_text()),
         "@@MANAGED_PLUGINS@@": shell_array(MANAGED_PLUGINS),
         "@@REQUIRED_ENABLED_PLUGIN_CONFIGS@@": shell_array(
@@ -1827,7 +1743,6 @@ def render_remote_script(
         ),
         "@@EXPECTED_PLUGIN_IDS@@": shell_array(EXPECTED_PLUGIN_IDS),
         "@@PLUGIN_SETTINGS@@": shell_array(plugin_settings_entries()),
-        "@@LEGACY_DOCKER_ARTIFACTS@@": shell_array(LEGACY_DOCKER_ARTIFACTS),
         "@@DEPLOY_MARKER_NAMES@@": shell_array(DEPLOY_MARKER_NAMES),
     }
     rendered = REMOTE_SCRIPT_TEMPLATE
