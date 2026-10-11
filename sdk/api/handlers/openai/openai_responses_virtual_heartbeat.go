@@ -41,6 +41,8 @@ type virtualResponsesStreamHeartbeat struct {
 	createdAt         int64
 	nextSequence      int64
 	dropHandshakeData bool
+	pending           []byte
+	headers           http.Header
 	stopChan          chan struct{}
 	doneChan          chan struct{}
 	stopOnce          sync.Once
@@ -80,6 +82,7 @@ func (h *virtualResponsesStreamHeartbeat) Start(requestID, model string, headers
 	h.responseID = "resp_" + requestID
 	h.model = model
 	h.createdAt = time.Now().Unix()
+	h.headers = headers
 	h.stopChan = make(chan struct{})
 	h.doneChan = make(chan struct{})
 	h.started = true
@@ -90,10 +93,10 @@ func (h *virtualResponsesStreamHeartbeat) Start(requestID, model string, headers
 		}
 		h.nextSequence++
 	}
-	go h.run(headers)
+	go h.run()
 }
 
-func (h *virtualResponsesStreamHeartbeat) run(headers http.Header) {
+func (h *virtualResponsesStreamHeartbeat) run() {
 	ticker := time.NewTicker(virtualResponsesStreamHeartbeatInterval)
 	defer ticker.Stop()
 	defer close(h.doneChan)
@@ -106,7 +109,7 @@ func (h *virtualResponsesStreamHeartbeat) run(headers http.Header) {
 		case <-ticker.C:
 			payload := h.event("response.in_progress", h.nextSequence)
 			h.nextSequence++
-			if !h.publish(payload, headers) {
+			if !h.publish(payload, h.headers) {
 				return
 			}
 		}
@@ -119,13 +122,50 @@ func (h *virtualResponsesStreamHeartbeat) StopAndWait() {
 	}
 	h.stopOnce.Do(func() { close(h.stopChan) })
 	<-h.doneChan
+	h.flushPending()
 }
 
+// flushPending emits the frame that was still incomplete when the upstream stream ended, so
+// carrying a partial frame across chunks never drops the last event.
+func (h *virtualResponsesStreamHeartbeat) flushPending() {
+	if len(h.pending) == 0 {
+		return
+	}
+	pending := h.pending
+	h.pending = nil
+	// A residual frame without data decodes as an empty payload on clients that dispatch their
+	// SSE buffer at EOF, which is the very failure this buffering avoids, so drop it.
+	if !bytes.Contains(pending, []byte("data:")) {
+		return
+	}
+	frame := h.rewriteFrame(pending)
+	if len(frame) == 0 {
+		return
+	}
+	// Left unterminated on purpose: clients flush a trailing partial frame themselves at EOF.
+	h.publish(append([]byte(nil), frame...), h.headers)
+}
+
+// Rewrite re-frames one upstream chunk. A chunk boundary can fall inside a frame, so the carried
+// partial frame is completed from the next chunk before it is rewritten, and the trailing element
+// of a chunk is only terminated when that chunk itself ends a frame. Terminating a partial frame
+// splits one event into two SSE frames -- an `event:` line without data and a data-only frame --
+// and strict clients (the OpenAI SDK) fail to decode the empty payload with
+// "Expecting value: line 1 column 1 (char 0)".
 func (h *virtualResponsesStreamHeartbeat) Rewrite(payload []byte) []byte {
 	if !h.started || len(payload) == 0 {
 		return payload
 	}
+	if len(h.pending) > 0 {
+		payload = append(h.pending, payload...)
+		h.pending = nil
+	}
 	frames := bytes.Split(payload, []byte("\n\n"))
+	if !bytes.HasSuffix(payload, []byte("\n\n")) {
+		// Copy: the caller owns the incoming chunk buffer.
+		h.pending = append([]byte(nil), frames[len(frames)-1]...)
+		frames = frames[:len(frames)-1]
+	}
 	var rewritten []byte
 	for index, frame := range frames {
 		if len(bytes.TrimSpace(frame)) == 0 {
