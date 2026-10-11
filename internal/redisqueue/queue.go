@@ -77,17 +77,14 @@ func (q *queue) subscriberCount() int {
 
 var enqueueLogged atomic.Int64
 
-// logEnqueue samples the enqueue path: the first record and every 50th afterwards are reported
-// with the subscriber count and the delivery decision, which separates "no usage event was ever
-// produced" from "an event was produced but nobody consumed it".
+// logEnqueue records every enqueue with a running total and the subscriber count. A sampled log
+// would hide the exact count, which is what separates "nothing was produced" from "produced but
+// not consumed".
 func logEnqueue(deliveredToSubscribers bool) {
-	count := enqueueLogged.Add(1)
-	if count != 1 && count%50 != 0 {
-		return
-	}
+	total := enqueueLogged.Add(1)
 	log.Infof(
 		"usage queue enqueue #%d: delivered_to_subscribers=%t subscribers=%d",
-		count, deliveredToSubscribers, global.subscriberCount(),
+		total, deliveredToSubscribers, global.subscriberCount(),
 	)
 }
 

@@ -449,10 +449,10 @@ func (m *Manager) dispatch(item queueItem) {
 	copy(plugins, m.plugins)
 	m.pluginsMu.RUnlock()
 	if len(plugins) == 0 {
-		logDispatchSample(0)
+		logDispatch(0, item.record)
 		return
 	}
-	logDispatchSample(len(plugins))
+	logDispatch(len(plugins), item.record)
 	for _, plugin := range plugins {
 		if plugin == nil {
 			continue
@@ -463,18 +463,15 @@ func (m *Manager) dispatch(item queueItem) {
 
 var dispatchLogged atomic.Int64
 
-// logDispatchSample samples the plugin dispatch so a published usage record with no plugin
-// registered is visible; otherwise consumers silently receive nothing while requests succeed.
-func logDispatchSample(pluginCount int) {
-	count := dispatchLogged.Add(1)
-	if count != 1 && count%50 != 0 {
-		return
-	}
+// logDispatch records every usage dispatch with a running total and the record's provider/model.
+// Sampling would hide the exact count, which is what tells a request's usage apart from noise.
+func logDispatch(pluginCount int, record Record) {
+	total := dispatchLogged.Add(1)
 	if pluginCount == 0 {
-		log.Warnf("usage dispatch #%d: no usage plugin registered", count)
+		log.Warnf("usage dispatch #%d: no usage plugin registered provider=%s model=%s", total, record.Provider, record.Model)
 		return
 	}
-	log.Infof("usage dispatch #%d: plugins=%d", count, pluginCount)
+	log.Infof("usage dispatch #%d: plugins=%d provider=%s model=%s", total, pluginCount, record.Provider, record.Model)
 }
 
 func safeInvoke(plugin Plugin, ctx context.Context, record Record) {
