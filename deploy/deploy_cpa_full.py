@@ -1335,6 +1335,28 @@ import sys
 
 import yaml
 
+
+class StrictLoader(yaml.SafeLoader):
+    """YAML loader that refuses duplicate mapping keys, like the Go runtime."""
+
+
+def reject_duplicate_keys(loader, node):
+    seen = set()
+    for key_node, _value_node in node.value:
+        key = loader.construct_object(key_node, deep=True)
+        if key in seen:
+            raise SystemExit(
+                "config update refused: duplicate mapping key "
+                f"{key!r} at line {key_node.start_mark.line + 1}"
+            )
+        seen.add(key)
+    return yaml.SafeLoader.construct_mapping(loader, node, deep=True)
+
+
+StrictLoader.add_constructor(
+    yaml.resolver.BaseResolver.DEFAULT_MAPPING_TAG, reject_duplicate_keys
+)
+
 path = Path(sys.argv[1])
 required_auth_dir = sys.argv[2]
 required_plugin_ids = sys.argv[3:]
@@ -1349,7 +1371,7 @@ for entry in os.environ.get("PLUGIN_SETTINGS_SPEC", "").splitlines():
 
 original = path.read_bytes()
 text = original.decode("utf-8")
-config = yaml.safe_load(text)
+config = yaml.load(text, Loader=StrictLoader)
 if not isinstance(config, dict):
     raise SystemExit("config update refused: root YAML value is not a mapping")
 oauth = config.get("oauth")
@@ -1431,37 +1453,26 @@ for plugin_id in required_plugin_ids:
             block_start = index
             break
     if block_start is None:
+        if plugin_id in configs:
+            raise SystemExit(
+                f"config update refused: cannot locate the line block for {plugin_id}"
+            )
         missing_plugins.append(plugin_id)
         continue
     plugin_config = configs.get(plugin_id)
     if not isinstance(plugin_config, dict) or plugin_config.get("enabled") is not True:
         raise SystemExit(f"config update refused: {plugin_id} exists but is not enabled")
     print(f"PLUGIN_CONFIG[{plugin_id}]=already-enabled")
-    block_end = configs_end
-    for index in range(block_start + 1, configs_end):
-        indent = significant_indent(lines[index])
-        if indent is not None and indent <= entry_indent:
-            block_end = index
-            break
-    plugin_settings = settings.get(plugin_id, {})
-    present_values = {}
-    for index in range(block_start + 1, block_end):
-        parsed = mapping_key(lines[index])
-        if parsed is None or parsed[0] != entry_indent + 2:
-            continue
-        if parsed[1] in plugin_settings:
-            body = lines[index].rstrip("\r\n")
-            present_values[parsed[1]] = body.split(":", 1)[1].strip().strip("'\"")
     additions = []
-    for key in sorted(plugin_settings):
-        value = plugin_settings[key]
-        current = present_values.get(key)
-        if current is None:
+    for key in sorted(settings.get(plugin_id, {})):
+        value = settings[plugin_id][key]
+        if key not in plugin_config:
             additions.append(" " * (entry_indent + 2) + f"{key}: {value}" + newline)
             print(f"PLUGIN_SETTING[{plugin_id}.{key}]=added")
-        elif current != value:
+        elif plugin_config.get(key) != value:
             raise SystemExit(
-                f"config update refused: {plugin_id}.{key} is {current!r}, expected {value!r}"
+                f"config update refused: {plugin_id}.{key} is "
+                f"{plugin_config.get(key)!r}, expected {value!r}"
             )
         else:
             print(f"PLUGIN_SETTING[{plugin_id}.{key}]=unchanged")
@@ -1487,7 +1498,7 @@ if missing_plugins:
 for index, additions in sorted(pending_inserts, key=lambda item: item[0], reverse=True):
     lines[index:index] = additions
 updated = "".join(lines).encode("utf-8")
-verified = yaml.safe_load(updated)
+verified = yaml.load(updated, Loader=StrictLoader)
 if verified["oauth"]["auth-dir"] != required_auth_dir:
     raise SystemExit("config update verification failed: oauth.auth-dir")
 verified_configs = verified["plugins"]["configs"]
