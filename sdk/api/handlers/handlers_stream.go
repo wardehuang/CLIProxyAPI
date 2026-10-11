@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"net/http"
 
+	log "github.com/sirupsen/logrus"
+
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/interfaces"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/runtime/executor/helps"
 	coreexecutor "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/executor"
@@ -458,9 +460,16 @@ func (h *BaseAPIHandler) executeStreamWithAuthManagerFormats(ctx context.Context
 		responseSSEValidator = &sseJSONValidationState{}
 	}
 
+	// TEMP framing diagnostics: where every upstream chunk ends up. Remove once the
+	// xAI responses replay loss is fixed.
+	streamDiag := struct {
+		in, emptyPayload, interceptorDrop, validatorDrop, rewriteDrop, delivered, deliveredBytes int
+	}{}
+
 	transformStreamPayload := func(payload []byte, chunkIndex *int, historyChunks [][]byte) ([]byte, bool, *interfaces.ErrorMessage) {
 		applyStreamHeaderInit()
 		payload = cloneBytes(payload)
+		streamDiag.in++
 		if streamInterceptorsActive {
 			chunkReq := pluginapi.StreamChunkInterceptRequest{
 				RequestID:       lifecycle.requestID(),
@@ -490,6 +499,7 @@ func (h *BaseAPIHandler) executeStreamWithAuthManagerFormats(ctx context.Context
 			}
 			(*chunkIndex)++
 			if intercepted.DropChunk {
+				streamDiag.interceptorDrop++
 				return nil, false, nil
 			}
 		} else {
@@ -502,15 +512,19 @@ func (h *BaseAPIHandler) executeStreamWithAuthManagerFormats(ctx context.Context
 			}
 			payload = validatedPayload
 			if len(payload) == 0 {
+				streamDiag.validatorDrop++
 				return nil, false, nil
 			}
 		}
 		if opts.XAIResponsesStreamHeartbeat != nil {
 			payload = opts.XAIResponsesStreamHeartbeat.Rewrite(payload)
 			if len(payload) == 0 {
+				streamDiag.rewriteDrop++
 				return nil, false, nil
 			}
 		}
+		streamDiag.delivered++
+		streamDiag.deliveredBytes += len(payload)
 		return payload, true, nil
 	}
 
@@ -632,6 +646,12 @@ func (h *BaseAPIHandler) executeStreamWithAuthManagerFormats(ctx context.Context
 		var completionErr error
 		defer func() {
 			lifecycle.complete(completionOutcome, completionStatus, completionErr)
+			// TEMP framing diagnostics (remove with streamDiag above).
+			log.WithField("request_id", lifecycle.requestID()).Infof(
+				"responses framing diag: in=%d empty=%d interceptor_drop=%d validator_drop=%d rewrite_drop=%d delivered=%d delivered_bytes=%d",
+				streamDiag.in, streamDiag.emptyPayload, streamDiag.interceptorDrop,
+				streamDiag.validatorDrop, streamDiag.rewriteDrop, streamDiag.delivered, streamDiag.deliveredBytes,
+			)
 		}()
 		defer close(dataChan)
 		defer close(errChan)
@@ -735,6 +755,7 @@ func (h *BaseAPIHandler) executeStreamWithAuthManagerFormats(ctx context.Context
 				return
 			}
 			if len(chunk.Payload) == 0 {
+				streamDiag.emptyPayload++
 				continue
 			}
 			payload, deliverable, errMsg := transformStreamPayload(chunk.Payload, &chunkIndex, historyChunks)

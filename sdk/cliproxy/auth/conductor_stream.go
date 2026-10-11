@@ -508,13 +508,23 @@ func (m *Manager) wrapStreamResult(ctx context.Context, auth *Auth, provider, re
 				return true
 			}
 		}
+		// TEMP framing diagnostics: report the shape of the chunks handed to the consumer.
+		var bufferedBytes, frameTerminated int
 		for _, chunk := range buffered {
+			bufferedBytes += len(chunk.Payload)
+			if bytes.HasSuffix(chunk.Payload, []byte("\n\n")) {
+				frameTerminated++
+			}
 			if ok := emit(chunk); !ok {
 				abortStreamDelivery(ctx, out, provider, resultModel, auth, dropCause, "buffered", len(buffered))
 				discardStreamChunks(remaining)
 				return
 			}
 		}
+		logEntryWithRequestID(ctx).Infof(
+			"stream replay diag: chunks=%d bytes=%d frame_terminated=%d",
+			len(buffered), bufferedBytes, frameTerminated,
+		)
 		for chunk := range remaining {
 			received++
 			if ok := emit(chunk); !ok {

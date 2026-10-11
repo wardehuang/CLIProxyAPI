@@ -22,8 +22,10 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/clienterror"
 	. "github.com/router-for-me/CLIProxyAPI/v8/internal/constant"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/interfaces"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/logging"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/registry"
 	"github.com/router-for-me/CLIProxyAPI/v8/sdk/api/handlers"
+	log "github.com/sirupsen/logrus"
 	"github.com/tidwall/gjson"
 	"github.com/tidwall/sjson"
 )
@@ -60,12 +62,22 @@ type responsesSSEFramer struct {
 	failureEvent         string
 	isCodexClient        bool
 	dataFrames           int
+	// TEMP framing diagnostics (remove once the xAI responses replay loss is fixed).
+	diagChunksIn, diagBytesIn       int
+	diagDropEmpty, diagDropTerminal int
 }
 
 func (f *responsesSSEFramer) WriteChunk(w io.Writer, chunk []byte) {
-	if len(chunk) == 0 || f.terminalEvent != "" {
+	if len(chunk) == 0 {
+		f.diagDropEmpty++
 		return
 	}
+	if f.terminalEvent != "" {
+		f.diagDropTerminal++
+		return
+	}
+	f.diagChunksIn++
+	f.diagBytesIn += len(chunk)
 	if responsesSSEStartsNewDataFrame(f.pending, chunk) {
 		f.writeFrame(w, f.pending)
 		f.pending = f.pending[:0]
@@ -716,6 +728,14 @@ func (h *OpenAIResponsesAPIHandler) handleStreamingResponse(c *gin.Context, rawJ
 		failureEvent = "response.failed"
 	}
 	framer := &responsesSSEFramer{failureEvent: failureEvent, isCodexClient: isCodexClient}
+	// TEMP framing diagnostics (remove with the framer counters).
+	defer func() {
+		log.WithField("request_id", logging.GetGinRequestID(c)).Infof(
+			"responses framer diag: chunks_in=%d bytes_in=%d frames=%d drop_empty=%d drop_terminal=%d last_event=%s terminal=%s pending_bytes=%d",
+			framer.diagChunksIn, framer.diagBytesIn, framer.dataFrames, framer.diagDropEmpty, framer.diagDropTerminal,
+			framer.lastEvent, framer.terminalEvent, len(framer.pending),
+		)
+	}()
 	virtualHeadersWritten := false
 	virtualHeartbeat := newVirtualResponsesStreamHeartbeat(cliCtx, func(chunk []byte, upstreamHeaders http.Header) bool {
 		if c.Request.Context().Err() != nil {
