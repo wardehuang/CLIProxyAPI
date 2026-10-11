@@ -42,6 +42,7 @@ type virtualResponsesStreamHeartbeat struct {
 	nextSequence      int64
 	dropHandshakeData bool
 	pending           []byte
+	rewriteMu         sync.Mutex
 	headers           http.Header
 	stopChan          chan struct{}
 	doneChan          chan struct{}
@@ -107,8 +108,12 @@ func (h *virtualResponsesStreamHeartbeat) run() {
 		case <-h.ctx.Done():
 			return
 		case <-ticker.C:
+			// nextSequence is shared with the stream producer's rewriteFrame, so build the
+			// heartbeat frame under the same lock.
+			h.rewriteMu.Lock()
 			payload := h.event("response.in_progress", h.nextSequence)
 			h.nextSequence++
+			h.rewriteMu.Unlock()
 			if !h.publish(payload, h.headers) {
 				return
 			}
@@ -128,17 +133,16 @@ func (h *virtualResponsesStreamHeartbeat) StopAndWait() {
 // flushPending emits the frame that was still incomplete when the upstream stream ended, so
 // carrying a partial frame across chunks never drops the last event.
 func (h *virtualResponsesStreamHeartbeat) flushPending() {
-	if len(h.pending) == 0 {
-		return
-	}
+	h.rewriteMu.Lock()
 	pending := h.pending
 	h.pending = nil
+	var frame []byte
 	// A residual frame without data decodes as an empty payload on clients that dispatch their
 	// SSE buffer at EOF, which is the very failure this buffering avoids, so drop it.
-	if !bytes.Contains(pending, []byte("data:")) {
-		return
+	if len(pending) > 0 && bytes.Contains(pending, []byte("data:")) {
+		frame = h.rewriteFrame(pending)
 	}
-	frame := h.rewriteFrame(pending)
+	h.rewriteMu.Unlock()
 	if len(frame) == 0 {
 		return
 	}
@@ -156,6 +160,11 @@ func (h *virtualResponsesStreamHeartbeat) Rewrite(payload []byte) []byte {
 	if !h.started || len(payload) == 0 {
 		return payload
 	}
+	// Rewrite runs on the stream producer goroutine while StopAndWait may flush the carried
+	// partial frame from the request goroutine, and rewriteFrame advances shared sequencing
+	// state, so the whole rewrite is serialized.
+	h.rewriteMu.Lock()
+	defer h.rewriteMu.Unlock()
 	if len(h.pending) > 0 {
 		payload = append(h.pending, payload...)
 		h.pending = nil

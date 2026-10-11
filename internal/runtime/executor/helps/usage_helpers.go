@@ -584,6 +584,23 @@ func (r *UsageReporter) EnsurePublished(ctx context.Context) {
 	})
 }
 
+// PublishXAIAttempt publishes one guarded xAI attempt with its stream guard verdict.
+// The executor emits no other record for a guarded attempt, so the verdict marker is
+// carried on the single record of the attempt.
+func (r *UsageReporter) PublishXAIAttempt(ctx context.Context, detail usage.Detail, guard, guardReason string, degraded, failed bool, statusCode int, failBody string) {
+	if r == nil {
+		return
+	}
+	detail = normalizeUsageDetailTotal(detail, r.provider, r.executorType)
+	r.once.Do(func() {
+		record := r.buildRecord(detail, failed, usage.Failure{StatusCode: statusCode, Body: strings.TrimSpace(failBody)})
+		record.Guard = strings.TrimSpace(guard)
+		record.GuardReason = strings.TrimSpace(guardReason)
+		record.Degraded = degraded
+		r.publishAttemptRecord(ctx, record)
+	})
+}
+
 // publishAttemptRecord emits the record for one upstream attempt and the
 // observability warnings that belong to the attempt rather than to a single event.
 func (r *UsageReporter) publishAttemptRecord(ctx context.Context, record usage.Record) {

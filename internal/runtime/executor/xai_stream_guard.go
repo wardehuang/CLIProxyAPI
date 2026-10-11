@@ -60,7 +60,7 @@ func xaiRequestedModel(opts cliproxyexecutor.Options, req cliproxyexecutor.Reque
 	return req.Model
 }
 
-func xAIStreamGuardFailureResult(auth *cliproxyauth.Auth, opts cliproxyexecutor.Options, prepared *xaiPreparedRequest, runtime *xAIStreamGuardRuntime, upstreamStartedAt, firstResponseByteAt time.Time, responseHeaders http.Header, body []byte, statusCode int, err error) *cliproxyexecutor.StreamResult {
+func xAIStreamGuardFailureResult(auth *cliproxyauth.Auth, opts cliproxyexecutor.Options, prepared *xaiPreparedRequest, runtime *xAIStreamGuardRuntime, upstreamStartedAt, firstResponseByteAt time.Time, responseHeaders http.Header, body []byte, statusCode int, err error, publish func(cliproxyexecutor.XAIAttemptVerdict)) *cliproxyexecutor.StreamResult {
 	runtime.stop()
 	if timeoutErr := runtime.timeoutError(); timeoutErr != nil {
 		err = timeoutErr
@@ -87,7 +87,11 @@ func xAIStreamGuardFailureResult(auth *cliproxyauth.Auth, opts cliproxyexecutor.
 		FirstVisibleAt:      runtime.firstVisibleTime(),
 		FinishedAt:          time.Now(),
 		MaxRetries:          runtime.maxRetries,
-		Metadata:            runtime.metadata,
+		// BEGIN xAI Guardian core extension: the conductor publishes this attempt
+		// through the reporter once the guard verdict is known.
+		Publish: publish,
+		// END xAI Guardian core extension.
+		Metadata: runtime.metadata,
 	}
 	close(completion)
 	return &cliproxyexecutor.StreamResult{Headers: responseHeaders.Clone(), Chunks: out, XAICompletion: completion}

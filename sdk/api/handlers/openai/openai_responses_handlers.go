@@ -19,6 +19,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/client/codex/optimize-multi-agent-v2"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/clienterror"
 	. "github.com/router-for-me/CLIProxyAPI/v8/internal/constant"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/interfaces"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/registry"
@@ -776,11 +777,21 @@ func (h *OpenAIResponsesAPIHandler) handleStreamingResponse(c *gin.Context, rawJ
 				framer.Flush(&initialOutput)
 				errMsg, hasPendingError := handlers.PendingStreamError(errChan)
 				if !hasPendingError && framer.terminalEvent == "" {
-					message := "upstream stream closed before first payload"
-					if framer.dataFrames > 0 {
-						message = "upstream stream closed before a terminal event"
+					if cause := context.Cause(cliCtx); cause != nil {
+						// The attempt context ended before the upstream stream reached the client,
+						// so report the real reason instead of blaming the upstream stream.
+						h.logAbortedResponsesStream(c, framer, cause)
+						errMsg = &interfaces.ErrorMessage{
+							StatusCode: clienterror.StatusClientClosedRequest,
+							Error:      fmt.Errorf("request canceled before the upstream stream completed: %w", cause),
+						}
+					} else {
+						message := "upstream stream closed before first payload"
+						if framer.dataFrames > 0 {
+							message = "upstream stream closed before a terminal event"
+						}
+						errMsg = &interfaces.ErrorMessage{StatusCode: http.StatusBadGateway, Error: fmt.Errorf("%s", message)}
 					}
-					errMsg = &interfaces.ErrorMessage{StatusCode: http.StatusBadGateway, Error: fmt.Errorf("%s", message)}
 				}
 				if framer.dataFrames > 0 {
 					errMsg = sanitizeResponsesStreamErrorMessage(errMsg)
@@ -1018,6 +1029,30 @@ func (h *OpenAIResponsesAPIHandler) logResponsesStreamError(c *gin.Context, fram
 	h.LoggingAPIResponseError(context.WithValue(context.Background(), "gin", c), &interfaces.ErrorMessage{
 		StatusCode: status,
 		Error:      fmt.Errorf("responses stream terminated after %s: %s", lastEvent, errText),
+	})
+}
+
+// logAbortedResponsesStream records a stream that ended because the attempt context ended
+// before any upstream frame reached the client. It is the diagnostic that separates a
+// request cancellation from a real upstream stream failure.
+func (h *OpenAIResponsesAPIHandler) logAbortedResponsesStream(c *gin.Context, framer *responsesSSEFramer, cause error) {
+	lastEvent, dataFrames, terminalEvent, clientErr := "none", 0, "", ""
+	if framer != nil {
+		if framer.lastEvent != "" {
+			lastEvent = framer.lastEvent
+		}
+		dataFrames = framer.dataFrames
+		terminalEvent = framer.terminalEvent
+	}
+	if c != nil && c.Request != nil {
+		if err := c.Request.Context().Err(); err != nil {
+			clientErr = err.Error()
+		}
+	}
+	h.LoggingAPIResponseError(context.WithValue(context.Background(), "gin", c), &interfaces.ErrorMessage{
+		StatusCode: clienterror.StatusClientClosedRequest,
+		Error: fmt.Errorf("responses stream aborted after %s (data_frames=%d terminal_event=%q client_ctx_err=%q): %v",
+			lastEvent, dataFrames, terminalEvent, clientErr, cause),
 	})
 }
 

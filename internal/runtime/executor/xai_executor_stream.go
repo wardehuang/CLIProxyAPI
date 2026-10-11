@@ -12,6 +12,7 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/runtime/executor/helps"
 	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
 	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/executor"
+	coreusage "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/usage"
 	log "github.com/sirupsen/logrus"
 	"github.com/tidwall/gjson"
 )
@@ -46,6 +47,12 @@ func (e *XAIExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Auth
 	reporter := helps.NewExecutorUsageReporter(ctx, e, prepared.baseModel, auth)
 	defer reporter.TrackFailure(ctx, &err)
 	reporter.SetTranslatedReasoningEffort(prepared.body, e.Identifier())
+	// BEGIN xAI Guardian core extension: guarded attempts publish through the reporter
+	// once the conductor knows the guard verdict, so early failures carry no tokens.
+	publishGuardedAttempt := func(verdict cliproxyexecutor.XAIAttemptVerdict) {
+		reporter.PublishXAIAttempt(ctx, coreusage.Detail{}, verdict.Guard, verdict.GuardReason, verdict.Degraded, verdict.Failed, verdict.StatusCode, verdict.FailBody)
+	}
+	// END xAI Guardian core extension.
 
 	url := strings.TrimSuffix(baseURL, "/") + "/responses"
 	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(prepared.body))
@@ -63,7 +70,7 @@ func (e *XAIExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Auth
 	if err != nil {
 		helps.RecordAPIResponseError(ctx, e.cfg, err)
 		if guardRuntime != nil {
-			return xAIStreamGuardFailureResult(auth, opts, prepared, guardRuntime, upstreamStartedAt, time.Time{}, nil, nil, 0, err), nil
+			return xAIStreamGuardFailureResult(auth, opts, prepared, guardRuntime, upstreamStartedAt, time.Time{}, nil, nil, 0, err, publishGuardedAttempt), nil
 		}
 		return nil, err
 	}
@@ -78,7 +85,7 @@ func (e *XAIExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Auth
 		if errRead != nil {
 			helps.RecordAPIResponseError(ctx, e.cfg, errRead)
 			if guardRuntime != nil {
-				return xAIStreamGuardFailureResult(auth, opts, prepared, guardRuntime, upstreamStartedAt, firstResponseByteAt, httpResp.Header, nil, httpResp.StatusCode, errRead), nil
+				return xAIStreamGuardFailureResult(auth, opts, prepared, guardRuntime, upstreamStartedAt, firstResponseByteAt, httpResp.Header, nil, httpResp.StatusCode, errRead, publishGuardedAttempt), nil
 			}
 			return nil, errRead
 		}
@@ -86,7 +93,7 @@ func (e *XAIExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Auth
 		helps.LogWithRequestID(ctx).Debugf("request error, error status: %d, error message: %s", httpResp.StatusCode, helps.SummarizeErrorBody(httpResp.Header.Get("Content-Type"), data))
 		statusErr := xaiStatusErr(httpResp.StatusCode, data)
 		if guardRuntime != nil {
-			return xAIStreamGuardFailureResult(auth, opts, prepared, guardRuntime, upstreamStartedAt, firstResponseByteAt, httpResp.Header, data, httpResp.StatusCode, statusErr), nil
+			return xAIStreamGuardFailureResult(auth, opts, prepared, guardRuntime, upstreamStartedAt, firstResponseByteAt, httpResp.Header, data, httpResp.StatusCode, statusErr, publishGuardedAttempt), nil
 		}
 		return nil, statusErr
 	}
@@ -107,6 +114,9 @@ func (e *XAIExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Auth
 		var guardBody bytes.Buffer
 		var guardErr error
 		var guardCompleted bool
+		// guardUsageDetail carries the terminal token breakdown to the guard verdict
+		// publisher; guarded attempts never publish from the executor.
+		var guardUsageDetail coreusage.Detail
 		defer func() {
 			// BEGIN xAI Guardian core extension: publish buffered xAI stream state.
 			if guardRuntime != nil {
@@ -133,6 +143,12 @@ func (e *XAIExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Auth
 					FinishedAt:          time.Now(),
 					MaxRetries:          guardRuntime.maxRetries,
 					Metadata:            guardRuntime.metadata,
+					// BEGIN xAI Guardian core extension: the conductor publishes this
+					// attempt through the reporter once the guard verdict is known.
+					Publish: func(verdict cliproxyexecutor.XAIAttemptVerdict) {
+						reporter.PublishXAIAttempt(ctx, guardUsageDetail, verdict.Guard, verdict.GuardReason, verdict.Degraded, verdict.Failed, verdict.StatusCode, verdict.FailBody)
+					},
+					// END xAI Guardian core extension.
 				}
 				close(completion)
 			}
@@ -221,7 +237,14 @@ func (e *XAIExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Auth
 						guardCompleted = true
 						// END xAI Guardian core extension.
 						if detail, ok := helps.ParseCodexUsage(eventData); ok {
-							reporter.Publish(ctx, detail)
+							// BEGIN xAI Guardian core extension: the guard verdict decides this
+							// attempt's usage record, so only carry the tokens forward here.
+							if guardRuntime != nil {
+								guardUsageDetail = detail
+							} else {
+								reporter.Publish(ctx, detail)
+							}
+							// END xAI Guardian core extension.
 						}
 						eventData = xaiPatchCompletedOutput(eventData, outputItemsByIndex, outputItemsFallback)
 						eventData = xaiNormalizeReasoningSummaryData(eventData)
@@ -268,7 +291,12 @@ func (e *XAIExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Auth
 			guardErr = errScan
 			// END xAI Guardian core extension.
 			helps.RecordAPIResponseError(ctx, e.cfg, errScan)
-			reporter.PublishFailure(ctx, errScan)
+			// BEGIN xAI Guardian core extension: a guarded attempt publishes once the
+			// guard verdict is known, carrying this read failure.
+			if guardRuntime == nil {
+				reporter.PublishFailure(ctx, errScan)
+			}
+			// END xAI Guardian core extension.
 			select {
 			case out <- cliproxyexecutor.StreamChunk{Err: errScan}:
 			case <-ctx.Done():

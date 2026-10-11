@@ -175,11 +175,37 @@ func readStreamBootstrap(ctx context.Context, ch <-chan cliproxyexecutor.StreamC
 
 // BEGIN xAI Guardian core extension: synchronous xAI stream completion.
 
+// xaiGuardRetryUsageMarker maps a guard retry decision onto the usage marker. It mirrors
+// the xai-guardian decision sites: quota exhaustion retries with the shared account limit
+// and reason "quota_exhausted", while a degraded response retries with the same mode and
+// reports the degradation classification reason.
+func xaiGuardRetryUsageMarker(retryMode, reason string) (string, bool) {
+	if strings.EqualFold(strings.TrimSpace(reason), "quota_exhausted") {
+		return "quota_exhausted", false
+	}
+	if strings.TrimSpace(retryMode) == cliproxyexecutor.XAIStreamRetryModeExcludeSelectedAuthWithSharedAccountLimit {
+		return "degraded", true
+	}
+	return "stream_failed", false
+}
+
+// xaiGuardFailBody prefers the upstream error text and falls back to the guard reason so a
+// failed attempt never records an empty detail.
+func xaiGuardFailBody(errorText, reason string) string {
+	if trimmed := strings.TrimSpace(errorText); trimmed != "" {
+		return trimmed
+	}
+	return strings.TrimSpace(reason)
+}
+
 func (m *Manager) completeXAIStreamGuard(ctx context.Context, auth *Auth, provider string, execReq cliproxyexecutor.Request, opts cliproxyexecutor.Options, resultModel, routeModel string, streamResult *cliproxyexecutor.StreamResult, buffered []cliproxyexecutor.StreamChunk, closed bool, bootstrapErr error) ([]cliproxyexecutor.StreamChunk, bool, error) {
 	if opts.XAIStreamGuard == nil || !strings.EqualFold(strings.TrimSpace(provider), "xai") {
 		return buffered, closed, nil
 	}
 	if streamResult.XAICompletion == nil {
+		// Without the executor's completion there is no publisher for this attempt, so the
+		// broken guard/executor contract is surfaced instead of silently losing the record.
+		logEntryWithRequestID(ctx).Errorf("xai stream guard: completion data missing (request_id=%s auth_index=%s); attempt record dropped", opts.RequestID, auth.Index)
 		return nil, true, &cliproxyexecutor.XAIStreamGuardError{
 			Action: "fail",
 			AuthID: auth.ID,
@@ -198,6 +224,23 @@ func (m *Manager) completeXAIStreamGuard(ctx context.Context, auth *Auth, provid
 	for item := range streamResult.XAICompletion {
 		completion = item
 	}
+	// BEGIN xAI Guardian core extension: a guarded attempt is recorded exactly once, after
+	// the verdict is known, so quota and degraded retries still produce a usage record.
+	publishAttempt := func(guard, guardReason string, degraded, failed bool, status int, failBody string) {
+		if completion.Publish == nil {
+			logEntryWithRequestID(ctx).Errorf("xai stream guard: attempt publisher missing (request_id=%s auth_index=%s); attempt record dropped", opts.RequestID, auth.Index)
+			return
+		}
+		completion.Publish(cliproxyexecutor.XAIAttemptVerdict{
+			Guard:       guard,
+			GuardReason: guardReason,
+			Degraded:    degraded,
+			Failed:      failed,
+			StatusCode:  status,
+			FailBody:    failBody,
+		})
+	}
+	// END xAI Guardian core extension.
 	streamErr := bootstrapErr
 	if completion.Err != nil {
 		streamErr = completion.Err
@@ -261,11 +304,13 @@ func (m *Manager) completeXAIStreamGuard(ctx context.Context, auth *Auth, provid
 	}
 	decision, errComplete := opts.XAIStreamGuard.CompleteXAIStream(ctx, completionRequest)
 	if errComplete != nil {
+		reason := "xAI stream guard completion failed: " + errComplete.Error()
+		publishAttempt("fail", reason, false, true, http.StatusBadGateway, xaiGuardFailBody(errorText, reason))
 		return nil, true, &cliproxyexecutor.XAIStreamGuardError{
 			Action: "fail",
 			AuthID: auth.ID,
 			Status: http.StatusBadGateway,
-			Reason: "xAI stream guard completion failed: " + errComplete.Error(),
+			Reason: reason,
 			Cause:  errComplete,
 		}
 	}
@@ -275,6 +320,7 @@ func (m *Manager) completeXAIStreamGuard(ctx context.Context, auth *Auth, provid
 	}
 	switch action {
 	case "flush":
+		publishAttempt("normal", "", false, streamErr != nil, statusCode, xaiGuardFailBody(errorText, ""))
 		return allChunks, true, nil
 	case "retry":
 		retryMode := strings.TrimSpace(decision.RetryMode)
@@ -292,6 +338,8 @@ func (m *Manager) completeXAIStreamGuard(ctx context.Context, auth *Auth, provid
 		if reason == "" {
 			reason = "xAI stream guard requested a retry"
 		}
+		marker, degraded := xaiGuardRetryUsageMarker(retryMode, reason)
+		publishAttempt(marker, reason, degraded, true, status, xaiGuardFailBody(errorText, reason))
 		return nil, true, &cliproxyexecutor.XAIStreamGuardError{
 			Action:    action,
 			RetryMode: retryMode,
@@ -311,6 +359,11 @@ func (m *Manager) completeXAIStreamGuard(ctx context.Context, auth *Auth, provid
 		if reason == "" {
 			reason = "xAI stream guard rejected the stream"
 		}
+		marker := "fail"
+		if status == http.StatusTooManyRequests {
+			marker = "rate_limited"
+		}
+		publishAttempt(marker, reason, false, true, status, xaiGuardFailBody(errorText, reason))
 		return nil, true, &cliproxyexecutor.XAIStreamGuardError{
 			Action: "fail",
 			AuthID: auth.ID,
@@ -318,16 +371,56 @@ func (m *Manager) completeXAIStreamGuard(ctx context.Context, auth *Auth, provid
 			Reason: reason,
 		}
 	default:
+		reason := "xAI stream guard returned unsupported action: " + action
+		publishAttempt("fail", reason, false, true, http.StatusBadGateway, xaiGuardFailBody(errorText, reason))
 		return nil, true, &cliproxyexecutor.XAIStreamGuardError{
 			Action: "fail",
 			AuthID: auth.ID,
 			Status: http.StatusBadGateway,
-			Reason: "xAI stream guard returned unsupported action: " + action,
+			Reason: reason,
 		}
 	}
 }
 
 // END xAI Guardian core extension.
+
+// streamDeliveryAbortError carries the reason a stream stopped before the client received
+// it. It wraps the context cause so a client cancellation is reported as a cancellation
+// instead of being mistaken for an upstream stream failure.
+type streamDeliveryAbortError struct {
+	cause error
+}
+
+func (e *streamDeliveryAbortError) Error() string {
+	if e == nil || e.cause == nil {
+		return "response stream was not delivered"
+	}
+	return "response stream was not delivered: " + e.cause.Error()
+}
+
+func (e *streamDeliveryAbortError) Unwrap() error {
+	if e == nil {
+		return nil
+	}
+	return e.cause
+}
+
+// abortStreamDelivery records a delivery that was dropped before the client saw it and
+// hands the client the real cause. emit only aborts when the attempt context ended, so the
+// cause is always set; a cancelled client may still miss the chunk, which keeps this
+// best-effort.
+func abortStreamDelivery(ctx context.Context, out chan cliproxyexecutor.StreamChunk, provider, model string, auth *Auth, cause error, phase string, buffered int) {
+	authIndex := ""
+	if auth != nil {
+		authIndex = auth.Index
+	}
+	logEntryWithRequestID(ctx).Warnf("stream delivery aborted: provider=%s model=%s auth_index=%s phase=%s buffered_chunks=%d cause=%v", provider, model, authIndex, phase, buffered, cause)
+	chunk := cliproxyexecutor.StreamChunk{Err: &streamDeliveryAbortError{cause: cause}}
+	select {
+	case out <- chunk:
+	case <-ctx.Done():
+	}
+}
 
 func (m *Manager) wrapStreamResult(ctx context.Context, auth *Auth, provider, resultModel, routeModel string, headers http.Header, buffered []cliproxyexecutor.StreamChunk, remaining <-chan cliproxyexecutor.StreamChunk, aliasResult OAuthModelAliasResult, ephemeralResult bool, opts cliproxyexecutor.Options) *cliproxyexecutor.StreamResult {
 	out := make(chan cliproxyexecutor.StreamChunk)
@@ -336,6 +429,7 @@ func (m *Manager) wrapStreamResult(ctx context.Context, auth *Auth, provider, re
 		defer close(out)
 		var failed bool
 		forward := true
+		var dropCause error
 		var rewriter *StreamRewriter
 		if aliasResult.ForceMapping && strings.TrimSpace(aliasResult.OriginalAlias) != "" {
 			rewriter = NewStreamRewriter(StreamRewriteOptions{RewriteModel: aliasResult.OriginalAlias})
@@ -364,6 +458,7 @@ func (m *Manager) wrapStreamResult(ctx context.Context, auth *Auth, provider, re
 				select {
 				case <-ctx.Done():
 					forward = false
+					dropCause = context.Cause(ctx)
 					return false
 				case out <- chunk:
 					return true
@@ -384,6 +479,7 @@ func (m *Manager) wrapStreamResult(ctx context.Context, auth *Auth, provider, re
 			select {
 			case <-ctx.Done():
 				forward = false
+				dropCause = context.Cause(ctx)
 				return false
 			case out <- chunk:
 				return true
@@ -391,12 +487,14 @@ func (m *Manager) wrapStreamResult(ctx context.Context, auth *Auth, provider, re
 		}
 		for _, chunk := range buffered {
 			if ok := emit(chunk); !ok {
+				abortStreamDelivery(ctx, out, provider, resultModel, auth, dropCause, "buffered", len(buffered))
 				discardStreamChunks(remaining)
 				return
 			}
 		}
 		for chunk := range remaining {
 			if ok := emit(chunk); !ok {
+				abortStreamDelivery(ctx, out, provider, resultModel, auth, dropCause, "stream", len(buffered))
 				discardStreamChunks(remaining)
 				return
 			}
@@ -404,6 +502,7 @@ func (m *Manager) wrapStreamResult(ctx context.Context, auth *Auth, provider, re
 		if tail := finishForceMappedStreamChunks(rewriter); len(tail) > 0 {
 			tailChunk := cliproxyexecutor.StreamChunk{Payload: tail}
 			if !emit(tailChunk) {
+				abortStreamDelivery(ctx, out, provider, resultModel, auth, dropCause, "tail", len(buffered))
 				return
 			}
 		}

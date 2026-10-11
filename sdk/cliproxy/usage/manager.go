@@ -65,6 +65,14 @@ type Record struct {
 	Failed      bool
 	Fail        Failure
 	Detail      Detail
+	// Guard stores the xAI stream guard verdict for this upstream attempt:
+	// "normal", "quota_exhausted", "degraded", "rate_limited", "stream_failed", "retry" or "fail".
+	// Empty for non-xAI attempts.
+	Guard string
+	// GuardReason stores the raw reason reported by the xAI stream guard behind Guard.
+	GuardReason string
+	// Degraded reports that the xAI stream guard classified this attempt as degraded.
+	Degraded bool
 	// ResponseHeaders stores a snapshot of upstream response headers for usage sinks.
 	ResponseHeaders http.Header
 }

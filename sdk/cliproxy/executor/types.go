@@ -383,16 +383,20 @@ type StreamResult struct {
 
 // XAIStreamCompletion reports timing and terminal state for one xAI attempt.
 type XAIStreamCompletion struct {
-	Provider            string
-	AuthID              string
-	AuthIndex           string
-	AuthFileName        string
-	ProxyURL            string
-	ResponseHeaders     http.Header
-	Body                []byte
-	StatusCode          int
-	Err                 error
-	Completed           bool
+	Provider        string
+	AuthID          string
+	AuthIndex       string
+	AuthFileName    string
+	ProxyURL        string
+	ResponseHeaders http.Header
+	Body            []byte
+	StatusCode      int
+	Err             error
+	Completed       bool
+	// Publish is set for guarded xAI attempts. The conductor calls it once with the
+	// guard verdict so the executor's reporter owns this attempt's usage record; the
+	// executor itself never publishes a guarded attempt.
+	Publish             func(XAIAttemptVerdict)
 	StartedAt           time.Time
 	UpstreamStartedAt   time.Time
 	FirstResponseByteAt time.Time
@@ -407,6 +411,24 @@ type XAIStreamCompletion struct {
 // END xAI Guardian core extension.
 
 // BEGIN xAI Guardian core extension: xAI guard retry boundary.
+
+// XAIAttemptVerdict carries the xAI stream guard verdict for one attempt back to the
+// executor's usage reporter, which owns the attempt record.
+type XAIAttemptVerdict struct {
+	// Guard is the usage marker: "normal", "quota_exhausted", "degraded", "rate_limited",
+	// "stream_failed", "retry" or "fail".
+	Guard string
+	// GuardReason is the raw reason reported by the guard behind Guard.
+	GuardReason string
+	// Degraded reports that the guard classified the attempt as degraded.
+	Degraded bool
+	// Failed reports that the attempt must be recorded as failed.
+	Failed bool
+	// StatusCode is the status recorded for a failed attempt.
+	StatusCode int
+	// FailBody is the failure detail recorded for a failed attempt.
+	FailBody string
+}
 
 // XAIStreamGuardError carries a synchronous guard decision into the auth
 // conductor. Retry decisions are credential-scoped; fail decisions are

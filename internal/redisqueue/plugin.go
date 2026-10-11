@@ -155,6 +155,9 @@ func (p *usageQueuePlugin) HandleUsage(ctx context.Context, record coreusage.Rec
 		ServiceTier:         serviceTier,
 		ResponseServiceTier: responseServiceTier,
 		ResponseModel:       responseModel,
+		Guard:               strings.TrimSpace(record.Guard),
+		GuardReason:         strings.TrimSpace(record.GuardReason),
+		Degraded:            record.Degraded,
 	})
 	if err != nil {
 		return
@@ -185,6 +188,10 @@ type queuedUsageDetail struct {
 	ServiceTier         string                   `json:"service_tier"`
 	ResponseServiceTier string                   `json:"response_service_tier,omitempty"`
 	ResponseModel       string                   `json:"response_model,omitempty"`
+	// Guard/GuardReason/Degraded expose the xAI stream guard verdict for this attempt.
+	Guard       string `json:"guard,omitempty"`
+	GuardReason string `json:"guard_reason,omitempty"`
+	Degraded    bool   `json:"degraded,omitempty"`
 }
 
 type requestDetail struct {
