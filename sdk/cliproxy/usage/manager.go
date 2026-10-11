@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/google/uuid"
@@ -448,14 +449,32 @@ func (m *Manager) dispatch(item queueItem) {
 	copy(plugins, m.plugins)
 	m.pluginsMu.RUnlock()
 	if len(plugins) == 0 {
+		logDispatchSample(0)
 		return
 	}
+	logDispatchSample(len(plugins))
 	for _, plugin := range plugins {
 		if plugin == nil {
 			continue
 		}
 		safeInvoke(plugin, item.ctx, item.record)
 	}
+}
+
+var dispatchLogged atomic.Int64
+
+// logDispatchSample samples the plugin dispatch so a published usage record with no plugin
+// registered is visible; otherwise consumers silently receive nothing while requests succeed.
+func logDispatchSample(pluginCount int) {
+	count := dispatchLogged.Add(1)
+	if count != 1 && count%50 != 0 {
+		return
+	}
+	if pluginCount == 0 {
+		log.Warnf("usage dispatch #%d: no usage plugin registered", count)
+		return
+	}
+	log.Infof("usage dispatch #%d: plugins=%d", count, pluginCount)
 }
 
 func safeInvoke(plugin Plugin, ctx context.Context, record Record) {

@@ -5,13 +5,28 @@ import (
 	"encoding/json"
 	"net/http"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/google/uuid"
 	internallogging "github.com/router-for-me/CLIProxyAPI/v8/internal/logging"
 	coresession "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/session"
 	coreusage "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/usage"
+	log "github.com/sirupsen/logrus"
 )
+
+var lastGateDropLog int64
+
+// logPluginGateDrop reports (rate limited) usage records discarded before they reach the queue.
+// A closed gate here means consumers see no events at all even though requests are succeeding.
+func logPluginGateDrop(enabled bool, usageStatistics bool) {
+	now := time.Now().Unix()
+	if now-atomic.LoadInt64(&lastGateDropLog) < 30 {
+		return
+	}
+	atomic.StoreInt64(&lastGateDropLog, now)
+	log.Warnf("usage queue plugin dropped a usage record: queue_enabled=%t usage_statistics_enabled=%t", enabled, usageStatistics)
+}
 
 func init() {
 	coreusage.RegisterPlugin(&usageQueuePlugin{})
@@ -24,6 +39,7 @@ func (p *usageQueuePlugin) HandleUsage(ctx context.Context, record coreusage.Rec
 		return
 	}
 	if !Enabled() || !UsageStatisticsEnabled() {
+		logPluginGateDrop(Enabled(), UsageStatisticsEnabled())
 		return
 	}
 

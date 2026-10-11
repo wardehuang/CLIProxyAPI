@@ -4,6 +4,8 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+
+	log "github.com/sirupsen/logrus"
 )
 
 const (
@@ -41,7 +43,12 @@ func init() {
 }
 
 func SetEnabled(value bool) {
-	enabled.Store(value)
+	previous := enabled.Swap(value)
+	if previous != value {
+		// Whether the usage queue is live decides if Manager-style consumers ever see events;
+		// a silent flip to false is indistinguishable from an upstream that stopped reporting.
+		log.Infof("usage queue enabled state changed: %t -> %t", previous, value)
+	}
 	if !value {
 		global.clear()
 		errorGlobal.clear()
@@ -62,17 +69,55 @@ func SetRetentionSeconds(value int) {
 	retentionSeconds.Store(normalized)
 }
 
+func (q *queue) subscriberCount() int {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	return len(q.subscribers)
+}
+
+var enqueueLogged atomic.Int64
+
+// logEnqueue samples the enqueue path: the first record and every 50th afterwards are reported
+// with the subscriber count and the delivery decision, which separates "no usage event was ever
+// produced" from "an event was produced but nobody consumed it".
+func logEnqueue(deliveredToSubscribers bool) {
+	count := enqueueLogged.Add(1)
+	if count != 1 && count%50 != 0 {
+		return
+	}
+	log.Infof(
+		"usage queue enqueue #%d: delivered_to_subscribers=%t subscribers=%d",
+		count, deliveredToSubscribers, global.subscriberCount(),
+	)
+}
+
 func Enqueue(payload []byte) {
 	if !Enabled() {
+		logDisallowedEnqueue("queue disabled")
 		return
 	}
 	if len(payload) == 0 {
 		return
 	}
 	if global.publishToSubscribers(payload) {
+		logEnqueue(true)
 		return
 	}
+	logEnqueue(false)
 	global.enqueue(payload)
+}
+
+var lastDisallowedLog atomic.Int64
+
+// logDisallowedEnqueue reports (rate limited) an enqueue rejected before publishing; without it a
+// disabled queue is invisible in logs while every consumer silently stops receiving events.
+func logDisallowedEnqueue(reason string) {
+	now := time.Now().Unix()
+	previous := lastDisallowedLog.Load()
+	if now-previous < 30 || !lastDisallowedLog.CompareAndSwap(previous, now) {
+		return
+	}
+	log.Warnf("usage queue enqueue rejected: %s", reason)
 }
 
 func EnqueueError(payload []byte) {

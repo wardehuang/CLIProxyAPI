@@ -11,6 +11,7 @@ import (
 	"time"
 
 	coreexecutor "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/executor"
+	log "github.com/sirupsen/logrus"
 	"github.com/tidwall/gjson"
 	"github.com/tidwall/sjson"
 )
@@ -144,6 +145,15 @@ func (h *virtualResponsesStreamHeartbeat) flushPending() {
 	}
 	h.rewriteMu.Unlock()
 	if len(frame) == 0 {
+		if len(pending) > 0 {
+			// A tail frame that never reached the client is a silent terminal-event loss: record it
+			// with its byte count and event name so a closed-without-terminal stream can be traced.
+			log.WithField("response_id", h.responseID).Warnf(
+				"virtual heartbeat: withheld %d-byte tail frame at stream end (event=%s, has_data=%t, terminal=%t)",
+				len(pending), frameEventType(pending), bytes.Contains(pending, []byte("data:")),
+				bytes.Contains(pending, []byte("response.completed")) || bytes.Contains(pending, []byte("response.failed")),
+			)
+		}
 		return
 	}
 	// Left unterminated on purpose: clients flush a trailing partial frame themselves at EOF.
@@ -193,6 +203,18 @@ func (h *virtualResponsesStreamHeartbeat) Rewrite(payload []byte) []byte {
 	return rewritten
 }
 
+// frameEventType extracts the SSE event name of a (possibly partial) frame for diagnostics
+// only; it never rewrites or validates the frame.
+func frameEventType(frame []byte) string {
+	for _, line := range bytes.Split(frame, []byte("\n")) {
+		trimmed := bytes.TrimSpace(line)
+		if bytes.HasPrefix(trimmed, []byte("event:")) {
+			return strings.TrimSpace(string(trimmed[len("event:"):]))
+		}
+	}
+	return "unknown"
+}
+
 func (h *virtualResponsesStreamHeartbeat) rewriteFrame(frame []byte) []byte {
 	lines := bytes.Split(frame, []byte("\n"))
 	eventType := ""
@@ -215,6 +237,10 @@ func (h *virtualResponsesStreamHeartbeat) rewriteFrame(frame []byte) []byte {
 	}
 	if h.dropHandshakeData {
 		h.dropHandshakeData = false
+		log.WithField("response_id", h.responseID).Warnf(
+			"virtual heartbeat: dropped post-handshake frame (event=%s, bytes=%d)",
+			eventType, len(frame),
+		)
 		return nil
 	}
 	data := bytes.Join(dataLines, []byte("\n"))

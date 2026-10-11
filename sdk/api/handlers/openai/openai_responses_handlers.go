@@ -790,6 +790,7 @@ func (h *OpenAIResponsesAPIHandler) handleStreamingResponse(c *gin.Context, rawJ
 						if framer.dataFrames > 0 {
 							message = "upstream stream closed before a terminal event"
 						}
+						h.logStreamClosedWithoutTerminal(c, framer)
 						errMsg = &interfaces.ErrorMessage{StatusCode: http.StatusBadGateway, Error: fmt.Errorf("%s", message)}
 					}
 				}
@@ -1032,6 +1033,32 @@ func (h *OpenAIResponsesAPIHandler) logResponsesStreamError(c *gin.Context, fram
 	})
 }
 
+// logStreamClosedWithoutTerminal records the counters of a stream that ended with no terminal
+// event, so the next occurrence shows whether any upstream payload reached the framer at all.
+func (h *OpenAIResponsesAPIHandler) logStreamClosedWithoutTerminal(c *gin.Context, framer *responsesSSEFramer) {
+	lastEvent, dataFrames, terminalEvent, failureEvent, clientErr := "none", 0, "", "", ""
+	pendingBytes := 0
+	if framer != nil {
+		if framer.lastEvent != "" {
+			lastEvent = framer.lastEvent
+		}
+		dataFrames = framer.dataFrames
+		terminalEvent = framer.terminalEvent
+		failureEvent = framer.failureEvent
+		pendingBytes = len(framer.pending)
+	}
+	if c != nil && c.Request != nil {
+		if err := c.Request.Context().Err(); err != nil {
+			clientErr = err.Error()
+		}
+	}
+	h.LoggingAPIResponseError(context.WithValue(context.Background(), "gin", c), &interfaces.ErrorMessage{
+		StatusCode: http.StatusBadGateway,
+		Error: fmt.Errorf("responses stream ended without a terminal event (data_frames=%d last_event=%q terminal_event=%q failure_event=%q pending_bytes=%d client_ctx_err=%q)",
+			dataFrames, lastEvent, terminalEvent, failureEvent, pendingBytes, clientErr),
+	})
+}
+
 // logAbortedResponsesStream records a stream that ended because the attempt context ended
 // before any upstream frame reached the client. It is the diagnostic that separates a
 // request cancellation from a real upstream stream failure.
@@ -1121,6 +1148,7 @@ func (h *OpenAIResponsesAPIHandler) forwardResponsesStream(c *gin.Context, flush
 			if lastEvent == "" {
 				lastEvent = "none"
 			}
+			h.logStreamClosedWithoutTerminal(c, framer)
 			return &interfaces.ErrorMessage{
 				StatusCode: http.StatusBadGateway,
 				Error:      fmt.Errorf("upstream stream closed before a terminal event (last event: %s)", lastEvent),

@@ -430,6 +430,19 @@ func (m *Manager) wrapStreamResult(ctx context.Context, auth *Auth, provider, re
 		var failed bool
 		forward := true
 		var dropCause error
+		received := 0
+		authIndex := ""
+		if auth != nil {
+			authIndex = auth.Index
+		}
+		// Per-attempt accounting: a consumer that ends without a terminal event needs to know
+		// whether the upstream channel yielded nothing or the chunks were dropped in this hop.
+		defer func() {
+			logEntryWithRequestID(ctx).Infof(
+				"stream forward finished: provider=%s model=%s auth_index=%s received=%d buffered=%d failed=%t drop_cause=%v",
+				provider, resultModel, authIndex, received, len(buffered), failed, dropCause,
+			)
+		}()
 		var rewriter *StreamRewriter
 		if aliasResult.ForceMapping && strings.TrimSpace(aliasResult.OriginalAlias) != "" {
 			rewriter = NewStreamRewriter(StreamRewriteOptions{RewriteModel: aliasResult.OriginalAlias})
@@ -465,10 +478,20 @@ func (m *Manager) wrapStreamResult(ctx context.Context, auth *Auth, provider, re
 				}
 			}
 			if len(chunk.Payload) == 0 {
+				if chunk.Err == nil {
+					logEntryWithRequestID(ctx).Warnf(
+						"stream forward skipped an empty upstream chunk: provider=%s model=%s auth_index=%s", provider, resultModel, authIndex,
+					)
+				}
 				return true
 			}
 			payload := rewriteForceMappedStreamChunk(rewriter, chunk.Payload)
 			if len(payload) == 0 {
+				if rewriter != nil {
+					logEntryWithRequestID(ctx).Warnf(
+						"stream forward dropped a rewritten chunk: provider=%s model=%s auth_index=%s bytes=%d", provider, resultModel, authIndex, len(chunk.Payload),
+					)
+				}
 				return true
 			}
 			chunk.Payload = payload
@@ -493,6 +516,7 @@ func (m *Manager) wrapStreamResult(ctx context.Context, auth *Auth, provider, re
 			}
 		}
 		for chunk := range remaining {
+			received++
 			if ok := emit(chunk); !ok {
 				abortStreamDelivery(ctx, out, provider, resultModel, auth, dropCause, "stream", len(buffered))
 				discardStreamChunks(remaining)
