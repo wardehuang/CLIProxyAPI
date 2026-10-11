@@ -32,6 +32,7 @@ type streamEvidence struct {
 	ReasoningItemCompleted bool
 	ReasoningMetadataError bool
 	CompletedFunctionCalls int
+	NonTextOutput          bool
 	FunctionCallNames      []string
 	FunctionCallToolNames  []string
 	CompletedMessage       bool
@@ -100,6 +101,15 @@ func completeXAIStream(_ context.Context, completion pluginapi.XAIStreamCompleti
 		_ = store.appendLogWithRequestLogID(logLevelWarn, "guard.classification_unknown", "xAI 响应无法完成实时守护分类", classification.Reason, completion.TraceID)
 		return pluginapi.XAIStreamCompletionResponse{Action: pluginapi.XAIStreamActionFail, Reason: classification.Reason, StatusCode: http.StatusBadGateway, Error: "realtime guard classification unavailable"}, nil
 	}
+	if classification.CompletedToolResultWrapupEvidence {
+		// An exemption is not a healthy observation: preserve count, cooldown,
+		// priority and slot ownership without running either state transition.
+		detail := fmt.Sprintf("%s auth_index=%s previous_auth_index=%s scan_start_index=%d tools=%s output_tokens=%d reasoning_tokens=%d summary_chars=%d encrypted_bytes=%d",
+			reason, authIndex, classification.PreviousZeroThinkingAuthIndex, classification.WrapupScanStartIndex,
+			strings.Join(classification.WrapupToolNames, ","), evidence.OutputTokens, evidence.ReasoningTokens, evidence.SummaryChars, evidence.EncryptedBytes)
+		_ = store.appendLogWithRequestLogID(logLevelInfo, "guard.exempt", "Cross-auth tool-result wrapup exempted", detail, completion.TraceID)
+		return pluginapi.XAIStreamCompletionResponse{Action: pluginapi.XAIStreamActionFlush, Reason: reason}, nil
+	}
 	if !degraded {
 		degradationCleared := false
 		if authIndex != "" {
@@ -140,21 +150,26 @@ func completeXAIStream(_ context.Context, completion pluginapi.XAIStreamCompleti
 		transition.Permanent, evidence.SummaryChars, evidence.EncryptedBytes, evidence.OutputTokens, evidence.ReasoningTokens)
 	_ = store.appendLogWithRequestLogID(logLevelWarn, "guard.degraded", "xAI 响应命中降智守护", reason+" "+detail, completion.TraceID)
 	return pluginapi.XAIStreamCompletionResponse{
-		Action:     pluginapi.XAIStreamActionRetry,
-		RetryMode:  pluginapi.XAIStreamRetryModeExcludeSelectedAuthWithSharedAccountLimit,
-		Reason:     reason,
-		StatusCode: http.StatusBadGateway,
+		Action:                    pluginapi.XAIStreamActionRetry,
+		RetryMode:                 pluginapi.XAIStreamRetryModeExcludeSelectedAuthWithSharedAccountLimit,
+		Reason:                    reason,
+		StatusCode:                http.StatusBadGateway,
+		ZeroThinkingWithoutAction: reason == "missing_thinking_without_action" && hasZeroThinkingWithoutAction(evidence),
 	}, nil
 }
 
 type realtimeGuardClassification struct {
-	Unknown                   bool
-	Reason                    string
-	Degraded                  bool
-	IsRealThinking            bool
-	CompletedToolCallEvidence bool
-	CompletedMutationEvidence bool
-	BurstDump                 bool
+	Unknown                           bool
+	Reason                            string
+	Degraded                          bool
+	IsRealThinking                    bool
+	CompletedToolCallEvidence         bool
+	CompletedMutationEvidence         bool
+	CompletedToolResultWrapupEvidence bool
+	PreviousZeroThinkingAuthIndex     string
+	WrapupScanStartIndex              int
+	WrapupToolNames                   []string
+	BurstDump                         bool
 }
 
 func classifyRealtimeGuardEvidence(evidence streamEvidence, completion pluginapi.XAIStreamCompletionRequest, settings pluginSettings) realtimeGuardClassification {
@@ -215,6 +230,15 @@ func classifyRealtimeGuardEvidence(evidence streamEvidence, completion pluginapi
 			classification.CompletedMutationEvidence = mutation.Found
 		}
 		if !classification.CompletedMutationEvidence {
+			wrapup := crossAuthToolResultWrapup(evidence, completion, settings)
+			if wrapup.Found {
+				classification.CompletedToolResultWrapupEvidence = true
+				classification.PreviousZeroThinkingAuthIndex = stringValue(completion.Metadata[pluginapi.XAIStreamPreviousZeroThinkingAuthIndexMetadataKey])
+				classification.WrapupScanStartIndex = wrapup.ScanStartIndex
+				classification.WrapupToolNames = wrapup.ToolNames
+				classification.Reason = completedToolResultWrapupAfterCrossAuthReason
+				return classification
+			}
 			classification.Degraded = true
 			classification.Reason = "missing_thinking_without_action"
 			return classification
@@ -717,6 +741,9 @@ func applyStreamEvent(evidence *streamEvidence, eventName string, value any) {
 		return
 	}
 	eventName = strings.ToLower(strings.TrimSpace(eventName))
+	if strings.Contains(eventName, "_call.") || strings.HasPrefix(eventName, "response.function_call_arguments.") {
+		evidence.NonTextOutput = true
+	}
 	if strings.Contains(eventName, "failed") || strings.Contains(eventName, "incomplete") || eventName == "error" || strings.Contains(eventName, "error") {
 		evidence.StreamError = eventName
 		if eventName == "response.failed" || eventName == "response.incomplete" {
@@ -786,6 +813,9 @@ func applyStreamEvent(evidence *streamEvidence, eventName string, value any) {
 
 func recordOutputItem(evidence *streamEvidence, item map[string]any, terminal bool) {
 	typeName := strings.ToLower(stringValue(item["type"]))
+	if typeName != "message" {
+		evidence.NonTextOutput = true
+	}
 	status := strings.ToLower(stringValue(item["status"]))
 	if typeName == "reasoning" {
 		recordReasoningItemID(evidence, stringValue(item["id"]))

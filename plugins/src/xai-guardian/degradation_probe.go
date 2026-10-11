@@ -76,6 +76,7 @@ type accountDegradationProbeThresholds struct {
 	GenerationSeconds               float64  `json:"generationSeconds"`
 	GenerationActive                bool     `json:"generationActive"`
 	MinOutputTokens                 int      `json:"minOutputTokens"`
+	WrapupMaxOutputTokens           int      `json:"wrapupMaxOutputTokens"`
 	MinSummaryChars                 int      `json:"minSummaryChars"`
 	MinEncryptedBytes               int      `json:"minEncryptedBytes"`
 	EncryptedBytesPerReasoningToken int      `json:"encryptedBytesPerReasoningToken"`
@@ -460,6 +461,7 @@ func buildAccountDegradationProbeResult(file xaiAuthFile, model string, evidence
 			GenerationSeconds:               settings.RealtimeGuardGenerationSeconds,
 			GenerationActive:                false,
 			MinOutputTokens:                 settings.RealtimeGuardMinOutputTokens,
+			WrapupMaxOutputTokens:           settings.RealtimeGuardWrapupMaxOutputTokens,
 			MinSummaryChars:                 settings.RealtimeGuardMinSummaryChars,
 			MinEncryptedBytes:               settings.RealtimeGuardMinEncryptedBytes,
 			EncryptedBytesPerReasoningToken: settings.RealtimeGuardEncryptedBytesPerReasoningToken,

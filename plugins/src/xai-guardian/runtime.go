@@ -783,6 +783,7 @@ func (controller *runtimeController) updateSettings(store *guardianStore, body [
 		RealtimeGuardMinEncryptedBytes               int     `json:"realtimeGuardMinEncryptedBytes"`
 		RealtimeGuardEncryptedBytesPerReasoningToken int     `json:"realtimeGuardEncryptedBytesPerReasoningToken"`
 		RealtimeGuardMinOutputTokens                 int     `json:"realtimeGuardMinOutputTokens"`
+		RealtimeGuardWrapupMaxOutputTokens           int     `json:"realtimeGuardWrapupMaxOutputTokens"`
 		RealtimeGuardBurstMinReasoningTokens         int     `json:"realtimeGuardBurstMinReasoningTokens"`
 		RealtimeGuardBurstMaxVisibleTokens           int     `json:"realtimeGuardBurstMaxVisibleTokens"`
 		RealtimeGuardBurstMaxWindowMS                int     `json:"realtimeGuardBurstMaxWindowMs"`
@@ -829,6 +830,7 @@ func (controller *runtimeController) updateSettings(store *guardianStore, body [
 		RealtimeGuardMinEncryptedBytes:               payload.RealtimeGuardMinEncryptedBytes,
 		RealtimeGuardEncryptedBytesPerReasoningToken: payload.RealtimeGuardEncryptedBytesPerReasoningToken,
 		RealtimeGuardMinOutputTokens:                 payload.RealtimeGuardMinOutputTokens,
+		RealtimeGuardWrapupMaxOutputTokens:           payload.RealtimeGuardWrapupMaxOutputTokens,
 		RealtimeGuardBurstMinReasoningTokens:         payload.RealtimeGuardBurstMinReasoningTokens,
 		RealtimeGuardBurstMaxVisibleTokens:           payload.RealtimeGuardBurstMaxVisibleTokens,
 		RealtimeGuardBurstMaxWindowMS:                payload.RealtimeGuardBurstMaxWindowMS,
@@ -1162,6 +1164,7 @@ func publicSettings(settings pluginSettings) map[string]any {
 		"realtimeGuardIdleTimeoutSeconds": settings.RealtimeGuardIdleTimeoutSeconds, "realtimeGuardMinSummaryChars": settings.RealtimeGuardMinSummaryChars,
 		"realtimeGuardMinEncryptedBytes": settings.RealtimeGuardMinEncryptedBytes, "realtimeGuardEncryptedBytesPerReasoningToken": settings.RealtimeGuardEncryptedBytesPerReasoningToken,
 		"realtimeGuardMinOutputTokens": settings.RealtimeGuardMinOutputTokens, "realtimeGuardBurstMinReasoningTokens": settings.RealtimeGuardBurstMinReasoningTokens,
+		"realtimeGuardWrapupMaxOutputTokens": settings.RealtimeGuardWrapupMaxOutputTokens,
 		"realtimeGuardBurstMaxVisibleTokens": settings.RealtimeGuardBurstMaxVisibleTokens, "realtimeGuardBurstMaxWindowMs": settings.RealtimeGuardBurstMaxWindowMS,
 		"ipBatchRetentionDays": settings.IPBatchRetentionDays,
 	}

@@ -115,11 +115,12 @@ func (a xAIStreamGuardAdapter) CompleteXAIStream(ctx context.Context, req coreex
 		response, err = a.host.(xAIStreamGuardHost).CompleteXAIStream(ctx, request)
 	}
 	return coreexecutor.XAIStreamCompletionResponse{
-		Action:     string(response.Action),
-		RetryMode:  string(response.RetryMode),
-		Reason:     response.Reason,
-		StatusCode: response.StatusCode,
-		Error:      response.Error,
+		Action:                    string(response.Action),
+		RetryMode:                 string(response.RetryMode),
+		Reason:                    response.Reason,
+		StatusCode:                response.StatusCode,
+		Error:                     response.Error,
+		ZeroThinkingWithoutAction: response.ZeroThinkingWithoutAction,
 	}, err
 }
 

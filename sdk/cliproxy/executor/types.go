@@ -192,11 +192,12 @@ type XAIStreamCompletionRequest struct {
 
 // XAIStreamCompletionResponse returns the xAI stream action.
 type XAIStreamCompletionResponse struct {
-	Action     string
-	RetryMode  string
-	Reason     string
-	StatusCode int
-	Error      string
+	Action                    string
+	RetryMode                 string
+	Reason                    string
+	StatusCode                int
+	Error                     string
+	ZeroThinkingWithoutAction bool
 }
 
 // END xAI Guardian core extension.

@@ -13,39 +13,9 @@ type completedMutationEvidence struct {
 
 func scanCompletedMutationEvidence(originalRequest []byte) completedMutationEvidence {
 	result := completedMutationEvidence{ScanStartIndex: -1}
-	if len(originalRequest) == 0 {
+	input, selectedUser := currentUserEvidenceInput(originalRequest)
+	if selectedUser < 0 {
 		return result
-	}
-	var request map[string]any
-	if err := json.Unmarshal(originalRequest, &request); err != nil {
-		return result
-	}
-	input, ok := request["input"].([]any)
-	if !ok || len(input) == 0 {
-		return result
-	}
-	lastUser := -1
-	for index, rawItem := range input {
-		item, ok := rawItem.(map[string]any)
-		if ok && strings.EqualFold(stringValue(item["role"]), "user") {
-			lastUser = index
-		}
-	}
-	if lastUser < 0 {
-		return result
-	}
-	selectedUser := lastUser
-	if lastUser > 0 && itemType(input[lastUser-1]) == "function_call_output" {
-		selectedUser = -1
-		for index := lastUser - 1; index >= 0; index-- {
-			if itemRole(input[index]) == "user" {
-				selectedUser = index
-				break
-			}
-		}
-		if selectedUser < 0 {
-			return result
-		}
 	}
 	result.ScanStartIndex = selectedUser
 	calls := make(map[string]mutationCall)

@@ -669,6 +669,7 @@
                 <div class="settings-field"><label for="realtime-guard-min-encrypted-bytes">最小加密思考字节数</label><input class="settings-input" id="realtime-guard-min-encrypted-bytes" type="number" min="64"></div>
                 <div class="settings-field"><label for="realtime-guard-bytes-per-token">每个思考 token 的加密字节数</label><input class="settings-input" id="realtime-guard-bytes-per-token" type="number" min="1"></div>
                 <div class="settings-field"><label for="realtime-guard-min-output-tokens">最小输出 token 数</label><input class="settings-input" id="realtime-guard-min-output-tokens" type="number" min="8"></div>
+                <div class="settings-field"><label for="realtime-guard-wrapup-max-output-tokens">Cross-auth wrapup max output tokens</label><input class="settings-input" id="realtime-guard-wrapup-max-output-tokens" type="number" min="1" step="1"><span class="settings-help">Default 512 tokens. Applies only after a zero-thinking retry on another auth; Hard TPS remains enforced.</span></div>
                 <div class="settings-field"><label for="realtime-guard-burst-min-reasoning-tokens">burst 最小思考 token 数</label><input class="settings-input" id="realtime-guard-burst-min-reasoning-tokens" type="number" min="1"></div>
                 <div class="settings-field"><label for="realtime-guard-burst-max-visible-tokens">burst 最大可见 token 数</label><input class="settings-input" id="realtime-guard-burst-max-visible-tokens" type="number" min="1"></div>
                 <div class="settings-field"><label for="realtime-guard-burst-max-window-ms">burst 最大窗口（毫秒）</label><input class="settings-input" id="realtime-guard-burst-max-window-ms" type="number" min="1"></div>
@@ -1431,6 +1432,7 @@ socks5h://proxy.example:1080"></textarea>
         'realtime-guard-min-encrypted-bytes':'realtimeGuardMinEncryptedBytes',
         'realtime-guard-bytes-per-token':'realtimeGuardEncryptedBytesPerReasoningToken',
         'realtime-guard-min-output-tokens':'realtimeGuardMinOutputTokens',
+        'realtime-guard-wrapup-max-output-tokens':'realtimeGuardWrapupMaxOutputTokens',
         'realtime-guard-burst-min-reasoning-tokens':'realtimeGuardBurstMinReasoningTokens',
         'realtime-guard-burst-max-visible-tokens':'realtimeGuardBurstMaxVisibleTokens',
         'realtime-guard-burst-max-window-ms':'realtimeGuardBurstMaxWindowMs'
@@ -1888,10 +1890,12 @@ socks5h://proxy.example:1080"></textarea>
           realtimeGuardMinEncryptedBytes: numberField('realtime-guard-min-encrypted-bytes'),
           realtimeGuardEncryptedBytesPerReasoningToken: numberField('realtime-guard-bytes-per-token'),
           realtimeGuardMinOutputTokens: numberField('realtime-guard-min-output-tokens'),
+          realtimeGuardWrapupMaxOutputTokens: numberField('realtime-guard-wrapup-max-output-tokens'),
           realtimeGuardBurstMinReasoningTokens: numberField('realtime-guard-burst-min-reasoning-tokens'),
           realtimeGuardBurstMaxVisibleTokens: numberField('realtime-guard-burst-max-visible-tokens'),
           realtimeGuardBurstMaxWindowMs: numberField('realtime-guard-burst-max-window-ms')
         };
+        if (!Number.isInteger(body.realtimeGuardWrapupMaxOutputTokens) || body.realtimeGuardWrapupMaxOutputTokens < 1) { setMessage('settings-message', 'Cross-auth wrapup max output tokens must be a positive integer.', true); return; }
         setBusy(true, '保存策略中…');
         state.settingsRevision += 1;
         try { await api('/api/settings', 'PUT', body); state.settings = await api('/api/settings'); state.settingsDirty = false; renderSettings(); restartPageRefreshTimer(); await refreshGuard(); setMessage('settings-message', '配置已保存并从 SQLite 读取确认。'); }

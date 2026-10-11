@@ -47,6 +47,7 @@ const (
 	defaultRealtimeGuardMinEncryptedBytes               = 256
 	defaultRealtimeGuardEncryptedBytesPerReasoningToken = 4
 	defaultRealtimeGuardMinOutputTokens                 = 8
+	defaultRealtimeGuardWrapupMaxOutputTokens           = 512
 	defaultRealtimeGuardBurstMinReasoningTokens         = 80
 	defaultRealtimeGuardBurstMaxVisibleTokens           = 32
 	defaultRealtimeGuardBurstMaxWindowMS                = 1000
@@ -134,6 +135,7 @@ type pluginSettings struct {
 	RealtimeGuardMinEncryptedBytes               int
 	RealtimeGuardEncryptedBytesPerReasoningToken int
 	RealtimeGuardMinOutputTokens                 int
+	RealtimeGuardWrapupMaxOutputTokens           int
 	RealtimeGuardBurstMinReasoningTokens         int
 	RealtimeGuardBurstMaxVisibleTokens           int
 	RealtimeGuardBurstMaxWindowMS                int
@@ -590,6 +592,7 @@ INSERT OR IGNORE INTO plugin_settings(setting_key, setting_value) VALUES
     ('realtime_guard_min_encrypted_bytes', '256'),
     ('realtime_guard_encrypted_bytes_per_reasoning_token', '4'),
     ('realtime_guard_min_output_tokens', '8'),
+    ('realtime_guard_wrapup_max_output_tokens', '512'),
     ('realtime_guard_burst_min_reasoning_tokens', '80'),
     ('realtime_guard_burst_max_visible_tokens', '32'),
     ('realtime_guard_burst_max_window_ms', '1000'),
@@ -991,6 +994,8 @@ func (store *guardianStore) settings() (pluginSettings, error) {
 				settings.RealtimeGuardEncryptedBytesPerReasoningToken = parsed
 			case "realtime_guard_min_output_tokens":
 				settings.RealtimeGuardMinOutputTokens = parsed
+			case "realtime_guard_wrapup_max_output_tokens":
+				settings.RealtimeGuardWrapupMaxOutputTokens = parsed
 			case "realtime_guard_burst_min_reasoning_tokens":
 				settings.RealtimeGuardBurstMinReasoningTokens = parsed
 			case "realtime_guard_burst_max_visible_tokens":
@@ -1044,6 +1049,7 @@ func (store *guardianStore) setSettings(settings pluginSettings) error {
 		"realtime_guard_min_encrypted_bytes":                 strconv.Itoa(settings.RealtimeGuardMinEncryptedBytes),
 		"realtime_guard_encrypted_bytes_per_reasoning_token": strconv.Itoa(settings.RealtimeGuardEncryptedBytesPerReasoningToken),
 		"realtime_guard_min_output_tokens":                   strconv.Itoa(settings.RealtimeGuardMinOutputTokens),
+		"realtime_guard_wrapup_max_output_tokens":            strconv.Itoa(settings.RealtimeGuardWrapupMaxOutputTokens),
 		"realtime_guard_burst_min_reasoning_tokens":          strconv.Itoa(settings.RealtimeGuardBurstMinReasoningTokens),
 		"realtime_guard_burst_max_visible_tokens":            strconv.Itoa(settings.RealtimeGuardBurstMaxVisibleTokens),
 		"realtime_guard_burst_max_window_ms":                 strconv.Itoa(settings.RealtimeGuardBurstMaxWindowMS),
@@ -1127,6 +1133,9 @@ func validateSettings(settings pluginSettings) error {
 	}
 	if settings.IPBatchRetentionDays < 1 {
 		return fmt.Errorf("IP batch retention days must be positive")
+	}
+	if settings.RealtimeGuardWrapupMaxOutputTokens < 1 {
+		return fmt.Errorf("realtime guard wrapup max output tokens must be positive")
 	}
 	return nil
 }

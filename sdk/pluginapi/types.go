@@ -1210,6 +1210,10 @@ type XAIStreamCompletionRequest struct {
 	Metadata            map[string]any
 }
 
+// XAIStreamPreviousZeroThinkingAuthIndexMetadataKey is host-owned evidence
+// from the preceding zero-thinking guard retry in the same streaming execution.
+const XAIStreamPreviousZeroThinkingAuthIndexMetadataKey = "xai_previous_zero_thinking_auth_index"
+
 // XAIStreamCompletionResponse returns the synchronous xAI stream decision.
 type XAIStreamCompletionResponse struct {
 	Action     XAIStreamAction
@@ -1217,6 +1221,9 @@ type XAIStreamCompletionResponse struct {
 	Reason     string
 	StatusCode int
 	Error      string
+	// ZeroThinkingWithoutAction identifies a missing-thinking retry with no
+	// reasoning evidence at all. It is not set for partial/invalid reasoning.
+	ZeroThinkingWithoutAction bool
 }
 
 // END xAI Guardian core extension.

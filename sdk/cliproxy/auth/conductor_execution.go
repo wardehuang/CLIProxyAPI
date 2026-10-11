@@ -240,6 +240,9 @@ func (m *Manager) ExecuteCount(ctx context.Context, providers []string, req clip
 // It supports multiple providers for the same model and round-robins the starting provider per model.
 func (m *Manager) ExecuteStream(ctx context.Context, providers []string, req cliproxyexecutor.Request, opts cliproxyexecutor.Options) (*cliproxyexecutor.StreamResult, error) {
 	ctx = cliproxyexecutor.WithRequestProxyURL(ctx, opts.ProxyURL)
+	// BEGIN xAI Guardian core extension: isolate retry evidence per caller request.
+	ctx = context.WithValue(ctx, xaiStreamRetryEvidenceContextKey{}, &xaiStreamRetryEvidence{})
+	// END xAI Guardian core extension.
 	req, opts = cliproxysession.Enrich(req, opts)
 	if m.HomeEnabled() {
 		if unlockSession := m.lockHomeWebsocketSession(ctx, opts); unlockSession != nil {
@@ -950,6 +953,9 @@ func (m *Manager) executeCountMixedOnce(ctx context.Context, providers []string,
 }
 
 func (m *Manager) executeStreamMixedOnce(ctx context.Context, providers []string, req cliproxyexecutor.Request, opts cliproxyexecutor.Options, maxRetryCredentials int, homeRetryLimit *int, retryRound int, defaultRequestRetry int) (*cliproxyexecutor.StreamResult, error) {
+	// BEGIN xAI Guardian core extension: single-round callers own separate evidence.
+	ctx = context.WithValue(ctx, xaiStreamRetryEvidenceContextKey{}, &xaiStreamRetryEvidence{})
+	// END xAI Guardian core extension.
 	sharedXAIAuthIDs := make(map[string]struct{})
 	lastSelectedAuthID := ""
 	return m.executeStreamMixedOnceWithXAISharedAccountRetry(ctx, providers, req, opts, maxRetryCredentials, homeRetryLimit, retryRound, defaultRequestRetry, sharedXAIAuthIDs, 0, &lastSelectedAuthID)

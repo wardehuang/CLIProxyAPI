@@ -302,6 +302,10 @@ func (m *Manager) completeXAIStreamGuard(ctx context.Context, auth *Auth, provid
 		MaxRetries:          completion.MaxRetries,
 		Metadata:            completion.Metadata,
 	}
+	// BEGIN xAI Guardian core extension: compare only attempts owned by this request.
+	retryEvidence := ctx.Value(xaiStreamRetryEvidenceContextKey{}).(*xaiStreamRetryEvidence)
+	retryEvidence.prepare(&completionRequest)
+	// END xAI Guardian core extension.
 	decision, errComplete := opts.XAIStreamGuard.CompleteXAIStream(ctx, completionRequest)
 	if errComplete != nil {
 		reason := "xAI stream guard completion failed: " + errComplete.Error()
@@ -318,9 +322,14 @@ func (m *Manager) completeXAIStreamGuard(ctx context.Context, auth *Auth, provid
 	if action == "" {
 		action = "flush"
 	}
+	retryEvidence.record(completionRequest, decision)
 	switch action {
 	case "flush":
-		publishAttempt("normal", "", false, streamErr != nil, statusCode, xaiGuardFailBody(errorText, ""))
+		marker := "normal"
+		if decision.Reason == "completed_tool_result_wrapup_after_cross_auth" {
+			marker = "exempt"
+		}
+		publishAttempt(marker, decision.Reason, false, streamErr != nil, statusCode, xaiGuardFailBody(errorText, ""))
 		return allChunks, true, nil
 	case "retry":
 		retryMode := strings.TrimSpace(decision.RetryMode)

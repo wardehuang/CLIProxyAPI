@@ -30,6 +30,7 @@ func defaultPluginSettings() pluginSettings {
 		RealtimeGuardMinEncryptedBytes:               defaultRealtimeGuardMinEncryptedBytes,
 		RealtimeGuardEncryptedBytesPerReasoningToken: defaultRealtimeGuardEncryptedBytesPerReasoningToken,
 		RealtimeGuardMinOutputTokens:                 defaultRealtimeGuardMinOutputTokens,
+		RealtimeGuardWrapupMaxOutputTokens:           defaultRealtimeGuardWrapupMaxOutputTokens,
 		RealtimeGuardBurstMinReasoningTokens:         defaultRealtimeGuardBurstMinReasoningTokens,
 		RealtimeGuardBurstMaxVisibleTokens:           defaultRealtimeGuardBurstMaxVisibleTokens,
 		RealtimeGuardBurstMaxWindowMS:                defaultRealtimeGuardBurstMaxWindowMS,
