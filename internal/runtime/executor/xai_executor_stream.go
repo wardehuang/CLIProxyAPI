@@ -169,6 +169,24 @@ func (e *XAIExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Auth
 		responseFilter := newXAIInternalXSearchResponseFilter(prepared.filterInternalXSearch, prepared.clientDeclaredTools)
 		namespaceRestorer := newXAINamespaceRestorer(prepared.namespaceTools)
 		var pendingEventLine []byte
+		// Translated lines belong to one SSE frame. Buffer them and hand downstream one
+		// frame boundary-aligned chunk: the frame validator drops standalone blank-line
+		// chunks, and the replay/heartbeat rewrite only advances on a chunk that ends a
+		// frame, so a line-per-chunk stream loses every event of a buffered xAI stream.
+		var frameBuf []byte
+		flushFrame := func() bool {
+			if len(frameBuf) == 0 {
+				return true
+			}
+			payload := frameBuf
+			frameBuf = nil
+			select {
+			case out <- cliproxyexecutor.StreamChunk{Payload: payload}:
+			case <-ctx.Done():
+				return false
+			}
+			return true
+		}
 		emitTranslatedLine := func(translatedLine []byte) bool {
 			// BEGIN xAI Guardian core extension: record xAI visible output.
 			if guardRuntime != nil && xAIStreamLineHasVisibleOutput(translatedLine) {
@@ -177,18 +195,13 @@ func (e *XAIExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Auth
 			// END xAI Guardian core extension.
 			chunks := helps.TranslateStreamWithClaudeInputTokens(ctx, prepared.to, prepared.responseFormat, req.Model, prepared.originalPayload, prepared.body, translatedLine, &param, claudeInputTokens)
 			for i := range chunks {
-				// scanner.Bytes excludes the source newline. Translation operates on one line at
-				// a time, so restore that delimiter on every translated line, including the empty
-				// line that closes an SSE frame. Without it the downstream frame validator buffers
-				// every event until EOF and the handler never sees response.completed.
-				payload := make([]byte, len(chunks[i])+1)
-				copy(payload, chunks[i])
-				payload[len(chunks[i])] = '\n'
-				select {
-				case out <- cliproxyexecutor.StreamChunk{Payload: payload}:
-				case <-ctx.Done():
-					return false
-				}
+				// scanner.Bytes excludes the source newline, so every translated line is
+				// re-terminated; the trailing element keeps the frame's blank line.
+				frameBuf = append(frameBuf, chunks[i]...)
+				frameBuf = append(frameBuf, '\n')
+			}
+			if bytes.HasSuffix(frameBuf, []byte("\n\n")) {
+				return flushFrame()
 			}
 			return true
 		}
@@ -292,6 +305,14 @@ func (e *XAIExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Auth
 		}
 		if pendingEventLine != nil {
 			emitTranslatedLine(xaiNormalizeReasoningSummaryEventLine(pendingEventLine, ""))
+		}
+		// A stream that ends mid-frame still owes the consumer its last frame, and an
+		// unterminated tail would be dropped by the replay rewrite.
+		if len(frameBuf) > 0 {
+			if !bytes.HasSuffix(frameBuf, []byte("\n\n")) {
+				frameBuf = append(frameBuf, '\n')
+			}
+			flushFrame()
 		}
 		if errScan := scanner.Err(); errScan != nil {
 			// BEGIN xAI Guardian core extension: preserve xAI stream read failure.
