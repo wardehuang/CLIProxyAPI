@@ -71,12 +71,13 @@ import (
 )
 
 const (
-	pluginName          = "xai-guardian"
-	pluginVersion       = "0.1.0"
-	resourcePath        = "/status"
-	managementAPIPath   = "/xai-guardian/api"
-	resourceContentType = "text/html; charset=utf-8"
-	pluginUIHeader      = "X-CPA-Plugin-UI"
+	pluginName           = "xai-guardian"
+	pluginVersion        = "0.1.0"
+	resourcePath         = "/status"
+	managementAPIPath    = "/xai-guardian/api"
+	managementIngestPath = "/xai-guardian/nodes"
+	resourceContentType  = "text/html; charset=utf-8"
+	pluginUIHeader       = "X-CPA-Plugin-UI"
 )
 
 //go:embed page.html
@@ -251,6 +252,7 @@ func handleMethod(method string, request []byte) ([]byte, error) {
 		return okEnvelope(pluginapi.ManagementRegistrationResponse{
 			Routes: []pluginapi.ManagementRoute{
 				{Method: http.MethodPost, Path: managementAPIPath, Description: "xAI Guardian API"},
+				{Method: http.MethodPost, Path: managementIngestPath, Description: "External proxy ingest. Empty ips is the connectivity probe and returns 400."},
 			},
 			Resources: []pluginapi.ResourceRoute{{Path: resourcePath, Menu: "xAI降智守护", Description: "xAI Guardian：账号状态、服务端巡检和降智守护"}},
 		})
@@ -358,6 +360,8 @@ func handleManagement(request []byte) ([]byte, error) {
 		return okEnvelope(managementResponse{StatusCode: http.StatusOK, Headers: http.Header{"cache-control": []string{"no-store"}, "content-type": []string{resourceContentType}}, Body: []byte(strings.Replace(pageTemplate, "/*__HALLMARK_TOKENS__*/", tokenCSS, 1))})
 	case path == managementAPIPath:
 		return handleUIProxy(management)
+	case path == managementIngestPath:
+		return handleExternalNodeIngest(management)
 	default:
 		return okEnvelope(managementResponse{StatusCode: http.StatusNotFound, Headers: http.Header{"content-type": []string{"text/plain; charset=utf-8"}}, Body: []byte("not found")})
 	}
