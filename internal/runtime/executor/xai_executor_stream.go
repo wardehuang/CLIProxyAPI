@@ -177,8 +177,15 @@ func (e *XAIExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Auth
 			// END xAI Guardian core extension.
 			chunks := helps.TranslateStreamWithClaudeInputTokens(ctx, prepared.to, prepared.responseFormat, req.Model, prepared.originalPayload, prepared.body, translatedLine, &param, claudeInputTokens)
 			for i := range chunks {
+				// scanner.Bytes excludes the source newline. Translation operates on one line at
+				// a time, so restore that delimiter on every translated line, including the empty
+				// line that closes an SSE frame. Without it the downstream frame validator buffers
+				// every event until EOF and the handler never sees response.completed.
+				payload := make([]byte, len(chunks[i])+1)
+				copy(payload, chunks[i])
+				payload[len(chunks[i])] = '\n'
 				select {
-				case out <- cliproxyexecutor.StreamChunk{Payload: chunks[i]}:
+				case out <- cliproxyexecutor.StreamChunk{Payload: payload}:
 				case <-ctx.Done():
 					return false
 				}
