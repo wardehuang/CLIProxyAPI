@@ -11,6 +11,7 @@ import (
 	"strings"
 
 	coreauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
+	coreexecutor "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/executor"
 	"github.com/router-for-me/CLIProxyAPI/v8/sdk/pluginabi"
 	"github.com/router-for-me/CLIProxyAPI/v8/sdk/pluginapi"
 	log "github.com/sirupsen/logrus"
@@ -128,6 +129,12 @@ func (h *Host) interceptRequest(ctx context.Context, req pluginapi.RequestInterc
 			nextReq.Body = nil
 		}
 		nextReq.Metadata = cloneInterceptorMetadata(req.Metadata)
+		if current.Path != "" {
+			if nextReq.Metadata == nil {
+				nextReq.Metadata = make(map[string]any, 1)
+			}
+			nextReq.Metadata[coreexecutor.RequestPathMetadataKey] = current.Path
+		}
 		if resp, ok := h.callRequestInterceptor(ctx, record, method, func(callCtx context.Context, callReq pluginapi.RequestInterceptRequest) (pluginapi.RequestInterceptResponse, error) {
 			return invoke(interceptor, callCtx, callReq)
 		}, nextReq); ok {
@@ -135,6 +142,9 @@ func (h *Host) interceptRequest(ctx context.Context, req pluginapi.RequestInterc
 			if len(resp.Body) > 0 {
 				currentBase = bytes.Clone(resp.Body)
 				bodyModified = true
+			}
+			if strings.TrimSpace(resp.Path) != "" {
+				current.Path = strings.TrimSpace(resp.Path)
 			}
 			if resp.Terminate {
 				current.Terminate = true

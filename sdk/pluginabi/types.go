@@ -123,7 +123,8 @@ const (
 	MethodHostAuthPriorityUpdate       = "host.auth.priority_update"
 	MethodHostAuthMetadataStringUpdate = "host.auth.metadata_string_update"
 	// END xAI Guardian core extension.
-	MethodHostAffinityLookup = "host.affinity.lookup"
+	MethodHostAffinityLookup       = "host.affinity.lookup"
+	MethodHostRoutingResetCooldown = "host.routing.reset_cooldown"
 )
 
 type Envelope struct {
