@@ -5,10 +5,73 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"sort"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
 )
+
+type dailyProbeSchedule struct {
+	times     []time.Time
+	location  *time.Location
+	timesText string
+	timezone  string
+}
+
+func parseDailyProbeSchedule(timesText, timezone string) (dailyProbeSchedule, error) {
+	parts := strings.Split(strings.TrimSpace(timesText), ",")
+	if len(parts) == 0 || len(parts) > 24 {
+		return dailyProbeSchedule{}, fmt.Errorf("daily probe requires 1 to 24 daily times")
+	}
+	location, err := time.LoadLocation(strings.TrimSpace(timezone))
+	if err != nil {
+		return dailyProbeSchedule{}, fmt.Errorf("daily probe timezone must be a valid IANA timezone")
+	}
+	times := make([]time.Time, 0, len(parts))
+	seen := make(map[int]struct{}, len(parts))
+	canonical := make([]string, 0, len(parts))
+	for _, part := range parts {
+		value := strings.TrimSpace(part)
+		parsed, err := time.Parse("15:04", value)
+		if err != nil || parsed.Format("15:04") != value {
+			return dailyProbeSchedule{}, fmt.Errorf("daily probe times must be comma-separated HH:MM values")
+		}
+		minute := parsed.Hour()*60 + parsed.Minute()
+		if _, exists := seen[minute]; exists {
+			return dailyProbeSchedule{}, fmt.Errorf("daily probe times cannot contain duplicates")
+		}
+		seen[minute] = struct{}{}
+		times = append(times, parsed)
+		canonical = append(canonical, parsed.Format("15:04"))
+	}
+	sort.Slice(times, func(i, j int) bool {
+		return times[i].Hour()*60+times[i].Minute() < times[j].Hour()*60+times[j].Minute()
+	})
+	return dailyProbeSchedule{times: times, location: location, timesText: strings.Join(canonical, ","), timezone: strings.TrimSpace(timezone)}, nil
+}
+
+func validateDailyProbeSchedule(timesText, timezone string) error {
+	_, err := parseDailyProbeSchedule(timesText, timezone)
+	return err
+}
+
+func nextDailyProbeAt(now time.Time, schedule dailyProbeSchedule) time.Time {
+	localNow := now.In(schedule.location)
+	for dayOffset := 0; dayOffset <= 2; dayOffset++ {
+		date := localNow.AddDate(0, 0, dayOffset)
+		for _, scheduledTime := range schedule.times {
+			candidate := time.Date(date.Year(), date.Month(), date.Day(), scheduledTime.Hour(), scheduledTime.Minute(), 0, 0, schedule.location)
+			if candidate.Hour() != scheduledTime.Hour() || candidate.Minute() != scheduledTime.Minute() {
+				continue
+			}
+			if candidate.After(localNow) {
+				return candidate
+			}
+		}
+	}
+	panic("validated keepalive schedule has no next time")
+}
 
 type keepaliveScheduleState struct {
 	mutex           sync.Mutex
@@ -68,7 +131,7 @@ func (state *keepaliveScheduleState) notify() {
 	}
 }
 
-func (state *keepaliveScheduleState) waitForNext(ctxDone <-chan struct{}, intervalSeconds int) (triggered bool, cancelled bool) {
+func (state *keepaliveScheduleState) waitForNext(ctxDone <-chan struct{}, schedule dailyProbeSchedule) (triggered bool, cancelled bool) {
 	state.mutex.Lock()
 	pending := state.pending
 	state.mutex.Unlock()
@@ -77,7 +140,7 @@ func (state *keepaliveScheduleState) waitForNext(ctxDone <-chan struct{}, interv
 		return true, false
 	}
 
-	nextAt := time.Now().Add(time.Duration(intervalSeconds) * time.Second)
+	nextAt := nextDailyProbeAt(time.Now(), schedule)
 	state.mutex.Lock()
 	if state.pending {
 		state.mutex.Unlock()
@@ -106,7 +169,7 @@ func (state *keepaliveScheduleState) consumeTrigger() {
 	}
 }
 
-func (state *keepaliveScheduleState) snapshot(intervalSeconds int) map[string]any {
+func (state *keepaliveScheduleState) snapshot(schedule dailyProbeSchedule) map[string]any {
 	state.mutex.Lock()
 	defer state.mutex.Unlock()
 	return map[string]any{
@@ -115,17 +178,23 @@ func (state *keepaliveScheduleState) snapshot(intervalSeconds int) map[string]an
 		"nextAt":          state.nextAtUnixMs,
 		"lastStartedAt":   state.lastStartedMs,
 		"lastCompletedAt": state.lastCompletedMs,
-		"intervalSeconds": intervalSeconds,
+		"times":           schedule.timesText,
+		"timezone":        schedule.timezone,
 	}
 }
 
 func runKeepaliveScheduler(ctx context.Context, store *guardianStore, state *keepaliveScheduleState, settings pluginSettings) {
-	_ = store.appendLog(logLevelInfo, "keepalive.scheduler_started", "保活探测 worker 已启动", fmt.Sprintf("线程数 %d，间隔 %d 秒", settings.KeepaliveWorkerCount, settings.KeepaliveIntervalSeconds))
+	schedule, err := parseDailyProbeSchedule(settings.KeepaliveTimes, settings.ProbeTimezone)
+	if err != nil {
+		_ = store.appendLog(logLevelError, "keepalive.scheduler_failed", "保活调度配置无效", sanitizeLogText(err.Error()))
+		return
+	}
+	_ = store.appendLog(logLevelInfo, "keepalive.scheduler_started", "保活探测 worker 已启动", fmt.Sprintf("线程数 %d，时刻 %s，时区 %s", settings.KeepaliveWorkerCount, schedule.timesText, schedule.timezone))
 	for {
 		if ctx.Err() != nil {
 			return
 		}
-		triggered, cancelled := state.waitForNext(ctx.Done(), settings.KeepaliveIntervalSeconds)
+		triggered, cancelled := state.waitForNext(ctx.Done(), schedule)
 		if cancelled {
 			return
 		}

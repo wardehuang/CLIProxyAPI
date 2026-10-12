@@ -214,25 +214,25 @@ func (store *guardianStore) updateReviveNodeResult(roundID, nodeID int64, result
 	if err := tx.QueryRow(`SELECT revive_failure_count FROM nodes WHERE id = ? AND scope = 'guard' AND status = ?`, nodeID, statusReviveProbing).Scan(&failureCount); err != nil {
 		return fmt.Errorf("read revive failure count: %w", err)
 	}
+	storedStatus := result.Status
 	if result.Status == statusHealthy {
 		failureCount = 0
+		storedStatus = statusConnected
 	} else {
 		failureCount++
 	}
 	if _, err := tx.Exec(`UPDATE nodes SET status = ?, latency_ms = ?, exit_ip = ?, country = ?, last_checked = ?, last_error = ?, revive_failure_count = ?
-WHERE id = ? AND scope = 'guard' AND status = ? AND EXISTS (SELECT 1 FROM revive_round_nodes WHERE round_id = ? AND node_id = ?)`, result.Status, result.LatencyMS, result.ExitIP, result.Country, result.CheckedAt, result.Error, failureCount, nodeID, statusReviveProbing, roundID, nodeID); err != nil {
+WHERE id = ? AND scope = 'guard' AND status = ? AND EXISTS (SELECT 1 FROM revive_round_nodes WHERE round_id = ? AND node_id = ?)`, storedStatus, result.LatencyMS, result.ExitIP, result.Country, result.CheckedAt, result.Error, failureCount, nodeID, statusReviveProbing, roundID, nodeID); err != nil {
 		return fmt.Errorf("update revive node result: %w", err)
-	}
-	if result.Status != statusHealthy {
-		if _, err := tx.Exec(`DELETE FROM healthy_slots WHERE node_id = ?`, nodeID); err != nil {
-			return fmt.Errorf("clear failed revive slots: %w", err)
-		}
-		if _, err := tx.Exec(`UPDATE auth_bindings SET slot_id = 0, node_id = 0, proxy_url = '', updated_at = ? WHERE node_id = ?`, time.Now().UnixMilli(), nodeID); err != nil {
-			return fmt.Errorf("clear failed revive auth bindings: %w", err)
-		}
 	}
 	deleted := result.Status != statusHealthy && failureCount >= maxFailureCount
 	if deleted {
+		if _, err := tx.Exec(`DELETE FROM healthy_slots WHERE node_id = ?`, nodeID); err != nil {
+			return fmt.Errorf("clear deleted revive slots: %w", err)
+		}
+		if _, err := tx.Exec(`UPDATE auth_bindings SET slot_id = 0, node_id = 0, proxy_url = '', updated_at = ? WHERE node_id = ?`, time.Now().UnixMilli(), nodeID); err != nil {
+			return fmt.Errorf("clear deleted revive auth bindings: %w", err)
+		}
 		if _, err := tx.Exec(`DELETE FROM ip_batch_nodes WHERE node_id = ?`, nodeID); err != nil {
 			return fmt.Errorf("clear deleted revive batch links: %w", err)
 		}

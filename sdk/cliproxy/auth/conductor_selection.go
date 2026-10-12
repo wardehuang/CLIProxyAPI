@@ -866,11 +866,12 @@ func schedulerAuthCandidates(auths []*Auth) []pluginapi.SchedulerAuthCandidate {
 			attributes["schedule_group"] = scheduleGroup
 		}
 		out = append(out, pluginapi.SchedulerAuthCandidate{
-			ID:         auth.ID,
-			Provider:   strings.ToLower(strings.TrimSpace(auth.Provider)),
-			Priority:   authPriority(auth),
-			Status:     string(auth.Status),
-			Attributes: attributes,
+			ID:          auth.ID,
+			Provider:    strings.ToLower(strings.TrimSpace(auth.Provider)),
+			Priority:    authPriority(auth),
+			Status:      string(auth.Status),
+			HasProxyURL: strings.TrimSpace(auth.ProxyURL) != "",
+			Attributes:  attributes,
 		})
 	}
 	return out

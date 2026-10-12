@@ -29,8 +29,9 @@ const (
 	defaultDebugEnabled                                 = false
 	defaultRefreshIntervalSeconds                       = 30
 	defaultKeepaliveWorkerCount                         = 8
-	defaultKeepaliveIntervalSeconds                     = 1800
-	defaultReviveIntervalSeconds                        = 1800
+	defaultKeepaliveTimes                               = "05:00"
+	defaultProbeTimezone                                = "Asia/Shanghai"
+	defaultReviveTimes                                  = "05:30"
 	defaultProbeRetryCount                              = 3
 	defaultMaxReviveFailureCount                        = 3
 	defaultHealthySlotCount                             = 50
@@ -57,8 +58,6 @@ const (
 	maxProbeWorkers                                     = 64
 	maxScheduleGroupCount                               = 1000
 	maxRefreshIntervalSeconds                           = 3600
-	maxKeepaliveIntervalSeconds                         = 86400
-	maxReviveIntervalSeconds                            = 86400
 	maxMaxReviveFailureCount                            = 100
 	maxKeepaliveWorkerCount                             = 64
 	maxKeepaliveProbeRetryCount                         = 10
@@ -118,8 +117,9 @@ type pluginSettings struct {
 	InspectionWorkerCount                        int
 	InspectionTimeoutSeconds                     int
 	KeepaliveWorkerCount                         int
-	KeepaliveIntervalSeconds                     int
-	ReviveIntervalSeconds                        int
+	KeepaliveTimes                               string
+	ProbeTimezone                                string
+	ReviveTimes                                  string
 	ProbeRetryCount                              int
 	MaxReviveFailureCount                        int
 	HealthySlotCount                             int
@@ -575,8 +575,9 @@ INSERT OR IGNORE INTO plugin_settings(setting_key, setting_value) VALUES
     ('debug_enabled', '0'),
     ('refresh_interval_seconds', '30'),
     ('keepalive_worker_count', '8'),
-    ('keepalive_interval_seconds', '1800'),
-    ('revive_interval_seconds', '1800'),
+    ('keepalive_times', '05:00'),
+    ('probe_timezone', 'Asia/Shanghai'),
+    ('revive_times', '05:30'),
     ('probe_retry_count', '3'),
     ('max_revive_failure_count', '3'),
     ('healthy_slot_count', '50'),
@@ -621,6 +622,9 @@ SELECT 'probe_retry_count', setting_value FROM plugin_settings
 WHERE setting_key = 'keepalive_probe_retry_count'
   AND NOT EXISTS (SELECT 1 FROM plugin_settings WHERE setting_key = 'probe_retry_count')`); err != nil {
 		return fmt.Errorf("migrate probe retry setting: %w", err)
+	}
+	if _, err := store.database.Exec(`DELETE FROM plugin_settings WHERE setting_key IN ('keepalive_interval_seconds', 'keepalive_timezone', 'revive_interval_seconds')`); err != nil {
+		return fmt.Errorf("remove obsolete probe schedule settings: %w", err)
 	}
 	if err := store.ensureAuthBindingColumns(); err != nil {
 		return err
@@ -931,6 +935,12 @@ func (store *guardianStore) settings() (pluginSettings, error) {
 			settings.InspectionScheduleMode = strings.TrimSpace(value)
 		case "inspection_daily_time":
 			settings.InspectionDailyTime = strings.TrimSpace(value)
+		case "keepalive_times":
+			settings.KeepaliveTimes = strings.TrimSpace(value)
+		case "probe_timezone":
+			settings.ProbeTimezone = strings.TrimSpace(value)
+		case "revive_times":
+			settings.ReviveTimes = strings.TrimSpace(value)
 		case "realtime_guard_ttfb_seconds":
 			parsed, parseErr := strconv.ParseFloat(strings.TrimSpace(value), 64)
 			if parseErr == nil {
@@ -966,10 +976,6 @@ func (store *guardianStore) settings() (pluginSettings, error) {
 				settings.InspectionTimeoutSeconds = parsed
 			case "keepalive_worker_count":
 				settings.KeepaliveWorkerCount = parsed
-			case "keepalive_interval_seconds":
-				settings.KeepaliveIntervalSeconds = parsed
-			case "revive_interval_seconds":
-				settings.ReviveIntervalSeconds = parsed
 			case "probe_retry_count":
 				settings.ProbeRetryCount = parsed
 			case "max_revive_failure_count":
@@ -1032,8 +1038,9 @@ func (store *guardianStore) setSettings(settings pluginSettings) error {
 		"inspection_worker_count":                            strconv.Itoa(settings.InspectionWorkerCount),
 		"inspection_timeout_seconds":                         strconv.Itoa(settings.InspectionTimeoutSeconds),
 		"keepalive_worker_count":                             strconv.Itoa(settings.KeepaliveWorkerCount),
-		"keepalive_interval_seconds":                         strconv.Itoa(settings.KeepaliveIntervalSeconds),
-		"revive_interval_seconds":                            strconv.Itoa(settings.ReviveIntervalSeconds),
+		"keepalive_times":                                    settings.KeepaliveTimes,
+		"probe_timezone":                                     settings.ProbeTimezone,
+		"revive_times":                                       settings.ReviveTimes,
 		"probe_retry_count":                                  strconv.Itoa(settings.ProbeRetryCount),
 		"max_revive_failure_count":                           strconv.Itoa(settings.MaxReviveFailureCount),
 		"healthy_slot_count":                                 strconv.Itoa(settings.HealthySlotCount),
@@ -1104,11 +1111,11 @@ func validateSettings(settings pluginSettings) error {
 	if settings.KeepaliveWorkerCount < 1 || settings.KeepaliveWorkerCount > maxKeepaliveWorkerCount {
 		return fmt.Errorf("keepalive worker count is out of range")
 	}
-	if settings.KeepaliveIntervalSeconds < 1 || settings.KeepaliveIntervalSeconds > maxKeepaliveIntervalSeconds {
-		return fmt.Errorf("keepalive interval is out of range")
+	if err := validateDailyProbeSchedule(settings.KeepaliveTimes, settings.ProbeTimezone); err != nil {
+		return err
 	}
-	if settings.ReviveIntervalSeconds < 1 || settings.ReviveIntervalSeconds > maxReviveIntervalSeconds {
-		return fmt.Errorf("revive interval is out of range")
+	if err := validateDailyProbeSchedule(settings.ReviveTimes, settings.ProbeTimezone); err != nil {
+		return fmt.Errorf("invalid revive schedule: %w", err)
 	}
 	if settings.ProbeRetryCount < 1 || settings.ProbeRetryCount > maxKeepaliveProbeRetryCount {
 		return fmt.Errorf("probe retry count is out of range")

@@ -95,20 +95,26 @@ func runInitialProbeWorker(ctx context.Context, store *guardianStore, roundID in
 }
 
 func runReviveScheduler(ctx context.Context, store *guardianStore, settings pluginSettings) {
-	_ = store.appendLog(logLevelInfo, "revive.scheduler_started", "复活 worker 已启动", fmt.Sprintf("线程数 %d，间隔 %d 秒", settings.WorkerCount, settings.ReviveIntervalSeconds))
+	schedule, err := parseDailyProbeSchedule(settings.ReviveTimes, settings.ProbeTimezone)
+	if err != nil {
+		_ = store.appendLog(logLevelError, "revive.scheduler_failed", "复活调度配置无效", sanitizeLogText(err.Error()))
+		return
+	}
+	_ = store.appendLog(logLevelInfo, "revive.scheduler_started", "复活 worker 已启动", fmt.Sprintf("线程数 %d，时刻 %s，时区 %s", settings.WorkerCount, schedule.timesText, schedule.timezone))
 	for {
 		if ctx.Err() != nil {
 			return
 		}
-		if err := runReviveRound(ctx, store, settings); err != nil && ctx.Err() == nil {
-			_ = store.appendLog(logLevelError, "revive.round_failed", "复活探测轮次失败", err.Error())
-		}
-		timer := time.NewTimer(time.Duration(settings.ReviveIntervalSeconds) * time.Second)
+		nextAt := nextDailyProbeAt(time.Now(), schedule)
+		timer := time.NewTimer(time.Until(nextAt))
 		select {
 		case <-ctx.Done():
 			timer.Stop()
 			return
 		case <-timer.C:
+		}
+		if err := runReviveRound(ctx, store, settings); err != nil && ctx.Err() == nil {
+			_ = store.appendLog(logLevelError, "revive.round_failed", "复活探测轮次失败", err.Error())
 		}
 	}
 }
@@ -142,13 +148,6 @@ func runReviveRound(ctx context.Context, store *guardianStore, settings pluginSe
 	if ctx.Err() != nil {
 		_ = store.finishReviveRound(roundID, "interrupted", successCount.Load(), failureCount.Load())
 		return ctx.Err()
-	}
-	if err := store.reconcileHealthySlots(settings); err != nil {
-		_ = store.finishReviveRound(roundID, "failed", successCount.Load(), failureCount.Load())
-		return err
-	}
-	if err := refreshHealthyAuthDistribution(store); err != nil {
-		_ = store.appendRoundLog(logCategoryRevive, roundID, logStatusError, logLevelError, "auth.distribution_failed", "复活探测后刷新 auth 分配失败", sanitizeLogText(err.Error()))
 	}
 	if err := store.finishReviveRound(roundID, "completed", successCount.Load(), failureCount.Load()); err != nil {
 		return err

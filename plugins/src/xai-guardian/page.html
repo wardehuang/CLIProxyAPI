@@ -643,8 +643,9 @@
               <div id="keepalive-message" class="message"></div>
               <div class="settings-grid">
                 <div class="settings-field"><label for="keepalive-worker-count">保活 worker 数（线程）</label><input class="settings-input" id="keepalive-worker-count" type="number" min="1" max="64"></div>
-                <div class="settings-field"><label for="keepalive-interval">保活探测间隔（秒）</label><input class="settings-input" id="keepalive-interval" type="number" min="1" max="86400"></div>
-                <div class="settings-field"><label for="revive-interval">复活探测间隔（秒）</label><input class="settings-input" id="revive-interval" type="number" min="1" max="86400"></div>
+                <div class="settings-field"><label for="keepalive-times">保活时间点（每日，24 小时制）</label><input class="settings-input" id="keepalive-times" type="text" placeholder="05:00" autocomplete="off"><span class="settings-help">HH:MM，用英文逗号分隔；可填 1–24 个不同时间。按所设时区每日触发；启动后等待下一个时刻</span></div>
+                <div class="settings-field"><label for="probe-timezone">探测时区（IANA，共用）</label><input class="settings-input" id="probe-timezone" type="text" placeholder="Asia/Shanghai" autocomplete="off"></div>
+                <div class="settings-field"><label for="revive-times">复活时间点（每日，24 小时制）</label><input class="settings-input" id="revive-times" type="text" placeholder="05:30" autocomplete="off"><span class="settings-help">HH:MM，用英文逗号分隔；可填 1–24 个不同时间。按共用时区每日触发；启动后等待下一个时刻</span></div>
                 <div class="settings-field"><label for="max-revive-failure-count">最大复活失败次数</label><input class="settings-input" id="max-revive-failure-count" type="number" min="1" max="100"><span class="settings-help">达到次数后永久删除节点 · 1–100</span></div>
               </div>
             </section>
@@ -1416,8 +1417,9 @@ socks5h://proxy.example:1080"></textarea>
         'refresh-interval':'refreshIntervalSeconds',
         'probe-retry-count':'probeRetryCount',
         'keepalive-worker-count':'keepaliveWorkerCount',
-        'keepalive-interval':'keepaliveIntervalSeconds',
-        'revive-interval':'reviveIntervalSeconds',
+        'keepalive-times':'keepaliveTimes',
+        'probe-timezone':'probeTimezone',
+        'revive-times':'reviveTimes',
         'max-revive-failure-count':'maxReviveFailureCount',
         'healthy-slot-count':'healthySlotCount',
         'healthy-candidate-slot-count':'healthyCandidateSlotCount',
@@ -1874,8 +1876,9 @@ socks5h://proxy.example:1080"></textarea>
           probeRetryCount: numberField('probe-retry-count'),
           ipBatchRetentionDays: state.settings.ipBatchRetentionDays,
           keepaliveWorkerCount: numberField('keepalive-worker-count'),
-          keepaliveIntervalSeconds: numberField('keepalive-interval'),
-          reviveIntervalSeconds: numberField('revive-interval'),
+          keepaliveTimes: $('keepalive-times').value.trim(),
+          probeTimezone: $('probe-timezone').value.trim(),
+          reviveTimes: $('revive-times').value.trim(),
           maxReviveFailureCount: numberField('max-revive-failure-count'),
           healthySlotCount: numberField('healthy-slot-count'),
           healthyCandidateSlotCount: numberField('healthy-candidate-slot-count'),
@@ -1895,6 +1898,15 @@ socks5h://proxy.example:1080"></textarea>
           realtimeGuardBurstMaxVisibleTokens: numberField('realtime-guard-burst-max-visible-tokens'),
           realtimeGuardBurstMaxWindowMs: numberField('realtime-guard-burst-max-window-ms')
         };
+        const keepaliveTimePattern = /^(?:[01]\d|2[0-3]):[0-5]\d$/;
+        const validDailyTimes = (value) => {
+          const times = value.split(',').map((time) => time.trim());
+          return times.length >= 1 && times.length <= 24 && times.every((time) => keepaliveTimePattern.test(time)) && new Set(times).size === times.length;
+        };
+        if (!validDailyTimes(body.keepaliveTimes)) { setMessage('settings-message', '保活时间点须为 1–24 个不重复的 HH:MM，使用英文逗号分隔。', true); return; }
+        if (!validDailyTimes(body.reviveTimes)) { setMessage('settings-message', '复活时间点须为 1–24 个不重复的 HH:MM，使用英文逗号分隔。', true); return; }
+        try { new Intl.DateTimeFormat('en-US', {timeZone: body.probeTimezone}).format(); }
+        catch { setMessage('settings-message', '请输入有效的 IANA 时区，例如 Asia/Shanghai。', true); return; }
         if (!Number.isInteger(body.realtimeGuardWrapupMaxOutputTokens) || body.realtimeGuardWrapupMaxOutputTokens < 1) { setMessage('settings-message', 'Cross-auth wrapup max output tokens must be a positive integer.', true); return; }
         setBusy(true, '保存策略中…');
         state.settingsRevision += 1;

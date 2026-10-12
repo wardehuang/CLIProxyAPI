@@ -154,12 +154,6 @@ func (controller *runtimeController) configure(config pluginConfig) error {
 		return err
 	}
 	controller.stopWorkersLocked()
-	if err := controller.store.reconcileHealthySlots(settings); err != nil {
-		return err
-	}
-	if err := refreshHealthyAuthDistribution(controller.store); err != nil {
-		_ = controller.store.appendLog(logLevelError, "auth.distribution_failed", "健康槽位 auth 分配失败", sanitizeLogText(err.Error()))
-	}
 	if err := controller.store.reconcileScheduleGroupCounters(settings.ScheduleGroupCount); err != nil {
 		return err
 	}
@@ -170,10 +164,10 @@ func (controller *runtimeController) configure(config pluginConfig) error {
 		controller.startInspectionWorkerLocked(inspectionScheduleFromSettings(settings))
 	}
 	controller.startInitialProbeWorkerLocked(settings)
-	if settings.KeepaliveIntervalSeconds > 0 {
+	if settings.KeepaliveTimes != "" {
 		controller.startKeepaliveWorkerLocked(settings)
 	}
-	if settings.ReviveIntervalSeconds > 0 {
+	if settings.ReviveTimes != "" {
 		controller.startReviveWorkerLocked(settings)
 	}
 	return controller.store.appendLog(logLevelInfo, "plugin.configured", "xAI Guardian 已初始化", fmt.Sprintf("数据库 %s", controller.store.path))
@@ -201,23 +195,15 @@ func (controller *runtimeController) ensure() error {
 		controller.store = nil
 		return err
 	}
-	if err := store.reconcileHealthySlots(settings); err != nil {
-		_ = store.close()
-		controller.store = nil
-		return err
-	}
-	if err := refreshHealthyAuthDistribution(store); err != nil {
-		_ = store.appendLog(logLevelError, "auth.distribution_failed", "健康槽位 auth 分配失败", sanitizeLogText(err.Error()))
-	}
 	controller.runtimeScheduleGroupCount = settings.ScheduleGroupCount
 	if settings.InspectionScheduleEnabled {
 		controller.startInspectionWorkerLocked(inspectionScheduleFromSettings(settings))
 	}
 	controller.startInitialProbeWorkerLocked(settings)
-	if settings.KeepaliveIntervalSeconds > 0 {
+	if settings.KeepaliveTimes != "" {
 		controller.startKeepaliveWorkerLocked(settings)
 	}
-	if settings.ReviveIntervalSeconds > 0 {
+	if settings.ReviveTimes != "" {
 		controller.startReviveWorkerLocked(settings)
 	}
 	return nil
@@ -766,8 +752,9 @@ func (controller *runtimeController) updateSettings(store *guardianStore, body [
 		RefreshIntervalSeconds                       int     `json:"refreshIntervalSeconds"`
 		InspectionIntervalSeconds                    int     `json:"inspectionIntervalSeconds"`
 		KeepaliveWorkerCount                         int     `json:"keepaliveWorkerCount"`
-		KeepaliveIntervalSeconds                     int     `json:"keepaliveIntervalSeconds"`
-		ReviveIntervalSeconds                        int     `json:"reviveIntervalSeconds"`
+		KeepaliveTimes                               string  `json:"keepaliveTimes"`
+		ProbeTimezone                                string  `json:"probeTimezone"`
+		ReviveTimes                                  string  `json:"reviveTimes"`
 		ProbeRetryCount                              int     `json:"probeRetryCount"`
 		MaxReviveFailureCount                        int     `json:"maxReviveFailureCount"`
 		HealthySlotCount                             int     `json:"healthySlotCount"`
@@ -813,8 +800,9 @@ func (controller *runtimeController) updateSettings(store *guardianStore, body [
 		InspectionWorkerCount:                        currentSettings.InspectionWorkerCount,
 		InspectionTimeoutSeconds:                     currentSettings.InspectionTimeoutSeconds,
 		KeepaliveWorkerCount:                         payload.KeepaliveWorkerCount,
-		KeepaliveIntervalSeconds:                     payload.KeepaliveIntervalSeconds,
-		ReviveIntervalSeconds:                        payload.ReviveIntervalSeconds,
+		KeepaliveTimes:                               payload.KeepaliveTimes,
+		ProbeTimezone:                                payload.ProbeTimezone,
+		ReviveTimes:                                  payload.ReviveTimes,
 		ProbeRetryCount:                              payload.ProbeRetryCount,
 		MaxReviveFailureCount:                        payload.MaxReviveFailureCount,
 		HealthySlotCount:                             payload.HealthySlotCount,
@@ -941,6 +929,10 @@ func (controller *runtimeController) keepaliveAPI(store *guardianStore) (int, []
 	if err != nil {
 		return http.StatusInternalServerError, nil, err
 	}
+	schedule, err := parseDailyProbeSchedule(settings.KeepaliveTimes, settings.ProbeTimezone)
+	if err != nil {
+		return http.StatusInternalServerError, nil, err
+	}
 	round, found, err := store.latestKeepaliveRound()
 	if err != nil {
 		return http.StatusInternalServerError, nil, err
@@ -950,7 +942,7 @@ func (controller *runtimeController) keepaliveAPI(store *guardianStore) (int, []
 	controller.mutex.RUnlock()
 	return jsonAPIResult(map[string]any{
 		"settings": publicSettings(settings),
-		"schedule": state.snapshot(settings.KeepaliveIntervalSeconds),
+		"schedule": state.snapshot(schedule),
 		"round":    mapKeepaliveRound(round, found),
 	}, nil)
 }
@@ -1156,8 +1148,8 @@ func publicSettings(settings pluginSettings) map[string]any {
 		"inspectionIntervalSeconds": settings.InspectionIntervalSeconds, "inspectionScheduleEnabled": settings.InspectionScheduleEnabled,
 		"inspectionScheduleMode": settings.InspectionScheduleMode, "inspectionDailyTime": settings.InspectionDailyTime,
 		"inspectionWorkerCount": settings.InspectionWorkerCount, "inspectionTimeoutSeconds": settings.InspectionTimeoutSeconds,
-		"keepaliveWorkerCount": settings.KeepaliveWorkerCount, "keepaliveIntervalSeconds": settings.KeepaliveIntervalSeconds,
-		"reviveIntervalSeconds": settings.ReviveIntervalSeconds, "probeRetryCount": settings.ProbeRetryCount, "maxReviveFailureCount": settings.MaxReviveFailureCount,
+		"keepaliveWorkerCount": settings.KeepaliveWorkerCount, "keepaliveTimes": settings.KeepaliveTimes, "probeTimezone": settings.ProbeTimezone,
+		"reviveTimes": settings.ReviveTimes, "probeRetryCount": settings.ProbeRetryCount, "maxReviveFailureCount": settings.MaxReviveFailureCount,
 		"healthySlotCount": settings.HealthySlotCount, "healthyCandidateSlotCount": settings.HealthyCandidateSlotCount, "healthySlotMaxAgeMinutes": settings.HealthySlotMaxAgeMinutes,
 		"realtimeGuardTTFBSeconds": settings.RealtimeGuardTTFBSeconds, "realtimeGuardGenerationSeconds": settings.RealtimeGuardGenerationSeconds,
 		"realtimeGuardTokenThreshold": settings.RealtimeGuardTokenThreshold, "qualityHardTPS": settings.QualityHardTPS, "realtimeGuardTimeoutSeconds": settings.RealtimeGuardTimeoutSeconds,

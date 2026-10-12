@@ -528,6 +528,8 @@ type SchedulerAuthCandidate struct {
 	Priority int
 	// Status is the current host-visible auth status.
 	Status string
+	// HasProxyURL reports whether this auth has a non-empty per-auth proxy URL without exposing the URL.
+	HasProxyURL bool
 	// Attributes contains immutable routing and provider attributes.
 	Attributes map[string]string
 	// Metadata contains mutable host-managed auth metadata.

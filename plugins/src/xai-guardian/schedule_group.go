@@ -223,6 +223,7 @@ type scheduleCandidateSummary struct {
 	total                   int
 	xai                     int
 	otherProvider           int
+	missingProxyURL         int
 	missingScheduleGroup    int
 	invalidScheduleGroup    int
 	outOfRangeScheduleGroup int
@@ -241,6 +242,10 @@ func scheduleCandidatesByGroup(candidates []pluginapi.SchedulerAuthCandidate, gr
 			continue
 		}
 		summary.xai++
+		if !candidate.HasProxyURL {
+			summary.missingProxyURL++
+			continue
+		}
 		rawGroupID, hasGroup := candidate.Attributes[scheduleGroupAttribute]
 		if !hasGroup || strings.TrimSpace(rawGroupID) == "" {
 			summary.missingScheduleGroup++
@@ -295,7 +300,7 @@ func schedulePickLogDetail(request pluginapi.SchedulerPickRequest, settings plug
 	for _, groupID := range busyGroupIDs {
 		busyGroupValues = append(busyGroupValues, fmt.Sprintf("%d:%q", groupID, busyRequestIDs[groupID]))
 	}
-	return fmt.Sprintf("request_id=%q model=%q provider=%q providers=%q stream=%t configured_group_count=%d candidates_total=%d candidates_xai=%d candidates_other_provider=%d candidates_missing_schedule_group=%d candidates_invalid_schedule_group=%d candidates_out_of_range_schedule_group=%d candidates_by_group=%s busy_groups=%s decision=%s selected_group=%d", request.RequestID, request.Model, request.Provider, strings.Join(request.Providers, ","), request.Stream, settings.ScheduleGroupCount, summary.total, summary.xai, summary.otherProvider, summary.missingScheduleGroup, summary.invalidScheduleGroup, summary.outOfRangeScheduleGroup, strings.Join(groupCounts, ","), strings.Join(busyGroupValues, ","), decision, selectedGroup)
+	return fmt.Sprintf("request_id=%q model=%q provider=%q providers=%q stream=%t configured_group_count=%d candidates_total=%d candidates_xai=%d candidates_other_provider=%d candidates_missing_proxy_url=%d candidates_missing_schedule_group=%d candidates_invalid_schedule_group=%d candidates_out_of_range_schedule_group=%d candidates_by_group=%s busy_groups=%s decision=%s selected_group=%d", request.RequestID, request.Model, request.Provider, strings.Join(request.Providers, ","), request.Stream, settings.ScheduleGroupCount, summary.total, summary.xai, summary.otherProvider, summary.missingProxyURL, summary.missingScheduleGroup, summary.invalidScheduleGroup, summary.outOfRangeScheduleGroup, strings.Join(groupCounts, ","), strings.Join(busyGroupValues, ","), decision, selectedGroup)
 }
 
 func (store *guardianStore) ensureScheduleGroupStorage() error {
