@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -122,11 +123,20 @@ func loadXAIAuthFiles(entries []pluginapi.HostAuthFileEntry) ([]xaiAuthFile, err
 }
 
 func getXAIAuthFile(entry pluginapi.HostAuthFileEntry) (xaiAuthFile, error) {
+	return getXAIAuthFileVia(callHost, entry)
+}
+
+// getXAIAuthFileVia reads one auth file through the provided host caller so
+// batch work can use a timeout-guarded caller without changing other paths.
+func getXAIAuthFileVia(caller hostCaller, entry pluginapi.HostAuthFileEntry) (xaiAuthFile, error) {
+	if caller == nil {
+		caller = callHost
+	}
 	index := strings.TrimSpace(entry.AuthIndex)
 	if index == "" {
 		return xaiAuthFile{}, fmt.Errorf("%w: %s", errHostAuthIndexUnavailable, authEntryName(entry))
 	}
-	raw, err := callHost(pluginabi.MethodHostAuthGet, pluginapi.HostAuthGetRequest{AuthIndex: index})
+	raw, err := caller(pluginabi.MethodHostAuthGet, pluginapi.HostAuthGetRequest{AuthIndex: index})
 	if err != nil {
 		return xaiAuthFile{}, fmt.Errorf("read xAI auth %s: %w", index, err)
 	}
@@ -528,7 +538,16 @@ func saveAndVerifyAuthProxyURL(file xaiAuthFile, proxyURL string) (int, error) {
 }
 
 func updateAndVerifyAuthMetadataString(authIndex, field, value string) error {
-	raw, err := callHost(pluginabi.MethodHostAuthMetadataStringUpdate, pluginapi.HostAuthMetadataStringUpdateRequest{
+	return updateAndVerifyAuthMetadataStringVia(callHost, authIndex, field, value)
+}
+
+// updateAndVerifyAuthMetadataStringVia performs the single-field host update
+// through the provided caller and verifies the host read-back.
+func updateAndVerifyAuthMetadataStringVia(caller hostCaller, authIndex, field, value string) error {
+	if caller == nil {
+		caller = callHost
+	}
+	raw, err := caller(pluginabi.MethodHostAuthMetadataStringUpdate, pluginapi.HostAuthMetadataStringUpdateRequest{
 		AuthIndex: authIndex,
 		Field:     field,
 		Value:     value,
@@ -566,15 +585,24 @@ func parseRefreshProxyURLLines(text string) ([]string, error) {
 	return proxyURLs, nil
 }
 
-func saveAndVerifyAuthRefreshProxyURL(entry pluginapi.HostAuthFileEntry, proxyURL string) error {
+// saveAndVerifyAuthRefreshProxyURL writes refresh_proxy_url for one auth using a
+// bounded host call. It is used by the batch job, where a stuck callback must
+// fail that item instead of hanging the whole run.
+func saveAndVerifyAuthRefreshProxyURL(ctx context.Context, entry pluginapi.HostAuthFileEntry, proxyURL string) error {
+	caller := func(method string, payload any) (json.RawMessage, error) {
+		return callHostWithTimeout(ctx, method, payload, defaultHostCallTimeout)
+	}
 	var lastErr error
 	for attempt := 1; attempt <= 3; attempt++ {
-		file, err := getXAIAuthFile(entry)
+		if ctx != nil && ctx.Err() != nil {
+			return fmt.Errorf("refresh proxy batch cancelled: %w", ctx.Err())
+		}
+		file, err := getXAIAuthFileVia(caller, entry)
 		if err != nil {
 			lastErr = fmt.Errorf("read auth %s: %w", authEntryName(entry), err)
 			continue
 		}
-		if err := updateAndVerifyAuthMetadataString(file.Index, "refresh_proxy_url", proxyURL); err != nil {
+		if err := updateAndVerifyAuthMetadataStringVia(caller, file.Index, "refresh_proxy_url", proxyURL); err != nil {
 			lastErr = fmt.Errorf("update auth %s: %w", file.Index, err)
 			continue
 		}

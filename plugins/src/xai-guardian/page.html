@@ -414,6 +414,9 @@
     .operation-card strong { font-size: 15px; }
     .operation-card small { color: var(--text-secondary); }
     .spinner { width: 34px; height: 34px; margin: 0 auto 4px; border: 3px solid color-mix(in srgb, var(--primary-color) 22%, transparent); border-top-color: var(--primary-color); border-radius: 50%; animation: spin 1s linear infinite; }
+    .operation-progress { width: 100%; height: 6px; margin: 2px 0; border-radius: 999px; background: color-mix(in srgb, var(--text-secondary) 22%, transparent); overflow: hidden; }
+    .operation-progress span { display: block; width: 0; height: 100%; border-radius: 999px; background: var(--primary-color); transition: width .25s ease; }
+    .operation-actions { display: flex; justify-content: center; gap: 8px; margin-top: 4px; }
     @keyframes spin { to { transform: rotate(360deg); } }
     [hidden] { display: none !important; }
     .hidden { display: none !important; }
@@ -988,6 +991,7 @@ socks5h://proxy.example:1080"></textarea>
       while (true) {
         const result = await api(`/api/auths/refresh-proxy-urls/status?jobId=${encodeURIComponent(jobID)}`);
         if (result.status !== 'queued' && result.status !== 'running') return result;
+        setBusyProgress(result.processedCount, result.authCount);
         updateOperationProgress(result.authCount
           ? `已处理 ${result.processedCount}/${result.authCount}；成功 ${result.updatedCount}，失败 ${result.failedCount}`
           : '正在读取 xAI auth 文件列表…');
@@ -1762,22 +1766,53 @@ socks5h://proxy.example:1080"></textarea>
 
     async function refreshAll() { await Promise.all([refreshAccounts(), refreshInspection(), refreshGuard()]); }
 
-    function setBusy(value, message) {
+    function setBusy(value, message, options) {
       state.busy = value;
-      document.querySelectorAll('button').forEach((button) => { if (button.id !== 'account-page-prev' && button.id !== 'account-page-next') button.disabled = value; });
+      const cancelable = Boolean(options && options.cancelable);
+      const showProgress = Boolean(options && options.progress);
+      document.querySelectorAll('button').forEach((button) => { if (button.id !== 'account-page-prev' && button.id !== 'account-page-next' && button.id !== 'operation-cancel') button.disabled = value; });
       if (value) {
         const overlay = document.createElement('div');
         overlay.className = 'overlay'; overlay.id = 'operation-overlay';
-        overlay.innerHTML = `<div class="operation-card" role="status"><span class="spinner" aria-hidden="true"></span><strong>${escapeHTML(message || '检查中…')}</strong><small>正在写入最近一次插件记录，请稍候</small></div>`;
+        const progress = showProgress ? '<div class="operation-progress" id="operation-progress"><span></span></div>' : '';
+        const actions = cancelable ? '<div class="operation-actions"><button class="secondary-button" type="button" id="operation-cancel">取消</button></div>' : '';
+        overlay.innerHTML = `<div class="operation-card" role="status"><span class="spinner" aria-hidden="true"></span><strong>${escapeHTML(message || '检查中…')}</strong><small>正在写入最近一次插件记录，请稍候</small>${progress}${actions}</div>`;
         document.body.appendChild(overlay);
+        if (cancelable) $('operation-cancel').addEventListener('click', () => { cancelActiveOperation(); });
+        if (showProgress) setBusyProgress(0, 0);
       } else { $('operation-overlay')?.remove(); }
+    }
+
+    // setBusyProgress updates the overlay bar; total<=0 renders an empty bar.
+    function setBusyProgress(done, total) {
+      const bar = $('operation-progress');
+      if (!bar) return;
+      const fill = bar.querySelector('span');
+      const safeDone = Number.isFinite(done) ? Math.max(0, done) : 0;
+      const safeTotal = Number.isFinite(total) ? Math.max(0, total) : 0;
+      fill.style.width = safeTotal ? `${Math.min(100, Math.round((safeDone / safeTotal) * 100))}%` : '0%';
+    }
+
+    // cancelActiveOperation asks the backend to stop the running
+    // refresh_proxy_url batch; the polling loop then sees status=cancelled and
+    // the overlay closes through the normal finally path.
+    async function cancelActiveOperation() {
+      const button = $('operation-cancel');
+      if (button) { button.disabled = true; button.textContent = '取消中…'; }
+      const note = $('operation-overlay')?.querySelector('small');
+      if (note) note.textContent = '正在取消任务…';
+      try { await api('/api/auths/refresh-proxy-urls/cancel', 'POST', {}); }
+      catch (error) {
+        if (note) note.textContent = `取消失败：${error.message}`;
+        if (button) { button.disabled = false; button.textContent = '取消'; }
+      }
     }
 
     $('inspection-schedule-mode-setting').addEventListener('change', updateInspectionScheduleFields);
 
     document.addEventListener('click', async (event) => {
       const target = event.target.closest('button');
-      if (!target || state.busy) return;
+      if (!target || (state.busy && target.id !== 'operation-cancel')) return;
       if (target.dataset.closeModal) { $(target.dataset.closeModal).hidden = true; if (target.dataset.closeModal === 'refresh-proxy-modal') $('refresh-proxy-input').value = ''; return; }
       if (target.hasAttribute('data-degradation-latest')) { await openLatestAccountDegradationProbe(target.dataset.degradationLatest, target.dataset.accountName); return; }
       if (target.hasAttribute('data-degradation-check')) { openAccountDegradationProbe(target.dataset.degradationCheck, target.dataset.accountName); return; }
@@ -1832,7 +1867,7 @@ socks5h://proxy.example:1080"></textarea>
       if (target.id === 'submit-refresh-proxy') {
         const text = $('refresh-proxy-input').value;
         if (!text.trim()) { setMessage('refresh-proxy-message', '请输入至少一个代理 URL。', true); return; }
-        setBusy(true, '批量设置 refresh_proxy_url 中…');
+        setBusy(true, '批量设置 refresh_proxy_url 中…', {cancelable: true, progress: true});
         try {
           const started = await api('/api/auths/refresh-proxy-urls', 'POST', {text});
           if (started.status === 'already_running') {
@@ -1840,6 +1875,13 @@ socks5h://proxy.example:1080"></textarea>
             return;
           }
           const result = await waitForAuthRefreshProxyBatch(started.jobId);
+          if (result.status === 'cancelled') {
+            const progress = result.authCount
+              ? `已处理 ${result.processedCount}/${result.authCount} 个 auth，回读确认 ${result.updatedCount} 个，失败 ${result.failedCount} 个`
+              : '';
+            setMessage('refresh-proxy-message', `任务已取消${progress ? `；${progress}` : ''}。输入保留。`, true);
+            return;
+          }
           if (result.status !== 'completed') {
             const progress = result.authCount
               ? `已处理 ${result.processedCount}/${result.authCount} 个 auth，成功 ${result.updatedCount}，失败 ${result.failedCount}`

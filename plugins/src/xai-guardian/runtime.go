@@ -478,6 +478,9 @@ func (controller *runtimeController) api(method, path string, query url.Values, 
 	if method == http.MethodPost && path == "/api/auths/refresh-proxy-urls" {
 		return controller.startAuthRefreshProxyBatch(store, body)
 	}
+	if method == http.MethodPost && path == "/api/auths/refresh-proxy-urls/cancel" {
+		return controller.cancelAuthRefreshProxyBatchAPI()
+	}
 	if method == http.MethodGet && path == "/api/accounts" {
 		return controller.accountsAPI(store)
 	}
@@ -651,6 +654,11 @@ func (controller *runtimeController) startAuthRefreshProxyBatch(store *guardianS
 	return jsonAPIResult(map[string]any{"jobId": job.ID, "status": "queued"}, nil)
 }
 
+// refreshProxyBatchLockChunk bounds how many auth files are written while the
+// shared auth distribution lock is held, so a long batch cannot starve slot
+// refresh, keepalive and realtime-guard work for hours.
+const refreshProxyBatchLockChunk = 64
+
 func (controller *runtimeController) runAuthRefreshProxyBatch(ctx context.Context, store *guardianStore, job *authRefreshProxyBatchJob, proxyURLs []string) {
 	defer controller.refreshProxyBatchGroup.Done()
 	controller.updateAuthRefreshProxyBatchJob(job, func(current *authRefreshProxyBatchJob) {
@@ -658,7 +666,17 @@ func (controller *runtimeController) runAuthRefreshProxyBatch(ctx context.Contex
 	})
 
 	store.authDistributionMutex.Lock()
-	defer store.authDistributionMutex.Unlock()
+	locked := true
+	// Release the shared auth lock between chunks so a long batch does not block
+	// slot refresh, keepalive and realtime-guard auth work.
+	releaseLock := func() {
+		if locked {
+			store.authDistributionMutex.Unlock()
+			locked = false
+		}
+	}
+	defer releaseLock()
+
 	if ctx.Err() != nil {
 		controller.updateAuthRefreshProxyBatchJob(job, func(current *authRefreshProxyBatchJob) {
 			current.Status = "cancelled"
@@ -699,7 +717,7 @@ func (controller *runtimeController) runAuthRefreshProxyBatch(ctx context.Contex
 			})
 			return
 		}
-		saveErr := saveAndVerifyAuthRefreshProxyURL(entry, proxyURLs[index%len(proxyURLs)])
+		saveErr := saveAndVerifyAuthRefreshProxyURL(ctx, entry, proxyURLs[index%len(proxyURLs)])
 		controller.updateAuthRefreshProxyBatchJob(job, func(current *authRefreshProxyBatchJob) {
 			current.ProcessedCount++
 			if saveErr != nil {
@@ -711,7 +729,11 @@ func (controller *runtimeController) runAuthRefreshProxyBatch(ctx context.Contex
 			}
 			current.UpdatedCount++
 		})
+		if (index+1)%refreshProxyBatchLockChunk == 0 {
+			releaseLock()
+		}
 	}
+	releaseLock()
 	controller.updateAuthRefreshProxyBatchJob(job, func(current *authRefreshProxyBatchJob) {
 		current.Status = "completed"
 	})
@@ -721,6 +743,27 @@ func (controller *runtimeController) updateAuthRefreshProxyBatchJob(job *authRef
 	controller.refreshProxyBatchMutex.Lock()
 	update(job)
 	controller.refreshProxyBatchMutex.Unlock()
+}
+
+// cancelAuthRefreshProxyBatchAPI requests cancellation of the queued/running
+// refresh_proxy_url batch. The worker observes ctx and reports cancelled status.
+func (controller *runtimeController) cancelAuthRefreshProxyBatchAPI() (int, []byte, error) {
+	controller.refreshProxyBatchMutex.Lock()
+	job := controller.refreshProxyBatchJob
+	cancel := controller.refreshProxyBatchCancel
+	active := job != nil && (job.Status == "queued" || job.Status == "running")
+	jobID := ""
+	if job != nil {
+		jobID = job.ID
+	}
+	controller.refreshProxyBatchMutex.Unlock()
+	if !active {
+		return jsonAPIResult(map[string]any{"status": "idle"}, nil)
+	}
+	if cancel != nil {
+		cancel()
+	}
+	return jsonAPIResult(map[string]any{"jobId": jobID, "status": "cancelling"}, nil)
 }
 
 func (controller *runtimeController) authRefreshProxyBatchStatusAPI(jobID string) (int, []byte, error) {
